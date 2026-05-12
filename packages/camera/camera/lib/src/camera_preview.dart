@@ -52,6 +52,11 @@ class CameraPreview extends StatelessWidget {
   }
 
   bool _isLandscape() {
+    // iOS pins its capture connection to portrait — the preview never turns with the device, and
+    // the rotation goes to the captured file instead. The box stays in the portrait convention.
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
+      return false;
+    }
     return <DeviceOrientation>[
       DeviceOrientation.landscapeLeft,
       DeviceOrientation.landscapeRight,

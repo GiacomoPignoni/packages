@@ -85,6 +85,13 @@ class AVFoundationCamera extends CameraPlatform {
     CameraDescription cameraDescription,
     MediaSettings? mediaSettings,
   ) async {
+    // A ratio the settings do not name leaves the current one alone rather than
+    // clearing it: this object outlives the cameras it builds, and a camera
+    // rebuilt to change the resolution preset should not come up at the
+    // sensor's own shape and be corrected a frame or two later, once the caller
+    // has re-applied the ratio to a camera that is already running.
+    // `setAspectRatio(null)` still clears it; only silence means "unchanged".
+    _aspectRatio = mediaSettings?.aspectRatio ?? _aspectRatio;
     try {
       return await _hostApi.create(
         cameraDescription.name,
@@ -94,12 +101,18 @@ class AVFoundationCamera extends CameraPlatform {
           videoBitrate: mediaSettings?.videoBitrate,
           audioBitrate: mediaSettings?.audioBitrate,
           enableAudio: mediaSettings?.enableAudio ?? true,
+          aspectRatio: _aspectRatio,
         ),
       );
     } on PlatformException catch (e) {
       throw CameraException(e.code, e.message);
     }
   }
+
+  /// The center-crop ratio the most recent camera was built with, or that
+  /// [setAspectRatio] has since applied. Kept so a camera built without one
+  /// named in its `MediaSettings` carries the crop already in effect.
+  double? _aspectRatio;
 
   @override
   Future<void> initializeCamera(
@@ -162,6 +175,11 @@ class AVFoundationCamera extends CameraPlatform {
   }
 
   @override
+  Stream<CameraAutoWhiteBalanceChangedEvent> onAutoWhiteBalanceChanged(int cameraId) {
+    return _cameraEvents(cameraId).whereType<CameraAutoWhiteBalanceChangedEvent>();
+  }
+
+  @override
   Stream<DeviceOrientationChangedEvent> onDeviceOrientationChanged() {
     return hostHandler.deviceEventStreamController.stream
         .whereType<DeviceOrientationChangedEvent>();
@@ -181,6 +199,12 @@ class AVFoundationCamera extends CameraPlatform {
   Future<XFile> takePicture(int cameraId) async {
     final String path = await _hostApi.takePicture();
     return XFile(path);
+  }
+
+  @override
+  Future<(XFile original, XFile processed)> takePictureWithOriginal(int cameraId) async {
+    final PlatformCapturedPicturePaths paths = await _hostApi.takePictureWithOriginal();
+    return (XFile(paths.originalPath), XFile(paths.processedPath));
   }
 
   @override
@@ -285,6 +309,12 @@ class AVFoundationCamera extends CameraPlatform {
   }
 
   @override
+  Future<Iterable<FlashMode>> getSupportedFlashModes(int cameraId) async {
+    final List<PlatformFlashMode> modes = await _hostApi.getSupportedFlashModes();
+    return modes.map(_flashModeFromPigeon);
+  }
+
+  @override
   Future<void> setExposureMode(int cameraId, ExposureMode mode) async {
     await _hostApi.setExposureMode(_pigeonExposureMode(mode));
   }
@@ -333,6 +363,20 @@ class AVFoundationCamera extends CameraPlatform {
     assert(point == null || point.y >= 0 && point.y <= 1);
 
     await _hostApi.setFocusPoint(_pigeonPoint(point));
+  }
+
+  @override
+  Future<void> setWhiteBalance(int cameraId, WhiteBalanceValues? values) async {
+    await _hostApi.setWhiteBalance(
+      values == null
+          ? null
+          : PlatformWhiteBalanceValues(temperature: values.temperature, tint: values.tint),
+    );
+  }
+
+  @override
+  Future<bool> supportsWhiteBalance(int cameraId) async {
+    return _hostApi.isWhiteBalanceSupported();
   }
 
   @override
@@ -418,6 +462,47 @@ class AVFoundationCamera extends CameraPlatform {
   }
 
   @override
+  Future<void> setEffectsValues(int cameraId, EffectsValues values) async {
+    await _hostApi.setEffectsValues(
+      PlatformEffectsValues(
+        vignetteIntensity: values.vignetteIntensity,
+        grainNoisePath: values.grainNoisePath,
+        grainOpacity: values.grainOpacity,
+        grainSize: values.grainSize,
+        grainBehavior: switch (values.grainBehavior) {
+          GrainBehavior.overlay => PlatformGrainBehavior.overlay,
+          GrainBehavior.darkOnly => PlatformGrainBehavior.darkOnly,
+        },
+        lutFilePath: values.lutFilePath,
+        lutIntensity: values.lutIntensity,
+        resolution: values.resolution,
+        colorShift: values.colorShift,
+        mist: values.mist,
+        prism: values.prism,
+        cheapFisheye: values.cheapFisheye,
+        bloom: values.bloom,
+        diffusion: values.diffusion,
+      ),
+    );
+  }
+
+  @override
+  Future<void> setAspectRatio(int cameraId, double? aspectRatio) async {
+    _aspectRatio = aspectRatio;
+    await _hostApi.setAspectRatio(aspectRatio);
+  }
+
+  @override
+  Future<void> setCaptureScale(int cameraId, double scale) async {
+    await _hostApi.setCaptureScale(scale);
+  }
+
+  @override
+  Future<void> setCaptureCornerRadius(int cameraId, double radius) async {
+    await _hostApi.setCaptureCornerRadius(radius);
+  }
+
+  @override
   Widget buildPreview(int cameraId) {
     return Texture(textureId: cameraId);
   }
@@ -477,6 +562,26 @@ class AVFoundationCamera extends CameraPlatform {
     return PlatformFlashMode.off;
   }
 
+  /// Returns a [PlatformFlashMode]'s [FlashMode] representation.
+  FlashMode _flashModeFromPigeon(PlatformFlashMode flashMode) {
+    switch (flashMode) {
+      case PlatformFlashMode.off:
+        return FlashMode.off;
+      case PlatformFlashMode.auto:
+        return FlashMode.auto;
+      case PlatformFlashMode.always:
+        return FlashMode.always;
+      case PlatformFlashMode.torch:
+        return FlashMode.torch;
+    }
+    // The enum comes from a Pigeon-generated file, which could get a new value
+    // at any time, so provide a fallback that ensures this won't break. This is
+    // deliberately outside the switch rather than a `default` so that the
+    // linter will flag the switch as needing an update.
+    // ignore: dead_code
+    return FlashMode.off;
+  }
+
   /// Returns a [ResolutionPreset]'s Pigeon representation.
   PlatformResolutionPreset _pigeonResolutionPreset(ResolutionPreset? resolutionPreset) {
     if (resolutionPreset == null) {
@@ -497,6 +602,8 @@ class AVFoundationCamera extends CameraPlatform {
         return PlatformResolutionPreset.medium;
       case ResolutionPreset.low:
         return PlatformResolutionPreset.low;
+      case ResolutionPreset.photo:
+        return PlatformResolutionPreset.photo;
     }
     // The enum comes from a different package, which could get a new value at
     // any time, so provide a fallback that ensures this won't break when used
@@ -646,5 +753,15 @@ class HostCameraMessageHandler implements CameraEventApi {
         initialState.focusPointSupported,
       ),
     );
+  }
+
+  @override
+  void previewSizeChanged(PlatformSize size) {
+    streamController.add(CameraResolutionChangedEvent(cameraId, size.width, size.height));
+  }
+
+  @override
+  void autoWhiteBalanceChanged(double temperature, double tint) {
+    streamController.add(CameraAutoWhiteBalanceChangedEvent(cameraId, temperature, tint));
   }
 }

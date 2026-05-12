@@ -19,6 +19,7 @@ import androidx.camera.core.resolutionselector.ResolutionSelector;
 import io.flutter.view.TextureRegistry;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
@@ -29,6 +30,22 @@ import java.util.concurrent.Executors;
 class PreviewProxyApi extends PigeonApiPreview {
   // Stores the SurfaceProducer when it is used as a SurfaceProvider for a Preview.
   private final Map<Preview, TextureRegistry.SurfaceProducer> surfaceProducers = new HashMap<>();
+
+  /**
+   * Runs the completion callback CameraX invokes when it is finished with a provided surface.
+   *
+   * <p>One for the whole proxy api rather than one per {@link SurfaceRequest}. CameraX asks for a
+   * new surface every time it rebuilds the preview pipeline, which a lens switch, an aspect ratio
+   * change and a recording starting all do, so a thread created per request is a thread leaked per
+   * rebind. The callbacks it runs are short and independent, so they are content to share one.
+   */
+  private final ExecutorService surfaceReleaseExecutor =
+      Executors.newSingleThreadExecutor(
+          runnable -> {
+            final Thread thread = new Thread(runnable, "CameraXPreviewSurfaceRelease");
+            thread.setDaemon(true);
+            return thread;
+          });
 
   PreviewProxyApi(@NonNull ProxyApiRegistrar pigeonRegistrar) {
     super(pigeonRegistrar);
@@ -48,7 +65,8 @@ class PreviewProxyApi extends PigeonApiPreview {
   public Preview pigeon_defaultConstructor(
       @Nullable ResolutionSelector resolutionSelector,
       @Nullable Long targetRotation,
-      @Nullable Range<?> targetFpsRange) {
+      @Nullable Range<?> targetFpsRange,
+      @Nullable WhiteBalanceManager whiteBalanceManager) {
     final Preview.Builder builder = new Preview.Builder();
     if (targetRotation != null) {
       builder.setTargetRotation(targetRotation.intValue());
@@ -57,10 +75,17 @@ class PreviewProxyApi extends PigeonApiPreview {
       builder.setResolutionSelector(resolutionSelector);
     }
 
-    if (targetFpsRange != null) {
+    if (targetFpsRange != null || whiteBalanceManager != null) {
       Camera2Interop.Extender<Preview> extender = new Camera2Interop.Extender<>(builder);
-      extender.setCaptureRequestOption(
-          CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, (Range<Integer>) targetFpsRange);
+      if (targetFpsRange != null) {
+        extender.setCaptureRequestOption(
+            CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, (Range<Integer>) targetFpsRange);
+      }
+      if (whiteBalanceManager != null) {
+        // The capture results are the only place the auto white balance gains are reported, and
+        // this is the only hook Camera2 interop offers for reading them.
+        extender.setSessionCaptureCallback(whiteBalanceManager.getCaptureCallback());
+      }
     }
 
     return builder.build();
@@ -80,16 +105,32 @@ class PreviewProxyApi extends PigeonApiPreview {
     return surfaceProducer.id();
   }
 
+  /**
+   * Releases the Flutter surface producer backing this preview, if it has one.
+   *
+   * <p>Deliberately a no-op when there is nothing to release, rather than the {@code
+   * IllegalStateException} this used to throw. {@code dispose} is the last thing to run on a camera
+   * that may already have failed halfway through being created, or that is being disposed a second
+   * time, and in both cases the producer is legitimately absent. Throwing from the final step of a
+   * teardown turns a benign double-release into an exception that aborts the rest of {@code
+   * CameraController.dispose}, which is how one failed camera switch cascades into a broken plugin.
+   */
   @Override
   public void releaseSurfaceProvider(@NonNull Preview pigeonInstance) {
     final TextureRegistry.SurfaceProducer surfaceProducer = surfaceProducers.remove(pigeonInstance);
     if (surfaceProducer != null) {
       surfaceProducer.release();
-      return;
     }
-    throw new IllegalStateException(
-        "releaseFlutterSurfaceTexture() cannot be called if the flutterSurfaceProducer for the"
-            + " camera preview has not yet been initialized.");
+  }
+
+  /**
+   * Stops {@link #surfaceReleaseExecutor}'s thread.
+   *
+   * <p>{@code shutdown}, not {@code shutdownNow}: a queued callback still has a {@code Surface} to
+   * release, and dropping it would leak the buffers behind it.
+   */
+  void releaseSurfaceReleaseExecutor() {
+    surfaceReleaseExecutor.shutdown();
   }
 
   @Override
@@ -143,7 +184,7 @@ class PreviewProxyApi extends PigeonApiPreview {
       Surface flutterSurface = surfaceProducer.getForcedNewSurface();
       request.provideSurface(
           flutterSurface,
-          Executors.newSingleThreadExecutor(),
+          surfaceReleaseExecutor,
           (result) -> {
             // See
             // https://developer.android.com/reference/androidx/camera/core/SurfaceRequest.Result

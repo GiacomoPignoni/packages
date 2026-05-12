@@ -108,6 +108,8 @@ int _deepHash(Object? value) {
   return value.hashCode;
 }
 
+enum PlatformGrainBehavior { overlay, darkOnly }
+
 enum PlatformCameraLensDirection {
   /// Front facing camera (a user looking at the screen is seen by the camera).
   front,
@@ -146,7 +148,18 @@ enum PlatformImageFileFormat { jpeg, heif }
 
 enum PlatformImageFormatGroup { bgra8888, yuv420 }
 
-enum PlatformResolutionPreset { low, medium, high, veryHigh, ultraHigh, max }
+enum PlatformResolutionPreset {
+  low,
+  medium,
+  high,
+  veryHigh,
+  ultraHigh,
+  max,
+
+  /// Maps to `AVCaptureSession.Preset.photo` — full-sensor stills at the
+  /// cost of a reduced video stream. See `ResolutionPreset.photo`.
+  photo,
+}
 
 enum PlatformVideoStabilizationMode { off, standard, cinematic, cinematicExtended }
 
@@ -155,6 +168,7 @@ class PlatformCameraDescription {
     required this.name,
     required this.lensDirection,
     required this.lensType,
+    this.equivalentFocalLength,
   });
 
   /// The name of the camera device.
@@ -166,8 +180,13 @@ class PlatformCameraDescription {
   /// The type of the camera lens.
   PlatformCameraLensType lensType;
 
+  /// The approximate 35mm-equivalent focal length of the lens, in millimetres.
+  ///
+  /// Only populated on iOS (AVFoundation). Null on other platforms.
+  double? equivalentFocalLength;
+
   List<Object?> _toList() {
-    return <Object?>[name, lensDirection, lensType];
+    return <Object?>[name, lensDirection, lensType, equivalentFocalLength];
   }
 
   Object encode() {
@@ -180,6 +199,7 @@ class PlatformCameraDescription {
       name: result[0]! as String,
       lensDirection: result[1]! as PlatformCameraLensDirection,
       lensType: result[2]! as PlatformCameraLensType,
+      equivalentFocalLength: result[3] as double?,
     );
   }
 
@@ -194,7 +214,8 @@ class PlatformCameraDescription {
     }
     return _deepEquals(name, other.name) &&
         _deepEquals(lensDirection, other.lensDirection) &&
-        _deepEquals(lensType, other.lensType);
+        _deepEquals(lensType, other.lensType) &&
+        _deepEquals(equivalentFocalLength, other.equivalentFocalLength);
   }
 
   @override
@@ -203,7 +224,7 @@ class PlatformCameraDescription {
 
   @override
   String toString() {
-    return 'PlatformCameraDescription(name: $name, lensDirection: $lensDirection, lensType: $lensType)';
+    return 'PlatformCameraDescription(name: $name, lensDirection: $lensDirection, lensType: $lensType, equivalentFocalLength: $equivalentFocalLength)';
   }
 }
 
@@ -431,6 +452,7 @@ class PlatformMediaSettings {
     this.videoBitrate,
     this.audioBitrate,
     required this.enableAudio,
+    this.aspectRatio,
   });
 
   PlatformResolutionPreset resolutionPreset;
@@ -443,8 +465,20 @@ class PlatformMediaSettings {
 
   bool enableAudio;
 
+  /// Aspect ratio (width/height) that center-crops preview, photo, and video
+  /// output. `null` means no crop. Only takes effect when the shader pipeline
+  /// is enabled.
+  double? aspectRatio;
+
   List<Object?> _toList() {
-    return <Object?>[resolutionPreset, framesPerSecond, videoBitrate, audioBitrate, enableAudio];
+    return <Object?>[
+      resolutionPreset,
+      framesPerSecond,
+      videoBitrate,
+      audioBitrate,
+      enableAudio,
+      aspectRatio,
+    ];
   }
 
   Object encode() {
@@ -459,6 +493,7 @@ class PlatformMediaSettings {
       videoBitrate: result[2] as int?,
       audioBitrate: result[3] as int?,
       enableAudio: result[4]! as bool,
+      aspectRatio: result[5] as double?,
     );
   }
 
@@ -475,7 +510,8 @@ class PlatformMediaSettings {
         _deepEquals(framesPerSecond, other.framesPerSecond) &&
         _deepEquals(videoBitrate, other.videoBitrate) &&
         _deepEquals(audioBitrate, other.audioBitrate) &&
-        _deepEquals(enableAudio, other.enableAudio);
+        _deepEquals(enableAudio, other.enableAudio) &&
+        _deepEquals(aspectRatio, other.aspectRatio);
   }
 
   @override
@@ -484,7 +520,7 @@ class PlatformMediaSettings {
 
   @override
   String toString() {
-    return 'PlatformMediaSettings(resolutionPreset: $resolutionPreset, framesPerSecond: $framesPerSecond, videoBitrate: $videoBitrate, audioBitrate: $audioBitrate, enableAudio: $enableAudio)';
+    return 'PlatformMediaSettings(resolutionPreset: $resolutionPreset, framesPerSecond: $framesPerSecond, videoBitrate: $videoBitrate, audioBitrate: $audioBitrate, enableAudio: $enableAudio, aspectRatio: $aspectRatio)';
   }
 }
 
@@ -572,6 +608,251 @@ class PlatformSize {
   }
 }
 
+class PlatformEffectsValues {
+  PlatformEffectsValues({
+    required this.vignetteIntensity,
+    this.grainNoisePath,
+    required this.grainOpacity,
+    required this.grainSize,
+    required this.grainBehavior,
+    this.lutFilePath,
+    required this.lutIntensity,
+    required this.resolution,
+    required this.colorShift,
+    required this.mist,
+    required this.prism,
+    required this.cheapFisheye,
+    required this.bloom,
+    required this.diffusion,
+  });
+
+  /// Radial darkening toward the frame edges (0.0 = off, 1.0 = full vignette).
+  double vignetteIntensity;
+
+  /// Absolute file path to the grain/noise source image.
+  /// Null disables the grain effect.
+  String? grainNoisePath;
+
+  /// Opacity of the grain overlay (0.0 = off, 1.0 = fully applied).
+  double grainOpacity;
+
+  /// Resolution-independent grain tile size (>= 0.0).
+  /// 1.0 = grain image spans the full frame; smaller values tile more finely; bigger values tile more coarsely.
+  double grainSize;
+
+  /// Controls where grain is visible across the tonal range.
+  PlatformGrainBehavior grainBehavior;
+
+  /// Absolute file path to a 3D LUT color-grade image: a 512×512 PNG storing
+  /// a 64×64×64 cube as an 8×8 row-major grid of 64×64 tiles (tile index =
+  /// blue slice; within a tile x = red, y = green top-to-bottom).
+  /// Null disables the LUT color filter.
+  String? lutFilePath;
+
+  /// Intensity of the LUT color filter (0.0 = no effect, 1.0 = full LUT).
+  /// Ignored when [lutFilePath] is null.
+  double lutIntensity;
+
+  /// Simulates a low-resolution sensor (0.0 = off, 1.0 = full strength).
+  /// Adds a soft Gaussian blur and desaturation.
+  double resolution;
+
+  /// Chromatic aberration strength (0.0 = off, 1.0 = full strength).
+  double colorShift;
+
+  /// Dreamy mist / Orton-style soft glow (0.0 = off, 1.0 = full strength).
+  double mist;
+
+  /// Radial chromatic motion blur (0.0 = off, 1.0 = full strength).
+  double prism;
+
+  /// Cheap clip-on fisheye lens simulation (true = on).
+  bool cheapFisheye;
+
+  /// Highlight bloom / light-bleed glow (0.0 = off, 1.0 = full strength).
+  double bloom;
+
+  /// Diffusion / soft-focus filter (0.0 = off, 1.0 = full strength).
+  /// Mixes the frame toward a wide Gaussian blur of itself.
+  double diffusion;
+
+  List<Object?> _toList() {
+    return <Object?>[
+      vignetteIntensity,
+      grainNoisePath,
+      grainOpacity,
+      grainSize,
+      grainBehavior,
+      lutFilePath,
+      lutIntensity,
+      resolution,
+      colorShift,
+      mist,
+      prism,
+      cheapFisheye,
+      bloom,
+      diffusion,
+    ];
+  }
+
+  Object encode() {
+    return _toList();
+  }
+
+  static PlatformEffectsValues decode(Object result) {
+    result as List<Object?>;
+    return PlatformEffectsValues(
+      vignetteIntensity: result[0]! as double,
+      grainNoisePath: result[1] as String?,
+      grainOpacity: result[2]! as double,
+      grainSize: result[3]! as double,
+      grainBehavior: result[4]! as PlatformGrainBehavior,
+      lutFilePath: result[5] as String?,
+      lutIntensity: result[6]! as double,
+      resolution: result[7]! as double,
+      colorShift: result[8]! as double,
+      mist: result[9]! as double,
+      prism: result[10]! as double,
+      cheapFisheye: result[11]! as bool,
+      bloom: result[12]! as double,
+      diffusion: result[13]! as double,
+    );
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  bool operator ==(Object other) {
+    if (other is! PlatformEffectsValues || other.runtimeType != runtimeType) {
+      return false;
+    }
+    if (identical(this, other)) {
+      return true;
+    }
+    return _deepEquals(vignetteIntensity, other.vignetteIntensity) &&
+        _deepEquals(grainNoisePath, other.grainNoisePath) &&
+        _deepEquals(grainOpacity, other.grainOpacity) &&
+        _deepEquals(grainSize, other.grainSize) &&
+        _deepEquals(grainBehavior, other.grainBehavior) &&
+        _deepEquals(lutFilePath, other.lutFilePath) &&
+        _deepEquals(lutIntensity, other.lutIntensity) &&
+        _deepEquals(resolution, other.resolution) &&
+        _deepEquals(colorShift, other.colorShift) &&
+        _deepEquals(mist, other.mist) &&
+        _deepEquals(prism, other.prism) &&
+        _deepEquals(cheapFisheye, other.cheapFisheye) &&
+        _deepEquals(bloom, other.bloom) &&
+        _deepEquals(diffusion, other.diffusion);
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  int get hashCode => _deepHash(<Object?>[runtimeType, ..._toList()]);
+
+  @override
+  String toString() {
+    return 'PlatformEffectsValues(vignetteIntensity: $vignetteIntensity, grainNoisePath: $grainNoisePath, grainOpacity: $grainOpacity, grainSize: $grainSize, grainBehavior: $grainBehavior, lutFilePath: $lutFilePath, lutIntensity: $lutIntensity, resolution: $resolution, colorShift: $colorShift, mist: $mist, prism: $prism, cheapFisheye: $cheapFisheye, bloom: $bloom, diffusion: $diffusion)';
+  }
+}
+
+/// Paths to the two photo files produced by [CameraApi.takePictureWithOriginal].
+class PlatformCapturedPicturePaths {
+  PlatformCapturedPicturePaths({required this.originalPath, required this.processedPath});
+
+  /// File path of the un-effected original. The configured `captureScale` crop
+  /// and resampling is preserved, but the custom Metal shader is not applied.
+  String originalPath;
+
+  /// File path of the shader-processed photo (equivalent to
+  /// [CameraApi.takePicture]).
+  String processedPath;
+
+  List<Object?> _toList() {
+    return <Object?>[originalPath, processedPath];
+  }
+
+  Object encode() {
+    return _toList();
+  }
+
+  static PlatformCapturedPicturePaths decode(Object result) {
+    result as List<Object?>;
+    return PlatformCapturedPicturePaths(
+      originalPath: result[0]! as String,
+      processedPath: result[1]! as String,
+    );
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  bool operator ==(Object other) {
+    if (other is! PlatformCapturedPicturePaths || other.runtimeType != runtimeType) {
+      return false;
+    }
+    if (identical(this, other)) {
+      return true;
+    }
+    return _deepEquals(originalPath, other.originalPath) &&
+        _deepEquals(processedPath, other.processedPath);
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  int get hashCode => _deepHash(<Object?>[runtimeType, ..._toList()]);
+
+  @override
+  String toString() {
+    return 'PlatformCapturedPicturePaths(originalPath: $originalPath, processedPath: $processedPath)';
+  }
+}
+
+/// Pigeon version of WhiteBalanceValues.
+class PlatformWhiteBalanceValues {
+  PlatformWhiteBalanceValues({required this.temperature, required this.tint});
+
+  /// The color temperature in Kelvin.
+  double temperature;
+
+  /// The tint offset, where `0` is neutral.
+  double tint;
+
+  List<Object?> _toList() {
+    return <Object?>[temperature, tint];
+  }
+
+  Object encode() {
+    return _toList();
+  }
+
+  static PlatformWhiteBalanceValues decode(Object result) {
+    result as List<Object?>;
+    return PlatformWhiteBalanceValues(
+      temperature: result[0]! as double,
+      tint: result[1]! as double,
+    );
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  bool operator ==(Object other) {
+    if (other is! PlatformWhiteBalanceValues || other.runtimeType != runtimeType) {
+      return false;
+    }
+    if (identical(this, other)) {
+      return true;
+    }
+    return _deepEquals(temperature, other.temperature) && _deepEquals(tint, other.tint);
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  int get hashCode => _deepHash(<Object?>[runtimeType, ..._toList()]);
+
+  @override
+  String toString() {
+    return 'PlatformWhiteBalanceValues(temperature: $temperature, tint: $tint)';
+  }
+}
+
 class _PigeonCodec extends StandardMessageCodec {
   const _PigeonCodec();
   @override
@@ -579,56 +860,68 @@ class _PigeonCodec extends StandardMessageCodec {
     if (value is int) {
       buffer.putUint8(4);
       buffer.putInt64(value);
-    } else if (value is PlatformCameraLensDirection) {
+    } else if (value is PlatformGrainBehavior) {
       buffer.putUint8(129);
       writeValue(buffer, value.index);
-    } else if (value is PlatformCameraLensType) {
+    } else if (value is PlatformCameraLensDirection) {
       buffer.putUint8(130);
       writeValue(buffer, value.index);
-    } else if (value is PlatformDeviceOrientation) {
+    } else if (value is PlatformCameraLensType) {
       buffer.putUint8(131);
       writeValue(buffer, value.index);
-    } else if (value is PlatformExposureMode) {
+    } else if (value is PlatformDeviceOrientation) {
       buffer.putUint8(132);
       writeValue(buffer, value.index);
-    } else if (value is PlatformFlashMode) {
+    } else if (value is PlatformExposureMode) {
       buffer.putUint8(133);
       writeValue(buffer, value.index);
-    } else if (value is PlatformFocusMode) {
+    } else if (value is PlatformFlashMode) {
       buffer.putUint8(134);
       writeValue(buffer, value.index);
-    } else if (value is PlatformImageFileFormat) {
+    } else if (value is PlatformFocusMode) {
       buffer.putUint8(135);
       writeValue(buffer, value.index);
-    } else if (value is PlatformImageFormatGroup) {
+    } else if (value is PlatformImageFileFormat) {
       buffer.putUint8(136);
       writeValue(buffer, value.index);
-    } else if (value is PlatformResolutionPreset) {
+    } else if (value is PlatformImageFormatGroup) {
       buffer.putUint8(137);
       writeValue(buffer, value.index);
-    } else if (value is PlatformVideoStabilizationMode) {
+    } else if (value is PlatformResolutionPreset) {
       buffer.putUint8(138);
       writeValue(buffer, value.index);
-    } else if (value is PlatformCameraDescription) {
+    } else if (value is PlatformVideoStabilizationMode) {
       buffer.putUint8(139);
-      writeValue(buffer, value.encode());
-    } else if (value is PlatformCameraState) {
+      writeValue(buffer, value.index);
+    } else if (value is PlatformCameraDescription) {
       buffer.putUint8(140);
       writeValue(buffer, value.encode());
-    } else if (value is PlatformCameraImageData) {
+    } else if (value is PlatformCameraState) {
       buffer.putUint8(141);
       writeValue(buffer, value.encode());
-    } else if (value is PlatformCameraImagePlane) {
+    } else if (value is PlatformCameraImageData) {
       buffer.putUint8(142);
       writeValue(buffer, value.encode());
-    } else if (value is PlatformMediaSettings) {
+    } else if (value is PlatformCameraImagePlane) {
       buffer.putUint8(143);
       writeValue(buffer, value.encode());
-    } else if (value is PlatformPoint) {
+    } else if (value is PlatformMediaSettings) {
       buffer.putUint8(144);
       writeValue(buffer, value.encode());
-    } else if (value is PlatformSize) {
+    } else if (value is PlatformPoint) {
       buffer.putUint8(145);
+      writeValue(buffer, value.encode());
+    } else if (value is PlatformSize) {
+      buffer.putUint8(146);
+      writeValue(buffer, value.encode());
+    } else if (value is PlatformEffectsValues) {
+      buffer.putUint8(147);
+      writeValue(buffer, value.encode());
+    } else if (value is PlatformCapturedPicturePaths) {
+      buffer.putUint8(148);
+      writeValue(buffer, value.encode());
+    } else if (value is PlatformWhiteBalanceValues) {
+      buffer.putUint8(149);
       writeValue(buffer, value.encode());
     } else {
       super.writeValue(buffer, value);
@@ -640,48 +933,57 @@ class _PigeonCodec extends StandardMessageCodec {
     switch (type) {
       case 129:
         final value = readValue(buffer) as int?;
-        return value == null ? null : PlatformCameraLensDirection.values[value];
+        return value == null ? null : PlatformGrainBehavior.values[value];
       case 130:
         final value = readValue(buffer) as int?;
-        return value == null ? null : PlatformCameraLensType.values[value];
+        return value == null ? null : PlatformCameraLensDirection.values[value];
       case 131:
         final value = readValue(buffer) as int?;
-        return value == null ? null : PlatformDeviceOrientation.values[value];
+        return value == null ? null : PlatformCameraLensType.values[value];
       case 132:
         final value = readValue(buffer) as int?;
-        return value == null ? null : PlatformExposureMode.values[value];
+        return value == null ? null : PlatformDeviceOrientation.values[value];
       case 133:
         final value = readValue(buffer) as int?;
-        return value == null ? null : PlatformFlashMode.values[value];
+        return value == null ? null : PlatformExposureMode.values[value];
       case 134:
         final value = readValue(buffer) as int?;
-        return value == null ? null : PlatformFocusMode.values[value];
+        return value == null ? null : PlatformFlashMode.values[value];
       case 135:
         final value = readValue(buffer) as int?;
-        return value == null ? null : PlatformImageFileFormat.values[value];
+        return value == null ? null : PlatformFocusMode.values[value];
       case 136:
         final value = readValue(buffer) as int?;
-        return value == null ? null : PlatformImageFormatGroup.values[value];
+        return value == null ? null : PlatformImageFileFormat.values[value];
       case 137:
         final value = readValue(buffer) as int?;
-        return value == null ? null : PlatformResolutionPreset.values[value];
+        return value == null ? null : PlatformImageFormatGroup.values[value];
       case 138:
         final value = readValue(buffer) as int?;
-        return value == null ? null : PlatformVideoStabilizationMode.values[value];
+        return value == null ? null : PlatformResolutionPreset.values[value];
       case 139:
-        return PlatformCameraDescription.decode(readValue(buffer)!);
+        final value = readValue(buffer) as int?;
+        return value == null ? null : PlatformVideoStabilizationMode.values[value];
       case 140:
-        return PlatformCameraState.decode(readValue(buffer)!);
+        return PlatformCameraDescription.decode(readValue(buffer)!);
       case 141:
-        return PlatformCameraImageData.decode(readValue(buffer)!);
+        return PlatformCameraState.decode(readValue(buffer)!);
       case 142:
-        return PlatformCameraImagePlane.decode(readValue(buffer)!);
+        return PlatformCameraImageData.decode(readValue(buffer)!);
       case 143:
-        return PlatformMediaSettings.decode(readValue(buffer)!);
+        return PlatformCameraImagePlane.decode(readValue(buffer)!);
       case 144:
-        return PlatformPoint.decode(readValue(buffer)!);
+        return PlatformMediaSettings.decode(readValue(buffer)!);
       case 145:
+        return PlatformPoint.decode(readValue(buffer)!);
+      case 146:
         return PlatformSize.decode(readValue(buffer)!);
+      case 147:
+        return PlatformEffectsValues.decode(readValue(buffer)!);
+      case 148:
+        return PlatformCapturedPicturePaths.decode(readValue(buffer)!);
+      case 149:
+        return PlatformWhiteBalanceValues.decode(readValue(buffer)!);
       default:
         return super.readValueOfType(type, buffer);
     }
@@ -726,6 +1028,9 @@ class CameraApi {
   }
 
   /// Create a new camera with the given settings, and returns its ID.
+  /// Every preview frame, recorded video frame, and captured photo is
+  /// rendered through the bundled Metal shader pipeline; when no effects or
+  /// crop are applied the pipeline is a pass-through.
   Future<int> create(String cameraName, PlatformMediaSettings settings) async {
     final pigeonVar_channelName =
         'dev.flutter.pigeon.camera_avfoundation.CameraApi.create$pigeonVar_messageChannelSuffix';
@@ -882,6 +1187,28 @@ class CameraApi {
     return pigeonVar_replyValue! as String;
   }
 
+  /// Takes a picture and saves it twice: the un-effected original (with the
+  /// configured `captureScale` crop preserved) and the shader-processed
+  /// version. Returns the paths to both files.
+  Future<PlatformCapturedPicturePaths> takePictureWithOriginal() async {
+    final pigeonVar_channelName =
+        'dev.flutter.pigeon.camera_avfoundation.CameraApi.takePictureWithOriginal$pigeonVar_messageChannelSuffix';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(null);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+
+    final Object? pigeonVar_replyValue = _extractReplyValueOrThrow(
+      pigeonVar_replyList,
+      pigeonVar_channelName,
+      isNullValid: false,
+    );
+    return pigeonVar_replyValue! as PlatformCapturedPicturePaths;
+  }
+
   /// Does any preprocessing necessary before beginning to record video.
   Future<void> prepareForVideoRecording() async {
     final pigeonVar_channelName =
@@ -976,6 +1303,26 @@ class CameraApi {
     final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
 
     _extractReplyValueOrThrow(pigeonVar_replyList, pigeonVar_channelName, isNullValid: true);
+  }
+
+  /// Returns the flash modes supported by the camera.
+  Future<List<PlatformFlashMode>> getSupportedFlashModes() async {
+    final pigeonVar_channelName =
+        'dev.flutter.pigeon.camera_avfoundation.CameraApi.getSupportedFlashModes$pigeonVar_messageChannelSuffix';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(null);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+
+    final Object? pigeonVar_replyValue = _extractReplyValueOrThrow(
+      pigeonVar_replyList,
+      pigeonVar_channelName,
+      isNullValid: false,
+    );
+    return (pigeonVar_replyValue! as List<Object?>).cast<PlatformFlashMode>();
   }
 
   /// Switches the camera to the given exposure mode.
@@ -1095,6 +1442,45 @@ class CameraApi {
     final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
 
     _extractReplyValueOrThrow(pigeonVar_replyList, pigeonVar_channelName, isNullValid: true);
+  }
+
+  /// Sets the white balance for the camera.
+  ///
+  /// Null enables automatic white balance; a non-null value locks the white
+  /// balance to the given temperature and tint.
+  Future<void> setWhiteBalance(PlatformWhiteBalanceValues? values) async {
+    final pigeonVar_channelName =
+        'dev.flutter.pigeon.camera_avfoundation.CameraApi.setWhiteBalance$pigeonVar_messageChannelSuffix';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[values]);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+
+    _extractReplyValueOrThrow(pigeonVar_replyList, pigeonVar_channelName, isNullValid: true);
+  }
+
+  /// Gets whether the camera can lock its white balance to a given temperature
+  /// and tint.
+  Future<bool> isWhiteBalanceSupported() async {
+    final pigeonVar_channelName =
+        'dev.flutter.pigeon.camera_avfoundation.CameraApi.isWhiteBalanceSupported$pigeonVar_messageChannelSuffix';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(null);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+
+    final Object? pigeonVar_replyValue = _extractReplyValueOrThrow(
+      pigeonVar_replyList,
+      pigeonVar_channelName,
+      isNullValid: false,
+    );
+    return pigeonVar_replyValue! as bool;
   }
 
   /// Returns the minimum zoom level supported by the camera.
@@ -1263,6 +1649,76 @@ class CameraApi {
 
     _extractReplyValueOrThrow(pigeonVar_replyList, pigeonVar_channelName, isNullValid: true);
   }
+
+  /// Applies visual effect parameters to the Metal shader pipeline.
+  /// Has no effect when no shader pipeline is active.
+  Future<void> setEffectsValues(PlatformEffectsValues values) async {
+    final pigeonVar_channelName =
+        'dev.flutter.pigeon.camera_avfoundation.CameraApi.setEffectsValues$pigeonVar_messageChannelSuffix';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[values]);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+
+    _extractReplyValueOrThrow(pigeonVar_replyList, pigeonVar_channelName, isNullValid: true);
+  }
+
+  /// Sets the center-crop aspect ratio (width/height) applied to preview,
+  /// photo, and video. Pass `null` to disable cropping. Has no effect when
+  /// no shader pipeline is active.
+  Future<void> setAspectRatio(double? aspectRatio) async {
+    final pigeonVar_channelName =
+        'dev.flutter.pigeon.camera_avfoundation.CameraApi.setAspectRatio$pigeonVar_messageChannelSuffix';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[aspectRatio]);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+
+    _extractReplyValueOrThrow(pigeonVar_replyList, pigeonVar_channelName, isNullValid: true);
+  }
+
+  /// Sets the capture scale (0.1–1.0) applied inside the aspect-ratio crop.
+  /// 1.0 means no extra crop. Values below 1.0 narrow the captured area;
+  /// the preview shows the full aspect-ratio crop with the area outside the
+  /// scaled rectangle darkened, while photo and video files contain only
+  /// the scaled rectangle.
+  Future<void> setCaptureScale(double scale) async {
+    final pigeonVar_channelName =
+        'dev.flutter.pigeon.camera_avfoundation.CameraApi.setCaptureScale$pigeonVar_messageChannelSuffix';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[scale]);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+
+    _extractReplyValueOrThrow(pigeonVar_replyList, pigeonVar_channelName, isNullValid: true);
+  }
+
+  /// Sets the corner radius of the captureScale rectangle in the preview.
+  /// The radius is in the range [0.0, 1.0], where 0.0 means square corners
+  /// and positive values round the corners of the darkened border.
+  /// Only affects the preview; saved photos and videos are unaffected.
+  Future<void> setCaptureCornerRadius(double radius) async {
+    final pigeonVar_channelName =
+        'dev.flutter.pigeon.camera_avfoundation.CameraApi.setCaptureCornerRadius$pigeonVar_messageChannelSuffix';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[radius]);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+
+    _extractReplyValueOrThrow(pigeonVar_replyList, pigeonVar_channelName, isNullValid: true);
+  }
 }
 
 /// Returns a broadcast [Stream] of events from the `imageDataStream` event channel.
@@ -1340,6 +1796,14 @@ abstract class CameraEventApi {
   /// handling a specific HostApi call, such as during streaming.
   void error(String message);
 
+  /// Called when the preview size changes (e.g., after an aspect ratio change).
+  void previewSizeChanged(PlatformSize size);
+
+  /// Called while the camera is in auto white balance mode with the
+  /// temperature (Kelvin) and tint values currently selected by the
+  /// hardware. iOS only.
+  void autoWhiteBalanceChanged(double temperature, double tint);
+
   static void setUp(
     CameraEventApi? api, {
     BinaryMessenger? binaryMessenger,
@@ -1385,6 +1849,57 @@ abstract class CameraEventApi {
           final String arg_message = args[0]! as String;
           try {
             api.error(arg_message);
+            return wrapResponse(empty: true);
+          } on PlatformException catch (e) {
+            return wrapResponse(error: e);
+          } catch (e) {
+            return wrapResponse(
+              error: PlatformException(code: 'error', message: e.toString()),
+            );
+          }
+        });
+      }
+    }
+    {
+      final pigeonVar_channel = BasicMessageChannel<Object?>(
+        'dev.flutter.pigeon.camera_avfoundation.CameraEventApi.previewSizeChanged$messageChannelSuffix',
+        pigeonChannelCodec,
+        binaryMessenger: binaryMessenger,
+      );
+      if (api == null) {
+        pigeonVar_channel.setMessageHandler(null);
+      } else {
+        pigeonVar_channel.setMessageHandler((Object? message) async {
+          final List<Object?> args = message! as List<Object?>;
+          final PlatformSize arg_size = args[0]! as PlatformSize;
+          try {
+            api.previewSizeChanged(arg_size);
+            return wrapResponse(empty: true);
+          } on PlatformException catch (e) {
+            return wrapResponse(error: e);
+          } catch (e) {
+            return wrapResponse(
+              error: PlatformException(code: 'error', message: e.toString()),
+            );
+          }
+        });
+      }
+    }
+    {
+      final pigeonVar_channel = BasicMessageChannel<Object?>(
+        'dev.flutter.pigeon.camera_avfoundation.CameraEventApi.autoWhiteBalanceChanged$messageChannelSuffix',
+        pigeonChannelCodec,
+        binaryMessenger: binaryMessenger,
+      );
+      if (api == null) {
+        pigeonVar_channel.setMessageHandler(null);
+      } else {
+        pigeonVar_channel.setMessageHandler((Object? message) async {
+          final List<Object?> args = message! as List<Object?>;
+          final double arg_temperature = args[0]! as double;
+          final double arg_tint = args[1]! as double;
+          try {
+            api.autoWhiteBalanceChanged(arg_temperature, arg_tint);
             return wrapResponse(empty: true);
           } on PlatformException catch (e) {
             return wrapResponse(error: e);

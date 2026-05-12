@@ -24,6 +24,22 @@ func getAVCaptureFlashMode(for mode: PlatformFlashMode) -> AVCaptureDevice.Flash
   }
 }
 
+/// Gets PlatformFlashMode from AVCaptureDevice.FlashMode.
+/// mode - the AVFoundation flash mode.
+func getPlatformFlashMode(for mode: AVCaptureDevice.FlashMode) -> PlatformFlashMode {
+  switch mode {
+  case .off:
+    return .off
+  case .auto:
+    return .auto
+  case .on:
+    return .always
+  @unknown default:
+    assertionFailure("Unknown flash mode")
+    return .off
+  }
+}
+
 /// Gets UIDeviceOrientation from its Pigeon representation.
 /// orientation - the Pigeon device orientation.
 func getUIDeviceOrientation(

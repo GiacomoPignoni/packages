@@ -120,15 +120,15 @@ final class CameraSetFocusModeTests: XCTestCase {
   }
 
   func testSetFocusPointWithResult_SetsFocusPointOfInterest() {
-    let (camera, mockDevice, mockDeviceOrientationProvider) = createCamera()
-    // UI is currently in landscape left orientation.
-    mockDeviceOrientationProvider.orientationStub = { .landscapeLeft }
+    let (camera, mockDevice, _) = createCamera()
     // Focus point of interest is supported.
     mockDevice.isFocusPointOfInterestSupported = true
 
+    // Preview space maps into sensor space by a fixed 90° ccw rotation, since the preview is
+    // pinned to portrait.
     var setFocusPointOfInterestCalled = false
     mockDevice.setFocusPointOfInterestStub = { point in
-      if point == CGPoint(x: 1.0, y: 1.0) {
+      if point == CGPoint(x: 1.0, y: 0.0) {
         setFocusPointOfInterestCalled = true
       }
     }

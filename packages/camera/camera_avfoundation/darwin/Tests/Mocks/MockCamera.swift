@@ -23,18 +23,32 @@ final class MockCamera: NSObject, Camera {
   var resumeVideoRecordingStub: (() -> Void)?
   var stopVideoRecordingStub: ((@escaping (Result<String, any Error>) -> Void) -> Void)?
   var captureToFileStub: ((@escaping (Result<String, any Error>) -> Void) -> Void)?
+  var captureToFilesWithOriginalStub:
+    (
+      (
+        @escaping (Result<(originalPath: String, processedPath: String), any Error>) -> Void
+      ) -> Void
+    )?
   var setDeviceOrientationStub: ((UIDeviceOrientation) -> Void)?
   var lockCaptureOrientationStub: ((PlatformDeviceOrientation) -> Void)?
   var unlockCaptureOrientationStub: (() -> Void)?
   var setImageFileFormatStub: ((PlatformImageFileFormat) -> Void)?
   var setJpegImageQualityStub: ((Int64) -> Void)?
+  var setEffectsValuesStub: ((PlatformEffectsValues) -> Void)?
+  var setAspectRatioStub: ((Double?) -> Void)?
+  var setCaptureScaleStub: ((Double) -> Void)?
+  var setCaptureCornerRadiusStub: ((Double) -> Void)?
   var setExposureModeStub: ((PlatformExposureMode) -> Void)?
   var setExposureOffsetStub: ((Double) -> Void)?
   var setExposurePointStub: ((PlatformPoint?, @escaping (Result<Void, any Error>) -> Void) -> Void)?
   var setFocusModeStub: ((PlatformFocusMode) -> Void)?
   var setFocusPointStub: ((PlatformPoint?, @escaping (Result<Void, any Error>) -> Void) -> Void)?
+  var setWhiteBalanceStub:
+    ((PlatformWhiteBalanceValues?, @escaping (Result<Void, any Error>) -> Void) -> Void)?
+  var getIsWhiteBalanceSupportedStub: (() -> Bool)?
   var setZoomLevelStub: ((CGFloat, @escaping (Result<Void, any Error>) -> Void) -> Void)?
   var setFlashModeStub: ((PlatformFlashMode, @escaping (Result<Void, any Error>) -> Void) -> Void)?
+  var getSupportedFlashModesStub: (() -> [PlatformFlashMode])?
   var pausePreviewStub: (() -> Void)?
   var resumePreviewStub: (() -> Void)?
   var setDescriptionWhileRecordingStub:
@@ -86,6 +100,10 @@ final class MockCamera: NSObject, Camera {
     return getMaximumExposureOffsetStub?() ?? 0
   }
 
+  var supportedFlashModes: [PlatformFlashMode] {
+    return getSupportedFlashModesStub?() ?? []
+  }
+
   var minimumAvailableZoomFactor: CGFloat {
     return getMinimumAvailableZoomFactorStub?() ?? 0
   }
@@ -133,6 +151,14 @@ final class MockCamera: NSObject, Camera {
     captureToFileStub?(completion)
   }
 
+  func captureToFilesWithOriginal(
+    completion: @escaping (
+      Result<(originalPath: String, processedPath: String), any Error>
+    ) -> Void
+  ) {
+    captureToFilesWithOriginalStub?(completion)
+  }
+
   func lockCaptureOrientation(_ orientation: PlatformDeviceOrientation) {
     lockCaptureOrientationStub?(orientation)
   }
@@ -147,6 +173,22 @@ final class MockCamera: NSObject, Camera {
 
   func setJpegImageQuality(_ quality: Int64) {
     setJpegImageQualityStub?(quality)
+  }
+
+  func setEffectsValues(_ values: PlatformEffectsValues) {
+    setEffectsValuesStub?(values)
+  }
+
+  func setAspectRatio(_ aspectRatio: Double?) {
+    setAspectRatioStub?(aspectRatio)
+  }
+
+  func setCaptureScale(_ scale: Double) {
+    setCaptureScaleStub?(scale)
+  }
+
+  func setCaptureCornerRadius(_ radius: Double) {
+    setCaptureCornerRadiusStub?(radius)
   }
 
   func setExposureMode(_ mode: PlatformExposureMode) {
@@ -171,6 +213,21 @@ final class MockCamera: NSObject, Camera {
     _ point: PlatformPoint?, completion: @escaping (Result<Void, any Error>) -> Void
   ) {
     setFocusPointStub?(point, completion)
+  }
+
+  func setWhiteBalance(
+    _ values: PlatformWhiteBalanceValues?,
+    withCompletion completion: @escaping (Result<Void, any Error>) -> Void
+  ) {
+    if let stub = setWhiteBalanceStub {
+      stub(values, completion)
+    } else {
+      completion(.success(()))
+    }
+  }
+
+  func isWhiteBalanceSupported() -> Bool {
+    return getIsWhiteBalanceSupportedStub?() ?? false
   }
 
   func setZoomLevel(

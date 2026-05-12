@@ -25,4 +25,15 @@ enum ResolutionPreset {
 
   /// The highest resolution available.
   max,
+
+  /// Optimized for still-image capture. On iOS this maps to
+  /// `AVCaptureSession.Preset.photo`, which configures the sensor to deliver
+  /// the largest still-image resolution it supports (e.g. 24MP / 48MP on
+  /// recent iPhones) at the cost of a reduced video stream (~1440p on most
+  /// devices). Use this when photo quality matters more than video
+  /// resolution; prefer [max] or [ultraHigh] for video-first applications.
+  ///
+  /// On platforms that do not have a photo-specific preset, this falls back
+  /// to the same behaviour as [max].
+  photo,
 }

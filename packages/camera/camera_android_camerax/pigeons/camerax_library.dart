@@ -241,6 +241,9 @@ abstract class CameraInfo {
 
   /// A LiveData of ZoomState.
   LiveData getZoomState();
+
+  /// Whether this camera has a flash unit.
+  bool hasFlashUnit();
 }
 
 /// Direction of lens of a camera.
@@ -304,7 +307,49 @@ abstract class ProcessCameraProvider {
   List<CameraInfo> getAvailableCameraInfos();
 
   /// Binds the collection of `UseCase` to a `LifecycleOwner`.
-  Camera bindToLifecycle(CameraSelector cameraSelector, List<UseCase> useCases);
+  ///
+  /// The `effects` are applied to every use case bound to the camera, not just
+  /// the ones passed in this call: CameraX stores them on the camera adapter
+  /// rather than on the `UseCaseGroup`. Callers that bind incrementally must
+  /// therefore pass the same list every time, or a later bind will clear the
+  /// effects set by an earlier one.
+  ///
+  /// A non-null `viewPort` center-crops every bound use case to its aspect
+  /// ratio. That is the only way to make CameraX size the preview surface and
+  /// the video encoder's surface to a crop, rather than resampling a cropped
+  /// frame into a surface of some other shape.
+  Camera bindToLifecycle(
+    CameraSelector cameraSelector,
+    List<UseCase> useCases,
+    List<CameraEffect> effects,
+    ViewPort? viewPort,
+  );
+
+  /// The frame rate ranges the camera can actually deliver for the
+  /// configuration described by `useCases`, `effects` and `viewPort`.
+  ///
+  /// The stream configuration decides the answer, not the camera alone: a
+  /// combination that runs at 60 fps at 720p routinely tops out at 30 at 1080p,
+  /// and an effect adds a surface of its own to the session. Asking with the
+  /// exact group that is about to be bound is the only way to find out before
+  /// the fact.
+  ///
+  /// A frame rate is otherwise applied by writing
+  /// `CONTROL_AE_TARGET_FPS_RANGE` straight into the repeating request through
+  /// Camera2 interop, which CameraX neither sees nor validates. Forcing a range
+  /// the configuration cannot satisfy leaves a session that configures, reports
+  /// itself active, and never delivers a frame.
+  ///
+  /// Falls back to the camera's device-wide ranges when the backend cannot
+  /// answer for a specific configuration, and returns an empty list when it
+  /// cannot answer at all — in which case the caller should apply no range and
+  /// leave the choice to CameraX.
+  List<CameraIntegerRange> getSupportedFrameRateRanges(
+    CameraSelector cameraSelector,
+    List<UseCase> useCases,
+    List<CameraEffect> effects,
+    ViewPort? viewPort,
+  );
 
   /// Returns true if the `UseCase` is bound to a lifecycle.
   bool isBound(UseCase useCase);
@@ -381,7 +426,16 @@ abstract class DeviceOrientationManager {
 /// See https://developer.android.com/reference/kotlin/androidx/camera/core/Preview.
 @ProxyApi(kotlinOptions: KotlinProxyApiOptions(fullClassName: 'androidx.camera.core.Preview'))
 abstract class Preview extends UseCase {
-  Preview(int? targetRotation, CameraIntegerRange? targetFpsRange);
+  /// Creates a `Preview`.
+  ///
+  /// When `whiteBalanceManager` is non-null its Camera2 session capture
+  /// callback is attached to the preview's capture requests, which is the only
+  /// place the auto white balance gains chosen by the hardware are reported.
+  Preview(
+    int? targetRotation,
+    CameraIntegerRange? targetFpsRange,
+    WhiteBalanceManager? whiteBalanceManager,
+  );
 
   late final ResolutionSelector? resolutionSelector;
 
@@ -543,6 +597,19 @@ abstract class ImageCapture extends UseCase {
   /// Captures a new still image for in memory access.
   @async
   String takePicture(SystemServicesManager systemServicesManager);
+
+  /// Captures a still image and renders it through the effects pipeline.
+  ///
+  /// The capture is taken in memory and handed straight to `effectsManager`,
+  /// so the frame never crosses the platform channel. When `includeOriginal`
+  /// is true the un-effected frame is saved as well, from the same shutter
+  /// event.
+  @async
+  CapturedPicturePaths takePictureWithEffects(
+    SystemServicesManager systemServicesManager,
+    CameraEffectsManager effectsManager,
+    bool includeOriginal,
+  );
 
   /// Sets the desired rotation of the output image.
   void setTargetRotation(int rotation);
@@ -1164,6 +1231,14 @@ abstract class Camera2CameraInfo {
 
   /// Gets a camera characteristic value.
   Object? getCameraCharacteristic(CameraCharacteristicsKey key);
+
+  /// The approximate 35mm-equivalent focal length of this lens, in
+  /// millimetres, or null when the device does not report the focal length
+  /// and physical sensor size needed to compute it.
+  ///
+  /// Computed natively rather than from the raw characteristics because
+  /// `SizeF` and `float[]` have no Pigeon representation.
+  double? getEquivalentFocalLength();
 }
 
 /// A factory to create a MeteringPoint.
@@ -1195,4 +1270,233 @@ abstract class DisplayOrientedMeteringPointFactory extends MeteringPointFactory 
   /// into a MeteringPoint based on the current display's rotation and
   /// CameraInfo.
   DisplayOrientedMeteringPointFactory(CameraInfo cameraInfo, double width, double height);
+}
+
+/// Controls where grain is visible across the tonal range.
+///
+/// Pigeon version of `GrainBehavior`.
+enum PlatformGrainBehavior {
+  /// Grain is applied uniformly (additive) across all tones.
+  overlay,
+
+  /// Grain is scaled by the inverse luminance of each pixel, so it fades out
+  /// on bright areas and is most visible in shadows.
+  darkOnly,
+}
+
+/// Visual effect parameters forwarded to the OpenGL ES shader pipeline.
+///
+/// Field-for-field equivalent of `PlatformEffectsValues` in
+/// `camera_avfoundation`; the two platforms must stay in sync so the same
+/// `PlatformEffectsValues` renders the same on both.
+///
+/// A `@ProxyApi` rather than a data class because this file is a ProxyApi
+/// file, and Pigeon does not allow the two to be mixed.
+@ProxyApi()
+abstract class PlatformEffectsValues {
+  PlatformEffectsValues();
+
+  /// Radial darkening toward the frame edges (0.0 = off, 1.0 = full vignette).
+  late double vignetteIntensity;
+
+  /// Absolute file path to the grain/noise source image.
+  /// Null disables the grain effect.
+  late String? grainNoisePath;
+
+  /// Opacity of the grain overlay (0.0 = off, 1.0 = fully applied).
+  late double grainOpacity;
+
+  /// Resolution-independent grain tile size (>= 0.0).
+  /// 1.0 = grain image spans the frame's shorter side; smaller values tile
+  /// more finely; bigger values tile more coarsely.
+  late double grainSize;
+
+  /// Controls where grain is visible across the tonal range.
+  late PlatformGrainBehavior grainBehavior;
+
+  /// Absolute file path to a 3D LUT color-grade image: a 512x512 PNG storing
+  /// a 64x64x64 cube as an 8x8 row-major grid of 64x64 tiles (tile index =
+  /// blue slice; within a tile x = red, y = green top-to-bottom).
+  /// Null disables the LUT color filter.
+  late String? lutFilePath;
+
+  /// Intensity of the LUT color filter (0.0 = no effect, 1.0 = full LUT).
+  /// Ignored when [lutFilePath] is null.
+  late double lutIntensity;
+
+  /// Simulates a low-resolution sensor (0.0 = off, 1.0 = full strength).
+  /// Adds a soft Gaussian blur and desaturation.
+  late double resolution;
+
+  /// Chromatic aberration strength (0.0 = off, 1.0 = full strength).
+  late double colorShift;
+
+  /// Dreamy mist / Orton-style soft glow (0.0 = off, 1.0 = full strength).
+  late double mist;
+
+  /// Radial chromatic motion blur (0.0 = off, 1.0 = full strength).
+  late double prism;
+
+  /// Cheap clip-on fisheye lens simulation (true = on).
+  late bool cheapFisheye;
+
+  /// Highlight bloom / light-bleed glow (0.0 = off, 1.0 = full strength).
+  late double bloom;
+
+  /// Diffusion / soft-focus filter (0.0 = off, 1.0 = full strength).
+  late double diffusion;
+}
+
+/// Paths to the files produced by `ImageCapture.takePictureWithEffects`.
+@ProxyApi()
+abstract class CapturedPicturePaths {
+  /// File path of the un-effected original, or null when the capture did not
+  /// request one.
+  ///
+  /// The configured aspect ratio and capture scale crop is preserved, but no
+  /// shader effect is applied.
+  late final String? originalPath;
+
+  /// File path of the shader-processed photo.
+  late final String processedPath;
+}
+
+/// An effect applied to the frames flowing through one or more use cases.
+///
+/// See https://developer.android.com/reference/androidx/camera/core/CameraEffect.
+@ProxyApi(kotlinOptions: KotlinProxyApiOptions(fullClassName: 'androidx.camera.core.CameraEffect'))
+abstract class CameraEffect {}
+
+/// The rectangle every use case in a `UseCaseGroup` is center-cropped to.
+///
+/// `aspectRatioWidth` : `aspectRatioHeight` is the wanted shape, expressed in
+/// the orientation named by `rotation` (a `Surface` rotation constant). CameraX
+/// maps it into sensor coordinates itself, so the ratio is the one the user
+/// sees rather than the one the buffer happens to arrive in.
+///
+/// See https://developer.android.com/reference/androidx/camera/core/ViewPort.
+@ProxyApi(kotlinOptions: KotlinProxyApiOptions(fullClassName: 'androidx.camera.core.ViewPort'))
+abstract class ViewPort {
+  ViewPort(int aspectRatioWidth, int aspectRatioHeight, int rotation);
+}
+
+/// Owns the OpenGL ES pipeline that renders the camera frames.
+///
+/// A single GL context backs the preview, the recorded video and the still
+/// capture path, so all three see the same effects, crop and capture scale.
+@ProxyApi()
+abstract class CameraEffectsManager {
+  /// Creates a manager with an optional initial center-crop aspect ratio
+  /// (width/height); null means no crop.
+  CameraEffectsManager(double? aspectRatio);
+
+  /// Re-emits [onPreviewSizeChanged] for the current preview surface, or does
+  /// nothing if there is not one yet.
+  ///
+  /// Used to make the size land *after* `CameraInitializedEvent`, which carries
+  /// the uncropped resolution and would otherwise overwrite it.
+  void notifyPreviewSize();
+
+  /// Emitted when the size of the processed preview output changes, either
+  /// because the camera picked a new resolution or because the aspect ratio
+  /// changed.
+  late void Function(int width, int height) onPreviewSizeChanged;
+
+  /// Emitted when the pipeline loses the surface it was drawing the preview
+  /// into and cannot get it back on its own.
+  ///
+  /// A consumer can abandon a surface at any time — a lens switch and a
+  /// backgrounded app both do it — and the pipeline then has nothing to draw
+  /// into. Nothing in CameraX notices, because the camera is still running and
+  /// still delivering frames; they simply stop reaching the screen, which looks
+  /// exactly like a frozen preview. Re-binding the preview is what asks CameraX
+  /// for a new surface, and only the Dart side can do that.
+  late void Function() onPreviewOutputLost;
+
+  /// The `CameraEffect` to bind alongside the camera's use cases.
+  ///
+  /// Targets preview and video capture; still capture is rendered separately
+  /// by `ImageCapture.takePictureWithEffects` so that an un-effected original
+  /// can be produced from the same shutter event.
+  CameraEffect getCameraEffect();
+
+  /// Applies visual effect parameters to the pipeline.
+  void setEffectsValues(PlatformEffectsValues values);
+
+  /// Sets the center-crop aspect ratio (width/height), or null to disable
+  /// cropping.
+  void setAspectRatio(double? aspectRatio);
+
+  /// Sets the capture scale (0.1-1.0) applied inside the aspect-ratio crop.
+  void setCaptureScale(double scale);
+
+  /// Sets the corner radius (0.0-1.0) of the capture-scale rectangle drawn in
+  /// the preview.
+  void setCaptureCornerRadius(double radius);
+
+  /// Detaches the preview and encoder outputs, keeping the pipeline itself.
+  ///
+  /// What a camera's `dispose` calls. One manager is deliberately shared by
+  /// every camera the plugin opens: CameraX stores bound effects on a cached
+  /// per-camera adapter and never clears them, so a manager released with a
+  /// camera would leave that adapter pointing at a dead pipeline, and the next
+  /// bind that picked it up would render nothing.
+  void detachOutputs();
+
+  /// Releases the GL context and every texture it owns.
+  ///
+  /// Not called per camera; the plugin does it natively when it detaches from
+  /// the engine. See [detachOutputs].
+  void release();
+}
+
+/// Manages the white balance of a camera.
+///
+/// Locking the white balance goes through Camera2 interop, because CameraX
+/// exposes no white balance control of its own.
+@ProxyApi()
+abstract class WhiteBalanceManager {
+  WhiteBalanceManager();
+
+  /// Emitted while the camera is in auto white balance mode, with the
+  /// temperature (Kelvin) and tint the hardware has settled on.
+  ///
+  /// Devices that do not report `COLOR_CORRECTION_GAINS` in their capture
+  /// results simply never emit.
+  late void Function(double temperature, double tint) onAutoWhiteBalanceChanged;
+
+  /// Whether `cameraInfo`'s camera can have its white balance locked to a
+  /// chosen temperature and tint.
+  ///
+  /// Reads the camera's Camera2 characteristics; involves no capture request.
+  bool isWhiteBalanceSupported(Camera2CameraInfo cameraInfo);
+
+  /// Forgets the requested white balance and the sensor calibration cached for
+  /// the camera this manager was last attached to.
+  ///
+  /// This manager outlives any one camera, so call it when a camera is created
+  /// to keep a lock set on a previous one from being re-applied by
+  /// `attachToCamera`.
+  void reset();
+
+  /// Locks the white balance to `temperature` Kelvin and `tint`, or returns
+  /// the camera to auto white balance when both are null.
+  ///
+  /// Throws when the camera does not support the requested mode.
+  @async
+  void setWhiteBalance(
+    Camera2CameraControl cameraControl,
+    Camera2CameraInfo cameraInfo,
+    double? temperature,
+    double? tint,
+  );
+
+  /// Re-derives the sensor calibration for `cameraInfo` and re-sends the last
+  /// requested white balance, if any, to the newly bound camera.
+  ///
+  /// Camera2 capture request options live on the `Camera` instance, which every
+  /// `bindToLifecycle` replaces, so call this whenever the camera is rebound.
+  /// Does nothing when the white balance has never been set.
+  @async
+  void attachToCamera(Camera2CameraControl cameraControl, Camera2CameraInfo cameraInfo);
 }

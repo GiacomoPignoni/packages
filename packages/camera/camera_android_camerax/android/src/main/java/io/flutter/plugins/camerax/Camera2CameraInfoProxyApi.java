@@ -6,6 +6,7 @@ package io.flutter.plugins.camerax;
 
 import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CameraMetadata;
+import android.util.SizeF;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.annotation.OptIn;
@@ -64,4 +65,38 @@ class Camera2CameraInfoProxyApi extends PigeonApiCamera2CameraInfo {
     }
     return result;
   }
+
+  /**
+   * The 35mm-equivalent focal length in millimetres, or null when the device does not report both
+   * characteristics it is derived from.
+   *
+   * <p>Uses the diagonal of a 35mm frame (sqrt(36^2 + 24^2) ~= 43.2666mm) over the diagonal of this
+   * sensor to get the crop factor, which is the same reference AVFoundation's diagonal
+   * field-of-view calculation resolves to. Computed here rather than in Dart because {@code SizeF}
+   * and {@code float[]} have no Pigeon representation.
+   */
+  @Nullable
+  @Override
+  public Double getEquivalentFocalLength(Camera2CameraInfo pigeonInstance) {
+    final float[] focalLengths =
+        pigeonInstance.getCameraCharacteristic(
+            CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS);
+    final SizeF sensorSize =
+        pigeonInstance.getCameraCharacteristic(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE);
+    if (focalLengths == null || focalLengths.length == 0 || sensorSize == null) {
+      return null;
+    }
+
+    final double sensorDiagonal =
+        Math.hypot((double) sensorSize.getWidth(), (double) sensorSize.getHeight());
+    if (!(sensorDiagonal > 0d) || !(focalLengths[0] > 0f)) {
+      return null;
+    }
+    // The first entry is the lens's native focal length; a zoom lens would list more, but every
+    // camera CameraX exposes as a separate CameraInfo is a fixed lens.
+    return focalLengths[0] * (FULL_FRAME_DIAGONAL_MM / sensorDiagonal);
+  }
+
+  /** Diagonal of a 35mm frame in millimetres, matching the constant AVFoundation resolves to. */
+  private static final double FULL_FRAME_DIAGONAL_MM = 43.2666d;
 }

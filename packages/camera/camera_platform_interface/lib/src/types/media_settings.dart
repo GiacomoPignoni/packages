@@ -19,6 +19,7 @@ class MediaSettings {
     this.videoBitrate,
     this.audioBitrate,
     this.enableAudio = false,
+    this.aspectRatio,
   }) : assert(fps == null || fps > 0, 'fps must be null or greater than zero'),
        assert(
          videoBitrate == null || videoBitrate > 0,
@@ -44,6 +45,20 @@ class MediaSettings {
   /// Controls audio presence in recorded video.
   final bool enableAudio;
 
+  /// Aspect ratio (width/height) applied as a center-crop to preview, photo,
+  /// and video.
+  ///
+  /// Carried here rather than only through `setAspectRatio` so the crop is in
+  /// place before the camera starts producing frames, instead of being applied
+  /// to one that is already running.
+  ///
+  /// `null` names no ratio, which leaves whichever crop is already in effect
+  /// alone — a camera rebuilt to change [resolutionPreset] keeps the one the
+  /// last camera had, as it keeps every other setting the platform's render
+  /// pipeline holds. Call `setAspectRatio(null)` to actually clear a crop;
+  /// with none ever set, no ratio means no crop.
+  final double? aspectRatio;
+
   @override
   bool operator ==(Object other) {
     if (identical(other, this)) {
@@ -57,11 +72,13 @@ class MediaSettings {
         fps == other.fps &&
         videoBitrate == other.videoBitrate &&
         audioBitrate == other.audioBitrate &&
-        enableAudio == other.enableAudio;
+        enableAudio == other.enableAudio &&
+        aspectRatio == other.aspectRatio;
   }
 
   @override
-  int get hashCode => Object.hash(resolutionPreset, fps, videoBitrate, audioBitrate, enableAudio);
+  int get hashCode =>
+      Object.hash(resolutionPreset, fps, videoBitrate, audioBitrate, enableAudio, aspectRatio);
 
   @override
   String toString() {
@@ -70,6 +87,7 @@ class MediaSettings {
         'fps: $fps, '
         'videoBitrate: $videoBitrate, '
         'audioBitrate: $audioBitrate, '
-        'enableAudio: $enableAudio}';
+        'enableAudio: $enableAudio, '
+        'aspectRatio: $aspectRatio}';
   }
 }

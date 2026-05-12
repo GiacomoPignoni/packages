@@ -42,6 +42,7 @@ class CameraDescription {
     required this.lensDirection,
     required this.sensorOrientation,
     this.lensType = CameraLensType.unknown,
+    this.equivalentFocalLength,
   });
 
   /// The name of the camera device.
@@ -62,6 +63,17 @@ class CameraDescription {
   /// The type of lens the camera has.
   final CameraLensType lensType;
 
+  /// The approximate 35mm-equivalent focal length of the lens, in millimetres.
+  ///
+  /// Derived from the lens's current active-format diagonal field of view, so
+  /// the value reflects a snapshot of the device at discovery time and may
+  /// differ between formats of the same physical lens. For that reason it is
+  /// **excluded from `==` and `hashCode`** — two descriptions of the same
+  /// camera at different active formats still compare equal.
+  ///
+  /// Only available on iOS (AVFoundation). `null` on other platforms.
+  final double? equivalentFocalLength;
+
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
@@ -77,6 +89,6 @@ class CameraDescription {
   @override
   String toString() {
     return '${objectRuntimeType(this, 'CameraDescription')}('
-        '$name, $lensDirection, $sensorOrientation, $lensType)';
+        '$name, $lensDirection, $sensorOrientation, $lensType, $equivalentFocalLength)';
   }
 }

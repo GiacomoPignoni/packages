@@ -7,12 +7,12 @@ import 'dart:math' show Point;
 
 import 'package:async/async.dart';
 import 'package:camera_platform_interface/camera_platform_interface.dart';
-import 'package:flutter/foundation.dart' show Uint8List;
+import 'package:flutter/foundation.dart' show Uint8List, debugPrint;
 import 'package:flutter/services.dart' show DeviceOrientation, PlatformException;
 import 'package:flutter/widgets.dart' show Texture, Widget, visibleForTesting;
 import 'package:stream_transform/stream_transform.dart';
 import 'camerax_library.dart';
-import 'rotated_preview_delegate.dart';
+import 'surface_texture_rotated_preview.dart';
 
 /// The Android implementation of [CameraPlatform] that uses the CameraX library.
 class AndroidCameraCameraX extends CameraPlatform {
@@ -73,6 +73,80 @@ class AndroidCameraCameraX extends CameraPlatform {
   late final SystemServicesManager systemServicesManager = SystemServicesManager(
     onCameraError: (_, String errorDescription) {
       cameraErrorStreamController.add(errorDescription);
+    },
+  );
+
+  /// Renders the camera frames through the OpenGL effects pipeline.
+  ///
+  /// Created by the first [createCameraWithSettings] and then reused by every
+  /// camera afterwards; [dispose] detaches its outputs but does not release it.
+  /// Null only before the first camera has ever been created, which is what
+  /// keeps [setEffectsValues] and friends from standing up a GL context for a
+  /// plugin that has not been asked for a camera yet.
+  ///
+  /// It has to be shared, not per camera. CameraX keeps a `CameraUseCaseAdapter`
+  /// per camera id and stores the effects bound to it there; unbinding removes
+  /// the use cases but never the effects. A manager released along with its
+  /// camera therefore leaves every adapter it was ever bound to holding an
+  /// effect whose GL context is gone, and the next bind that picks one up gets
+  /// a processor that drops every frame — the preview freezes after a frame or
+  /// two, and only starts again when something rebinds with a live effect.
+  @visibleForTesting
+  CameraEffectsManager? effectsManager;
+
+  /// The [CameraEffect] owned by [effectsManager].
+  ///
+  /// Cached because it has to be passed to *every* [ProcessCameraProvider.bindToLifecycle]
+  /// call: CameraX stores effects on the camera adapter, so a later bind that
+  /// omitted them would clear the ones an earlier bind set.
+  @visibleForTesting
+  CameraEffect? cameraEffect;
+
+  List<CameraEffect> get _cameraEffects =>
+      cameraEffect == null ? const <CameraEffect>[] : <CameraEffect>[cameraEffect!];
+
+  /// The center-crop aspect ratio currently in force, or null for no crop.
+  double? _aspectRatio;
+
+  /// The [ViewPort] [_aspectRatio] asks for, rebuilt by [_updateViewPort].
+  ///
+  /// Every bind passes it. A `ViewPort` belongs to the `UseCaseGroup` handed to
+  /// [ProcessCameraProvider.bindToLifecycle], so CameraX only reads it there —
+  /// which is also why changing the crop of a running camera means re-binding.
+  ///
+  /// This, rather than a crop inside the shader, is what gives the recorded
+  /// video the requested shape: CameraX sizes the preview surface *and* the
+  /// encoder's input surface to the view port, so nothing has to be resampled
+  /// into a surface of a different shape afterwards.
+  ViewPort? _viewPort;
+
+  /// A [setAspectRatio] call deferred until the current recording stops.
+  ///
+  /// A type of its own because `null` is itself a valid ratio, so a plain
+  /// `double?` cannot tell "nothing pending" from "pending: clear the crop".
+  /// `DefaultCamera.pendingAspectRatio` defers for the same reason.
+  _PendingAspectRatio? _pendingAspectRatio;
+
+  /// Denominator used to turn the aspect ratio into the `Rational` a [ViewPort]
+  /// takes.
+  static const int _viewPortRatioDenominator = 1000;
+
+  /// Counts [setExposureOffset] calls, so a cancelled one can be attributed.
+  ///
+  /// CameraX cancels a pending `setExposureCompensationIndex` as soon as a newer
+  /// one is submitted, and reports that with the same `OperationCanceledException`
+  /// it uses for a camera that closed underneath the request. Comparing the count
+  /// a call was issued at against the latest one tells a superseded request — a
+  /// slider drag makes a stream of them — apart from a genuine failure.
+  int _exposureOffsetRequests = 0;
+
+  /// Manages the white balance of the camera and reports what auto white
+  /// balance settles on.
+  late final WhiteBalanceManager whiteBalanceManager = WhiteBalanceManager(
+    onAutoWhiteBalanceChanged: (_, double temperature, double tint) {
+      cameraEventStreamController.add(
+        CameraAutoWhiteBalanceChangedEvent(_flutterSurfaceTextureId, temperature, tint),
+      );
     },
   );
 
@@ -254,10 +328,6 @@ class AndroidCameraCameraX extends CameraPlatform {
   @visibleForTesting
   late double sensorOrientationDegrees;
 
-  /// Whether or not the Android surface producer automatically handles
-  /// correcting the rotation of camera previews for the device this plugin runs on.
-  late bool _handlesCropAndRotation;
-
   /// The initial orientation of the device when the camera is created.
   late DeviceOrientation _initialDeviceOrientation;
 
@@ -277,7 +347,18 @@ class AndroidCameraCameraX extends CameraPlatform {
   /// The preset resolution selector for the camera.
   ResolutionSelector? _presetResolutionSelector;
 
-  /// The configured target FPS range for the camera.
+  /// The resolution selector for [imageAnalysis].
+  ///
+  /// Capped below the preset's, so image streaming never contributes a
+  /// record-size stream to the session. See [_getResolutionSelectorFromPreset].
+  ResolutionSelector? _analysisResolutionSelector;
+
+  /// Whether [_recoverLostPreviewOutput] is already re-binding the preview.
+  bool _recoveringPreviewOutput = false;
+
+  /// The target FPS range the camera's [UseCase]s were built with, after
+  /// [_resolveTargetFpsRange] checked it against what the camera can actually
+  /// deliver, or null to leave the rate to CameraX.
   CameraIntegerRange? _targetFpsRange;
 
   /// The ID of the surface texture that the camera preview is drawn to.
@@ -325,6 +406,9 @@ class AndroidCameraCameraX extends CameraPlatform {
           name: cameraName,
           lensDirection: cameraLensDirection,
           sensorOrientation: cameraSensorOrientation,
+          equivalentFocalLength: await Camera2CameraInfo.from(
+            cameraInfo: cameraInfo,
+          ).getEquivalentFocalLength(),
         ),
       );
     }
@@ -388,11 +472,10 @@ class AndroidCameraCameraX extends CameraPlatform {
     // Determine ResolutionSelector and QualitySelector based on
     // resolutionPreset for camera UseCases.
     _presetResolutionSelector = _getResolutionSelectorFromPreset(mediaSettings?.resolutionPreset);
-
-    final int? targetFps = mediaSettings?.fps;
-    if (targetFps != null) {
-      _targetFpsRange = CameraIntegerRange(lower: targetFps, upper: targetFps);
-    }
+    _analysisResolutionSelector = _getResolutionSelectorFromPreset(
+      mediaSettings?.resolutionPreset,
+      maxBoundSize: _imageAnalysisMaxBoundSize,
+    );
 
     final QualitySelector? presetQualitySelector = _getQualitySelectorFromPreset(
       mediaSettings?.resolutionPreset,
@@ -400,21 +483,81 @@ class AndroidCameraCameraX extends CameraPlatform {
 
     // Retrieve a fresh ProcessCameraProvider instance.
     processCameraProvider ??= await ProcessCameraProvider.getInstance();
-    unawaited(processCameraProvider!.unbindAll());
+    // Awaited, not fired and forgotten: this runs when a camera is created
+    // without a preceding `dispose`, and the pipeline released just below is the
+    // one those still-bound use cases are feeding. Building the next camera
+    // while the previous one is mid-detach is how surfaces end up outliving the
+    // context that renders into them.
+    await processCameraProvider!.unbindAll();
+
+    // The white balance manager belongs to the plugin rather than to any one
+    // camera, so the lock requested for a previous one is still on it. Clearing
+    // it here stops `_updateCameraInfoAndLiveCameraState` re-applying that lock
+    // to the camera being built, which would leave the hardware locked while
+    // the Dart-side controller reported auto.
+    await whiteBalanceManager.reset();
+
+    // Set up the effects pipeline before the use cases, so the `CameraEffect` it
+    // owns is available for the first `bindToLifecycle`.
+    //
+    // A ratio the settings do not name leaves the current one alone rather than
+    // clearing it. This object outlives the cameras it builds — every other
+    // thing the render pipeline is configured with survives into the next one,
+    // because [effectsManager] and its uniforms are deliberately reused — and a
+    // crop that did not was the odd one out. Clearing it meant a camera rebuilt
+    // to change the resolution preset came up at the sensor's own shape and was
+    // corrected a frame or two later, once the caller had re-applied the ratio
+    // to a camera that was already running. `setAspectRatio(null)` still clears
+    // it; only silence is taken to mean "unchanged".
+    _aspectRatio = mediaSettings?.aspectRatio ?? _aspectRatio;
+    _pendingAspectRatio = null;
+    _updateViewPort();
+    // Built once and reused by every camera afterwards; see [effectsManager] for
+    // why it must not be rebuilt per camera. The previous camera's `dispose`
+    // detached its outputs, so what is left to do is point it at this camera's
+    // crop.
+    final CameraEffectsManager manager =
+        effectsManager ??
+        CameraEffectsManager(
+          aspectRatio: _aspectRatio,
+          onPreviewSizeChanged: (CameraEffectsManager manager, int width, int height) {
+            cameraEventStreamController.add(
+              CameraResolutionChangedEvent(
+                _flutterSurfaceTextureId,
+                width.toDouble(),
+                height.toDouble(),
+              ),
+            );
+          },
+          onPreviewOutputLost: (CameraEffectsManager manager) {
+            unawaited(_recoverLostPreviewOutput());
+          },
+        );
+    effectsManager = manager;
+    // A no-op on a freshly built one, which took the ratio in its constructor.
+    await manager.setAspectRatio(_aspectRatio);
+    cameraEffect = await manager.getCameraEffect();
+
+    // Configure ImageCapture instance. Built before the preview because
+    // `_resolveTargetFpsRange` needs the whole group to ask about, and this one
+    // carries no frame rate of its own.
+    imageCapture = await _createImageCapture();
+
+    // A frame rate reaches the camera as a raw `CONTROL_AE_TARGET_FPS_RANGE`
+    // capture-request option, which CameraX never sees and therefore never
+    // validates against the streams it went on to configure. Forcing one the
+    // configuration cannot satisfy leaves a session that configures, reports
+    // itself active, and never delivers a frame. So it is checked here, against
+    // the group that is about to be bound, before any use case is built with it.
+    _targetFpsRange = await _resolveTargetFpsRange(mediaSettings?.fps);
 
     // Configure Preview instance.
     preview = Preview(
       resolutionSelector: _presetResolutionSelector,
       targetFpsRange: _targetFpsRange,
+      whiteBalanceManager: whiteBalanceManager,
     );
     _flutterSurfaceTextureId = await preview!.setSurfaceProvider(systemServicesManager);
-
-    // Configure ImageCapture instance.
-    imageCapture = ImageCapture(
-      resolutionSelector: _presetResolutionSelector,
-      /* use CameraX default target rotation */ targetRotation: await deviceOrientationManager
-          .getDefaultDisplayRotation(),
-    );
 
     // Configure VideoCapture and Recorder instances.
     recorder = Recorder(
@@ -423,14 +566,24 @@ class AndroidCameraCameraX extends CameraPlatform {
     );
     videoCapture = VideoCapture.withOutput(videoOutput: recorder!, targetFpsRange: _targetFpsRange);
 
-    // Retrieve info required for correcting the rotation of the camera preview
-    // if necessary.
+    // Retrieve info required for correcting the rotation of the camera preview.
+    //
+    // `Preview.surfaceProducerHandlesCropAndRotation` is deliberately not
+    // consulted. It reports whether Flutter's surface producer would apply a
+    // buffer transform of its own, which mattered when CameraX wrote into that
+    // surface directly. The shader writes real pixels into it instead, leaving
+    // nothing for either kind of producer to transform, so both now display the
+    // same frame and the preview needs the same correction either way.
     sensorOrientationDegrees = cameraDescription.sensorOrientation.toDouble();
-    _handlesCropAndRotation = await preview!.surfaceProducerHandlesCropAndRotation();
     _initialDeviceOrientation = _deserializeDeviceOrientation(
       await deviceOrientationManager.getUiOrientation(),
     );
     _initialDefaultDisplayRotation = await deviceOrientationManager.getDefaultDisplayRotation();
+
+    // Must precede the first `bindToLifecycle`: the effect's output orientation
+    // is fixed when CameraX builds the preview pipeline, and a later change to
+    // the target rotation does not rebuild it.
+    await preview!.setTargetRotation(_previewTargetRotation);
 
     return _flutterSurfaceTextureId;
   }
@@ -466,7 +619,7 @@ class AndroidCameraCameraX extends CameraPlatform {
       imageFormatGroup,
     );
     imageAnalysis = ImageAnalysis(
-      resolutionSelector: _presetResolutionSelector,
+      resolutionSelector: _analysisResolutionSelector,
       targetFpsRange: _targetFpsRange,
       outputImageFormat: _imageAnalysisOutputImageFormat,
     );
@@ -474,11 +627,7 @@ class AndroidCameraCameraX extends CameraPlatform {
     // Bind configured UseCases to ProcessCameraProvider instance & mark Preview
     // instance as bound but not paused. Video capture is bound at first use
     // instead of here.
-    camera = await processCameraProvider!.bindToLifecycle(cameraSelector!, <UseCase>[
-      preview!,
-      imageCapture!,
-      imageAnalysis!,
-    ]);
+    camera = await _bindWithFallback(<UseCase>[preview!, imageCapture!, imageAnalysis!]);
     await _updateCameraInfoAndLiveCameraState(_flutterSurfaceTextureId);
     previewInitiallyBound = true;
     _previewIsPaused = false;
@@ -508,16 +657,41 @@ class AndroidCameraCameraX extends CameraPlatform {
         focusPointSupported,
       ),
     );
+
+    // The event above carries `Preview.getResolutionInfo()`, which is the camera's *uncropped*
+    // resolution — the view port crop only shows up in the surface the effect is handed. The
+    // effects manager reports that surface's size on its own schedule, so it is asked again here
+    // to guarantee it lands after the event that would otherwise overwrite it.
+    await effectsManager?.notifyPreviewSize();
   }
 
   /// Releases the resources of the accessed camera with ID [cameraId].
   @override
   Future<void> dispose(int cameraId) async {
-    await preview?.releaseSurfaceProvider();
+    // Teardown order is the reverse of construction, and it matters more than it
+    // looks. Releasing the surface provider hands Flutter's texture back to the
+    // engine, which closes the `ImageReader` behind it. Anything still writing
+    // into that surface afterwards leaves the engine's raster thread reading
+    // images that have already been closed — and the engine answers that with a
+    // failed `CHECK` in `platform_view_android_jni_impl.cc`, which aborts the
+    // process. It is not an exception any Dart or Java code here could catch.
+    //
+    // Two things write into it, and both have to be stopped first: the camera,
+    // via the use cases, and the shader pipeline, which holds an EGL window
+    // surface created from that same `Surface` and swaps a buffer into it on
+    // every frame. Awaiting each step keeps the sequence deterministic.
     await liveCameraState?.removeObservers();
     await processCameraProvider?.unbindAll();
     await imageAnalysis?.clearAnalyzer();
     await deviceOrientationManager.stopListeningForDeviceOrientationChange();
+    // Detached, not released: the pipeline is reused by the next camera, and
+    // releasing it here is what leaves CameraX's cached adapters holding a dead
+    // effect. See [effectsManager]. This still has to happen after the use cases
+    // are unbound and before the surface provider goes, because it is what stops
+    // the shader drawing into Flutter's surface.
+    await effectsManager?.detachOutputs();
+    // Last: nothing is producing into the surface any more.
+    await preview?.releaseSurfaceProvider();
 
     // `processCameraProvider.unbindAll()` implicitly finalizes active recordings natively.
     // Clear the Dart state here to prevent an exception on resume.
@@ -534,7 +708,9 @@ class AndroidCameraCameraX extends CameraPlatform {
 
   /// The resolution of camera with ID [cameraId] has changed.
   ///
-  /// This stream currently has no events being added to it from this plugin.
+  /// Carries the size of the surface the effects pipeline draws into, which is
+  /// the camera's output *after* any [setAspectRatio] view port crop — unlike
+  /// the size on [CameraInitializedEvent], which is the uncropped output.
   @override
   Stream<CameraResolutionChangedEvent> onCameraResolutionChanged(int cameraId) {
     return _cameraEvents(cameraId).whereType<CameraResolutionChangedEvent>();
@@ -561,6 +737,19 @@ class AndroidCameraCameraX extends CameraPlatform {
   @override
   Stream<VideoRecordedEvent> onVideoRecordedEvent(int cameraId) {
     return _cameraEvents(cameraId).whereType<VideoRecordedEvent>();
+  }
+
+  /// The temperature and tint the camera's auto white balance has settled on.
+  ///
+  /// Only settled readings are reported: frames where the camera is still
+  /// converging on a white balance are skipped, so the values here are the ones
+  /// actually shown on screen.
+  ///
+  /// Devices that do not report `COLOR_CORRECTION_GAINS` in their capture
+  /// results never emit; see [WhiteBalanceManager].
+  @override
+  Stream<CameraAutoWhiteBalanceChangedEvent> onAutoWhiteBalanceChanged(int cameraId) {
+    return _cameraEvents(cameraId).whereType<CameraAutoWhiteBalanceChangedEvent>();
   }
 
   /// Locks the capture orientation of camera with ID [cameraId].
@@ -744,13 +933,35 @@ class AndroidCameraCameraX extends CameraPlatform {
     // (Exposure compensation index) * (exposure offset step size) =
     // (exposure offset).
     final int roundedExposureCompensationIndex = (offset / exposureOffsetStepSize).round();
+    final int request = ++_exposureOffsetRequests;
+    // Captured to tell a rebind from a real rejection below;
+    // `_updateCameraInfoAndLiveCameraState` swaps this for a new instance every
+    // time the use cases are rebound.
+    final CameraControl requestedOn = cameraControl;
 
     try {
-      final int? newIndex = await cameraControl.setExposureCompensationIndex(
+      final int? newIndex = await requestedOn.setExposureCompensationIndex(
         roundedExposureCompensationIndex,
       );
 
       if (newIndex == null) {
+        if (request != _exposureOffsetRequests) {
+          // Superseded by a later call rather than rejected: CameraX cancels a
+          // pending index whenever a newer one is submitted, which a slider drag
+          // does on every frame. The newer call reports the outcome, so raising
+          // here would only bury the caller in errors it cannot act on.
+          return roundedExposureCompensationIndex * exposureOffsetStepSize;
+        }
+        if (!identical(requestedOn, cameraControl)) {
+          // The camera this was asked of has been rebound underneath it — a lens
+          // switch, an aspect ratio change, or binding video capture at the start
+          // of a recording. CameraX reports that with the same cancellation it
+          // uses for a rejected request, but it is this plugin's own doing rather
+          // than something the caller got wrong, and callers commonly set the
+          // exposure offset alongside the very calls that rebind. Raising here
+          // turns an ordinary camera switch into a fatal initialization error.
+          return roundedExposureCompensationIndex * exposureOffsetStepSize;
+        }
         cameraErrorStreamController.add(
           'Setting exposure compensation index was canceled due to the camera being closed or a new request being submitted.',
         );
@@ -760,7 +971,10 @@ class AndroidCameraCameraX extends CameraPlatform {
         );
       }
 
-      return newIndex.toDouble();
+      // Back to EV: the platform interface, this method's own contract and
+      // `AVFoundationCamera.setExposureOffset` all deal in exposure offsets,
+      // while CameraX counts in steps of `exposureCompensationStep`.
+      return newIndex * exposureOffsetStepSize;
     } on PlatformException catch (e) {
       cameraErrorStreamController.add(
         e.message ?? 'Setting the camera exposure compensation index failed.',
@@ -795,6 +1009,65 @@ class AndroidCameraCameraX extends CameraPlatform {
       meteringMode: MeteringMode.af,
       disableAutoCancel: _currentFocusMode == FocusMode.locked,
     );
+  }
+
+  /// Sets the white balance for the camera with ID [cameraId].
+  ///
+  /// Passing `null` returns the camera to automatic white balance; passing
+  /// [WhiteBalanceValues] locks it at that temperature and tint.
+  ///
+  /// CameraX has no white balance control, so this goes through Camera2
+  /// interop. The gains come from the sensor's own colour calibration when the
+  /// camera publishes one, which is the counterpart of the per-device
+  /// calibration AVFoundation uses. Cameras that publish none fall back to an
+  /// approximation derived from the Planckian locus — see
+  /// `WhiteBalanceConverter` — where a given temperature can land slightly
+  /// differently than it does on iOS.
+  ///
+  /// The lock survives rebinding the camera; see
+  /// [_updateCameraInfoAndLiveCameraState].
+  @override
+  Future<void> setWhiteBalance(int cameraId, WhiteBalanceValues? values) async {
+    final CameraInfo? info = cameraInfo;
+    if (info == null) {
+      throw CameraException(
+        'setWhiteBalanceFailed',
+        'Camera not found. Please call the "create" method before setting the white balance.',
+      );
+    }
+    try {
+      await whiteBalanceManager.setWhiteBalance(
+        Camera2CameraControl.from(cameraControl: cameraControl),
+        Camera2CameraInfo.from(cameraInfo: info),
+        values?.temperature,
+        values?.tint,
+      );
+    } on PlatformException catch (e) {
+      throw CameraException('setWhiteBalanceFailed', e.message);
+    }
+  }
+
+  /// Whether the camera with ID [cameraId] can have its white balance locked to
+  /// a chosen temperature and tint via [setWhiteBalance].
+  ///
+  /// Android hardware support is genuinely uneven: a camera has to allow its
+  /// auto white balance algorithm to be switched off *and* honour the colour
+  /// correction keys for a temperature to mean anything. See
+  /// `WhiteBalanceManager.isWhiteBalanceSupported` for what is checked.
+  ///
+  /// Only [setWhiteBalance] itself reports whether a particular lock was
+  /// accepted; a `true` here says the camera advertises the capability, not
+  /// that any given temperature will be reproduced exactly.
+  @override
+  Future<bool> supportsWhiteBalance(int cameraId) async {
+    final CameraInfo? info = cameraInfo;
+    if (info == null) {
+      throw CameraException(
+        'whiteBalanceSupportUnknown',
+        'Camera not found. Please call the "create" method before querying white balance support.',
+      );
+    }
+    return whiteBalanceManager.isWhiteBalanceSupported(Camera2CameraInfo.from(cameraInfo: info));
   }
 
   /// Sets the exposure mode for taking pictures with the camera with ID [cameraId].
@@ -960,6 +1233,12 @@ class AndroidCameraCameraX extends CameraPlatform {
     cameraIsFrontFacing = cameraSelectorLensDirection == LensFacing.front;
     cameraSelector = CameraSelector(cameraInfoForFilter: chosenCameraInfo);
 
+    // Retrieve info required for correcting the rotation of the camera preview.
+    // Both of these feed the target rotation below, so they have to be updated
+    // before the rebind that rebuilds the preview's effect pipeline.
+    sensorOrientationDegrees = description.sensorOrientation.toDouble();
+    await preview!.setTargetRotation(_previewTargetRotation);
+
     // Unbind all use cases and rebind to new CameraSelector
     final useCases = <UseCase>[videoCapture!];
     if (!_previewIsPaused) {
@@ -972,10 +1251,7 @@ class AndroidCameraCameraX extends CameraPlatform {
       useCases.add(imageAnalysis!);
     }
     await processCameraProvider?.unbindAll();
-    camera = await processCameraProvider?.bindToLifecycle(cameraSelector!, useCases);
-
-    // Retrieve info required for correcting the rotation of the camera preview
-    sensorOrientationDegrees = description.sensorOrientation.toDouble();
+    camera = await _bindWithFallback(useCases);
 
     await _updateCameraInfoAndLiveCameraState(_flutterSurfaceTextureId);
   }
@@ -1008,14 +1284,11 @@ class AndroidCameraCameraX extends CameraPlatform {
     );
     final Widget preview = Texture(textureId: cameraId);
 
-    return RotatedPreviewDelegate(
-      handlesCropAndRotation: _handlesCropAndRotation,
-      initialDeviceOrientation: _initialDeviceOrientation,
-      initialDefaultDisplayRotation: _initialDefaultDisplayRotation,
-      deviceOrientationStream: deviceOrientationStream,
-      sensorOrientationDegrees: sensorOrientationDegrees,
-      cameraIsFrontFacing: cameraIsFrontFacing,
-      deviceOrientationManager: deviceOrientationManager,
+    return SurfaceTextureRotatedPreview(
+      _initialDeviceOrientation,
+      _initialDefaultDisplayRotation,
+      deviceOrientationStream,
+      deviceOrientationManager,
       child: preview,
     );
   }
@@ -1023,6 +1296,19 @@ class AndroidCameraCameraX extends CameraPlatform {
   /// Captures an image using the camera with ID [cameraId] and returns the file where it was saved.
   @override
   Future<XFile> takePicture(int cameraId) async {
+    final CapturedPicturePaths paths = await _capture(cameraId, includeOriginal: false);
+    return XFile(paths.processedPath);
+  }
+
+  @override
+  Future<(XFile original, XFile processed)> takePictureWithOriginal(int cameraId) async {
+    final CapturedPicturePaths paths = await _capture(cameraId, includeOriginal: true);
+    // `includeOriginal: true` guarantees the native side wrote both files.
+    return (XFile(paths.originalPath!), XFile(paths.processedPath));
+  }
+
+  /// Prepares [imageCapture] and takes one photo through the effects pipeline.
+  Future<CapturedPicturePaths> _capture(int cameraId, {required bool includeOriginal}) async {
     await _bindUseCaseToLifecycle(imageCapture!, cameraId);
     // Set flash mode.
     if (_currentFlashMode != null) {
@@ -1041,8 +1327,214 @@ class AndroidCameraCameraX extends CameraPlatform {
       );
     }
 
-    final String picturePath = await imageCapture!.takePicture(systemServicesManager);
-    return XFile(picturePath);
+    return imageCapture!.takePictureWithEffects(
+      systemServicesManager,
+      effectsManager!,
+      includeOriginal,
+    );
+  }
+
+  /// Applies visual effect parameters to the shader pipeline.
+  @override
+  Future<void> setEffectsValues(int cameraId, EffectsValues values) async {
+    await effectsManager?.setEffectsValues(
+      PlatformEffectsValues(
+        vignetteIntensity: values.vignetteIntensity,
+        grainNoisePath: values.grainNoisePath,
+        grainOpacity: values.grainOpacity,
+        grainSize: values.grainSize,
+        grainBehavior: switch (values.grainBehavior) {
+          GrainBehavior.overlay => PlatformGrainBehavior.overlay,
+          GrainBehavior.darkOnly => PlatformGrainBehavior.darkOnly,
+        },
+        lutFilePath: values.lutFilePath,
+        lutIntensity: values.lutIntensity,
+        resolution: values.resolution,
+        colorShift: values.colorShift,
+        mist: values.mist,
+        prism: values.prism,
+        cheapFisheye: values.cheapFisheye,
+        bloom: values.bloom,
+        diffusion: values.diffusion,
+      ),
+    );
+  }
+
+  /// Sets the center-crop aspect ratio (width/height) applied to preview,
+  /// photo and video, or `null` to disable cropping.
+  @override
+  Future<void> setAspectRatio(int cameraId, double? aspectRatio) async {
+    if (recording != null) {
+      // Applying it re-binds, which tears down the encoder's input surface and
+      // would abort the recording. `DefaultCamera` defers the same way; this is
+      // applied when the recording stops.
+      _pendingAspectRatio = _PendingAspectRatio(aspectRatio);
+      return;
+    }
+    await _applyAspectRatio(aspectRatio);
+  }
+
+  /// Applies [aspectRatio], and reports whether that re-bound the preview.
+  Future<bool> _applyAspectRatio(double? aspectRatio) async {
+    if (_aspectRatio == aspectRatio) {
+      return false;
+    }
+    _aspectRatio = aspectRatio;
+    // The still-capture path crops the decoded frame itself rather than reading
+    // the view port, so it has to be told separately.
+    await effectsManager?.setAspectRatio(aspectRatio);
+    if (effectsManager == null) {
+      // Null only before the very first camera, so there is nothing to re-bind —
+      // and building a view port now would leave an orphan native object behind.
+      // `createCameraWithSettings` derives one from `_aspectRatio` when it makes
+      // the camera. After a `dispose` the manager is still around, and
+      // `_rebindPreview` is the one that notices nothing is bound.
+      return false;
+    }
+    _updateViewPort();
+    return _rebindPreview();
+  }
+
+  /// Rebuilds [_viewPort] from [_aspectRatio].
+  void _updateViewPort() {
+    final double? ratio = _aspectRatio;
+    if (ratio == null || ratio <= 0 || !ratio.isFinite) {
+      _viewPort = null;
+      return;
+    }
+    // The ratio is expressed in the display's natural orientation:
+    // `ViewPort.rotation` tells CameraX which frame it is in, and CameraX maps
+    // it into sensor coordinates — inverting it for a sensor mounted at 90 or
+    // 270 degrees, the same re-orientation `DefaultCamera.effectiveAspectRatio`
+    // does by hand on iOS.
+    //
+    // `Rational` needs whole numbers. A thousandth is finer than any sensor or
+    // encoder resolves, and CameraX reduces the fraction itself, so 0.75 lands
+    // back on exactly 3:4.
+    _viewPort = ViewPort(
+      aspectRatioWidth: (ratio * _viewPortRatioDenominator).round(),
+      aspectRatioHeight: _viewPortRatioDenominator,
+      rotation: Surface.rotation0,
+    );
+  }
+
+  /// Re-binds [preview] so the current [_viewPort] takes effect.
+  ///
+  /// A view port reaches a use case only through a bind, and it is read when
+  /// that use case builds its pipeline — so changing the crop on a running
+  /// camera, or restoring one a rebuilt pipeline came back without, means
+  /// detaching and re-attaching something. Only the preview is cycled: binding a
+  /// group sets the view port on the camera's use case adapter, which recomputes
+  /// the crop rect of *every* bound use case, so the ones that are left alone
+  /// still pick it up.
+  ///
+  /// Deliberately not [ProcessCameraProvider.unbindAll]: with no use case left
+  /// attached CameraX closes the camera device, which cancels every in-flight
+  /// [CameraControl] request with "the camera being closed or a new request
+  /// being submitted". Callers routinely change the aspect ratio alongside an
+  /// exposure or zoom call — the example app does both in one `Future.wait` —
+  /// and those would fail. Leaving the other use cases attached holds the device
+  /// open across the swap.
+  ///
+  /// [videoCapture] is not cycled because it is only ever bound while a
+  /// recording is in flight, and [setAspectRatio] defers until that stops.
+  ///
+  /// Returns whether it ran; it does not when nothing is bound to rebuild, in
+  /// which case the next bind — from `resumePreview` or
+  /// [_bindUseCaseToLifecycle] — picks the current configuration up anyway.
+  Future<bool> _rebindPreview() async {
+    final ProcessCameraProvider? provider = processCameraProvider;
+    final Preview? previewUseCase = preview;
+    if (provider == null ||
+        cameraSelector == null ||
+        previewUseCase == null ||
+        _previewIsPaused ||
+        !previewInitiallyBound ||
+        !await provider.isBound(previewUseCase)) {
+      return false;
+    }
+
+    await provider.unbind(<UseCase>[previewUseCase]);
+    // Binding the preview alone is enough: CameraX unions it with the use cases
+    // that are still attached, so image capture and image analysis stay bound
+    // and the effect still finds a preview-targeted use case to attach to.
+    camera = await provider.bindToLifecycle(
+      cameraSelector!,
+      <UseCase>[previewUseCase],
+      _cameraEffects,
+      _viewPort,
+    );
+    await _updateCameraInfoAndLiveCameraState(_flutterSurfaceTextureId);
+    return true;
+  }
+
+  /// Re-binds [preview] after the effects pipeline lost the surface it was
+  /// drawing into, so CameraX hands it a new one.
+  ///
+  /// Without this the camera goes on running and the shader goes on receiving
+  /// frames it has nowhere to put: a preview stuck on its last good frame, with
+  /// no error anywhere to explain it. A surface is abandoned by its consumer
+  /// often enough for this to matter — a lens switch and a backgrounded app both
+  /// do it — and CameraX only builds a new preview pipeline, and so only hands
+  /// out a new surface, when the use case is re-bound.
+  ///
+  /// Guarded rather than debounced: a rebind that itself fails to produce a
+  /// usable surface would otherwise report the loss again and spin.
+  Future<void> _recoverLostPreviewOutput() async {
+    if (_recoveringPreviewOutput) {
+      return;
+    }
+    _recoveringPreviewOutput = true;
+    try {
+      final bool rebound = await _rebindPreview();
+      if (!rebound) {
+        // Nothing was bound, so nothing was lost that a bind will not fix.
+        return;
+      }
+    } on PlatformException catch (e) {
+      cameraErrorStreamController.add(
+        'The camera preview lost its surface and could not be restored: ${e.message}',
+      );
+    } finally {
+      _recoveringPreviewOutput = false;
+    }
+  }
+
+  /// Applies an aspect ratio change that [setAspectRatio] deferred because a
+  /// recording was in flight, and reports whether that re-bound the preview.
+  Future<bool> _applyPendingAspectRatio() async {
+    final _PendingAspectRatio? pending = _pendingAspectRatio;
+    if (pending == null) {
+      return false;
+    }
+    _pendingAspectRatio = null;
+    return _applyAspectRatio(pending.value);
+  }
+
+  /// Sets the capture scale applied inside the aspect-ratio crop.
+  @override
+  Future<void> setCaptureScale(int cameraId, double scale) async {
+    await effectsManager?.setCaptureScale(scale);
+  }
+
+  /// Sets the corner radius of the capture-scale rectangle drawn in the
+  /// preview.
+  @override
+  Future<void> setCaptureCornerRadius(int cameraId, double radius) async {
+    await effectsManager?.setCaptureCornerRadius(radius);
+  }
+
+  /// Gets the [FlashMode]s supported by the camera with ID [cameraId].
+  ///
+  /// CameraX exposes no per-mode capability query, only whether the camera has
+  /// a flash unit at all; a camera that has one supports every mode.
+  @override
+  Future<Iterable<FlashMode>> getSupportedFlashModes(int cameraId) async {
+    final CameraInfo? info = cameraInfo;
+    if (info == null || !await info.hasFlashUnit()) {
+      return const <FlashMode>[FlashMode.off];
+    }
+    return const <FlashMode>[FlashMode.off, FlashMode.auto, FlashMode.always, FlashMode.torch];
   }
 
   /// Sets the flash mode for the camera with ID [cameraId].
@@ -1225,6 +1717,19 @@ class AndroidCameraCameraX extends CameraPlatform {
     }
 
     await _unbindUseCaseFromLifecycle(videoCapture!);
+    // Safe now that the encoder is gone: an aspect ratio change re-binds.
+    final bool reboundForAspectRatio = await _applyPendingAspectRatio();
+    if (!reboundForAspectRatio) {
+      // Unbinding the encoder takes `StreamSharing` apart, and the preview
+      // pipeline CameraX builds to replace it comes back with no crop at all —
+      // its `SurfaceProcessorNode` is built from a crop rect covering the whole
+      // frame, where the same node before the recording carried the view port's.
+      // A view port reaches a use case only through a bind, and stopping a
+      // recording is otherwise the one transition here that rebuilds the preview
+      // without performing one. That is also why starting another recording puts
+      // the crop back: that path binds.
+      await _rebindPreview();
+    }
     final videoFile = XFile(videoOutputPath!);
     cameraEventStreamController.add(VideoRecordedEvent(cameraId, videoFile, /* duration */ null));
     return videoFile;
@@ -1294,9 +1799,77 @@ class AndroidCameraCameraX extends CameraPlatform {
       return;
     }
 
-    camera = await processCameraProvider!.bindToLifecycle(cameraSelector!, <UseCase>[useCase]);
+    // Rebind the preview alongside the incoming use case rather than the use case alone.
+    // CameraX matches effects against the use cases in the group it is given, so binding
+    // e.g. `imageCapture` on its own would find nothing for a preview-targeted effect,
+    // log "Unused effects", and drop the effect from the camera.
+    final useCases = <UseCase>[
+      if (preview != null && !_previewIsPaused && preview != useCase) preview!,
+      useCase,
+    ];
+    camera = await _bindWithFallback(useCases);
 
     await _updateCameraInfoAndLiveCameraState(cameraId);
+  }
+
+  /// Builds the [ImageCapture] this camera takes photos with.
+  ///
+  /// Its buffer format is not decided here: the native side picks an
+  /// uncompressed one where the device claims to offer it, so a rebuilt
+  /// instance is the way to pick that decision up again after it changes.
+  Future<ImageCapture> _createImageCapture() async => ImageCapture(
+    resolutionSelector: _presetResolutionSelector,
+    /* use CameraX default target rotation */ targetRotation: await deviceOrientationManager
+        .getDefaultDisplayRotation(),
+  );
+
+  /// Binds [useCases] with the current effects and view port, rebuilding
+  /// [imageCapture] and retrying once if the camera refuses the configuration.
+  ///
+  /// Stills are captured uncompressed wherever the device claims to offer it
+  /// (see `UncompressedCaptureSupport` on the native side), and a `YUV_420_888`
+  /// still stream next to the analysis stream's own is one uncompressed stream
+  /// more than camera2's guaranteed combinations promise. Which devices that
+  /// catches out cannot be read from their characteristics up front: CameraX
+  /// only says so by throwing `IllegalArgumentException: No supported surface
+  /// combination` out of the bind — which, on the first camera an app opens, is
+  /// a camera that never opens at all.
+  ///
+  /// That same throw is what makes the native side withdraw the format for the
+  /// rest of the process, so the [ImageCapture] built here is a JPEG one and the
+  /// group binds. Retried on any failure rather than on that message alone: the
+  /// alternative is matching CameraX's exception text, and the cost of a wrong
+  /// guess is one extra bind attempt on a camera that was failing anyway.
+  Future<Camera> _bindWithFallback(List<UseCase> useCases) async {
+    try {
+      return await processCameraProvider!.bindToLifecycle(
+        cameraSelector!,
+        useCases,
+        _cameraEffects,
+        _viewPort,
+      );
+    } on PlatformException catch (e) {
+      final ImageCapture? refused = imageCapture;
+      if (refused == null || !useCases.contains(refused)) {
+        rethrow;
+      }
+      debugPrint('Rebuilding the still capture use case after a failed bind: ${e.message}');
+      // A no-op after a bind that threw, which attaches nothing. It matters when
+      // the refused use case was left attached by an *earlier* bind: the
+      // replacement would then be a stream on top of it rather than instead of
+      // it, and the retry would fail for the same reason as the attempt.
+      await processCameraProvider!.unbind(<UseCase>[refused]);
+      final ImageCapture replacement = await _createImageCapture();
+      imageCapture = replacement;
+      return processCameraProvider!.bindToLifecycle(
+        cameraSelector!,
+        useCases
+            .map((UseCase useCase) => identical(useCase, refused) ? replacement : useCase)
+            .toList(),
+        _cameraEffects,
+        _viewPort,
+      );
+    }
   }
 
   /// Configures the [imageAnalysis] instance for image streaming.
@@ -1445,6 +2018,16 @@ class AndroidCameraCameraX extends CameraPlatform {
   Future<void> _updateCameraInfoAndLiveCameraState(int cameraId) async {
     cameraInfo = (await camera!.getCameraInfo()) as CameraInfo;
     cameraControl = camera!.cameraControl;
+
+    // Camera2 capture request options live on the `Camera` instance, which
+    // `bindToLifecycle` replaces, so a white balance lock has to be re-sent
+    // every time the camera is rebound. The manager holds the requested value
+    // and does nothing when the white balance has never been set.
+    await whiteBalanceManager.attachToCamera(
+      Camera2CameraControl.from(cameraControl: cameraControl),
+      Camera2CameraInfo.from(cameraInfo: cameraInfo!),
+    );
+
     await liveCameraState?.removeObservers();
     liveCameraState = await cameraInfo!.getCameraState();
     await liveCameraState!.observe(_createCameraClosingObserver(cameraId));
@@ -1530,61 +2113,230 @@ class AndroidCameraCameraX extends CameraPlatform {
     }
   }
 
+  /// The [Surface] rotation constant to give [preview] so that the effect
+  /// pipeline hands Flutter an upright buffer.
+  ///
+  /// [Surface.rotation0] — the display's natural orientation — and never
+  /// anything else, which is what makes the render path the single owner of
+  /// sensor orientation and front-camera mirroring.
+  ///
+  /// Binding a [CameraEffect] puts the preview stream behind a CameraX
+  /// `SurfaceProcessorNode`. That node sizes its output
+  /// `getRotatedSize(cropRect, relativeRotation)` and gives the processor a
+  /// transform with `relativeRotation` and the node's mirroring already folded
+  /// in, where `relativeRotation` is the sensor orientation measured against
+  /// this target rotation. Asking for the natural orientation therefore makes
+  /// `relativeRotation` the full sensor orientation, and the frame the shader
+  /// writes is upright in that orientation — mirrored too, for a front-facing
+  /// preview, since the node mirrors what it hands a `PREVIEW` output.
+  ///
+  /// Everything downstream then has one job left, whichever camera is open and
+  /// whichever way its sensor is mounted: turn the frame by however far the
+  /// display has been rotated. That is all
+  /// [SurfaceTextureRotatedPreview] does.
+  ///
+  /// Cancelling the sensor orientation here instead — leaving `relativeRotation`
+  /// zero so the frame arrives in raw sensor orientation for the preview widget
+  /// to correct — is the other way to arrange this, and is what this plugin did
+  /// before the effect pipeline existed. It cannot be made to work once CameraX
+  /// supplies the mirroring: the widget then has to undo a rotation *through* a
+  /// mirror, which reverses its sense, and the correction stops being
+  /// expressible as a quarter-turn count that is right for both cameras.
+  int get _previewTargetRotation => Surface.rotation0;
+
+  /// The frame rate range to build this camera's [UseCase]s with, given the
+  /// application asked for [requestedFps], or null to leave the rate to CameraX.
+  ///
+  /// A frame rate is applied through Camera2 interop, as a
+  /// `CONTROL_AE_TARGET_FPS_RANGE` capture-request option written straight into
+  /// the repeating request. CameraX does not see it, so it plays no part in how
+  /// CameraX resolves the stream configuration, and nothing checks the two
+  /// against each other. A camera that reaches 60fps with a 720p preview
+  /// commonly tops out at 30 once the streams are 1080p, and an effect adds a
+  /// surface of its own on top; ask that camera for a fixed 60 anyway and the
+  /// session configures, reports itself active, and never delivers a frame.
+  ///
+  /// So the camera is asked what the configuration about to be bound can
+  /// actually do. The probe use cases stand in for the real ones, which do not
+  /// exist yet: only the resolution selectors matter to the answer, and the
+  /// frame rate deliberately does not — it is invisible to CameraX either way,
+  /// which is what makes the probe faithful.
+  Future<CameraIntegerRange?> _resolveTargetFpsRange(int? requestedFps) async {
+    if (requestedFps == null || requestedFps <= 0) {
+      return null;
+    }
+
+    final List<CameraIntegerRange> supported;
+    try {
+      supported = await processCameraProvider!.getSupportedFrameRateRanges(
+        cameraSelector!,
+        <UseCase>[
+          Preview(resolutionSelector: _presetResolutionSelector),
+          imageCapture!,
+          ImageAnalysis(resolutionSelector: _analysisResolutionSelector),
+        ],
+        _cameraEffects,
+        _viewPort,
+      );
+    } on PlatformException catch (e) {
+      // Applying an unchecked range is the failure this method exists to
+      // prevent, so a query that cannot answer means no range at all.
+      debugPrint('Could not read the supported frame rate ranges: ${e.message}');
+      return null;
+    }
+
+    final CameraIntegerRange? selected = _selectFrameRateRange(requestedFps, supported);
+    if (selected == null) {
+      debugPrint(
+        'The camera reports no frame rate range for this configuration; '
+        'leaving the frame rate to CameraX instead of forcing ${requestedFps}fps.',
+      );
+    } else if (selected.upper != requestedFps || selected.lower != requestedFps) {
+      debugPrint(
+        'The camera cannot hold ${requestedFps}fps with this configuration; '
+        'using [${selected.lower}, ${selected.upper}] instead.',
+      );
+    }
+    return selected;
+  }
+
+  /// Picks the range out of [supported] that best serves [requestedFps].
+  ///
+  /// Prefers the fixed `[requestedFps, requestedFps]` the caller is really
+  /// asking for, then the fastest range that does not overshoot it, and only
+  /// then the slowest range there is. Overshooting is the one thing never
+  /// chosen: a range whose lower bound is above the request is a camera being
+  /// pushed past what was asked for.
+  static CameraIntegerRange? _selectFrameRateRange(
+    int requestedFps,
+    List<CameraIntegerRange> supported,
+  ) {
+    if (supported.isEmpty) {
+      return null;
+    }
+
+    CameraIntegerRange? best;
+    for (final range in supported) {
+      if (range.lower == requestedFps && range.upper == requestedFps) {
+        return range;
+      }
+      if (range.upper > requestedFps) {
+        continue;
+      }
+      // Among the ranges that fit, the fastest; among equally fast ones, the
+      // one that is fixed rather than free to drop.
+      if (best == null ||
+          range.upper > best.upper ||
+          (range.upper == best.upper && range.lower > best.lower)) {
+        best = range;
+      }
+    }
+    if (best != null) {
+      return best;
+    }
+
+    // Everything the camera offers is faster than the request. Take the slowest
+    // of them, which is the closest thing to what was asked for.
+    return supported.reduce(
+      (CameraIntegerRange a, CameraIntegerRange b) => b.upper < a.upper ? b : a,
+    );
+  }
+
+  /// The largest size [imageAnalysis] is configured for, whatever the preset.
+  ///
+  /// CameraX's own guidance is to keep image analysis at or below preview size,
+  /// and the cost of ignoring it is not just throughput. At 1080p the analysis
+  /// stream counts as a record-size one, and a preview, an analysis and a
+  /// capture stream all at record size is not a combination the camera is
+  /// required to support — with the effect's own surface on top of them. The
+  /// stream that hands frames to Dart gains nothing from the extra pixels, so it
+  /// is the one that gives way.
+  ///
+  /// Plain numbers rather than a [CameraSize]: that is a proxy object with a
+  /// native counterpart, and one held in a `static` would outlive every camera
+  /// and every instance manager that ever attached it.
+  static const ({int width, int height}) _imageAnalysisMaxBoundSize = (width: 1280, height: 720);
+
   /// Returns the [ResolutionSelector] that maps to the specified resolution
   /// preset for camera [UseCase]s.
   ///
   /// If the specified [preset] is unavailable, the camera will fall back to the
   /// closest lower resolution available.
-  ResolutionSelector? _getResolutionSelectorFromPreset(ResolutionPreset? preset) {
+  ///
+  /// [maxBoundSize] caps the size the preset asks for, for use cases that should
+  /// not follow it all the way up; see [_imageAnalysisMaxBoundSize].
+  ResolutionSelector? _getResolutionSelectorFromPreset(
+    ResolutionPreset? preset, {
+    ({int width, int height})? maxBoundSize,
+  }) {
     const ResolutionStrategyFallbackRule fallbackRule =
         ResolutionStrategyFallbackRule.closestLowerThenHigher;
 
-    CameraSize? boundSize;
+    ({int width, int height}) boundSize;
     AspectRatio? aspectRatio;
     ResolutionStrategy? resolutionStrategy;
     switch (preset) {
       case ResolutionPreset.low:
-        boundSize = CameraSize(width: 320, height: 240);
+        boundSize = (width: 320, height: 240);
         aspectRatio = AspectRatio.ratio4To3;
       case ResolutionPreset.medium:
-        boundSize = CameraSize(width: 720, height: 480);
+        boundSize = (width: 720, height: 480);
       case ResolutionPreset.high:
-        boundSize = CameraSize(width: 1280, height: 720);
+        boundSize = (width: 1280, height: 720);
         aspectRatio = AspectRatio.ratio16To9;
       case ResolutionPreset.veryHigh:
-        boundSize = CameraSize(width: 1920, height: 1080);
+        boundSize = (width: 1920, height: 1080);
         aspectRatio = AspectRatio.ratio16To9;
       case ResolutionPreset.ultraHigh:
-        boundSize = CameraSize(width: 3840, height: 2160);
+        boundSize = (width: 3840, height: 2160);
         aspectRatio = AspectRatio.ratio16To9;
       case ResolutionPreset.max:
-        // Automatically set strategy to choose highest available.
-        resolutionStrategy = ResolutionStrategy.highestAvailableStrategy;
-        return ResolutionSelector(
-          resolutionStrategy: resolutionStrategy,
-          allowedResolutionMode:
-              ResolutionSelectorAllowedResolutionMode.preferHigherResolutionOverCaptureRate,
-        );
+      case ResolutionPreset.photo:
+        // `ResolutionPreset.photo` is an iOS-specific concept
+        // (`AVCaptureSession.Preset.photo`); on Android there is no direct
+        // analogue, so we treat it the same as `max` — highest available.
+        if (maxBoundSize == null) {
+          // Automatically set strategy to choose highest available.
+          resolutionStrategy = ResolutionStrategy.highestAvailableStrategy;
+          return ResolutionSelector(
+            resolutionStrategy: resolutionStrategy,
+            allowedResolutionMode:
+                ResolutionSelectorAllowedResolutionMode.preferHigherResolutionOverCaptureRate,
+          );
+        }
+        // A capped use case cannot follow "highest available" anywhere, so it
+        // is pinned to its cap instead.
+        boundSize = maxBoundSize;
       case null:
         // If no preset is specified, default to CameraX's default behavior
-        // for each UseCase.
+        // for each UseCase. A cap is not applied either: CameraX's own default
+        // for image analysis is already well below one.
         return null;
+    }
+
+    if (maxBoundSize != null &&
+        boundSize.width * boundSize.height > maxBoundSize.width * maxBoundSize.height) {
+      boundSize = maxBoundSize;
     }
 
     resolutionStrategy = ResolutionStrategy(
       boundSize: CameraSize(width: boundSize.width, height: boundSize.height),
       fallbackRule: fallbackRule,
     );
-    final resolutionFilter = ResolutionFilter.createWithOnePreferredSize(preferredSize: boundSize);
     final AspectRatioStrategy? aspectRatioStrategy = aspectRatio == null
         ? null
         : AspectRatioStrategy(
             preferredAspectRatio: aspectRatio,
             fallbackRule: AspectRatioStrategyFallbackRule.auto,
           );
+    // Deliberately no `ResolutionFilter`: one built from the bound size pins the
+    // choice to exactly that size, which overrides `fallbackRule` and leaves
+    // CameraX no room to pick a size the rest of the configuration — the other
+    // streams, the effect's surface, the requested frame rate — can live with.
+    // The strategy already expresses the preference; the fallback rule is what
+    // makes it a preference rather than a demand.
     return ResolutionSelector(
       resolutionStrategy: resolutionStrategy,
-      resolutionFilter: resolutionFilter,
       aspectRatioStrategy: aspectRatioStrategy,
     );
   }
@@ -1608,6 +2360,9 @@ class AndroidCameraCameraX extends CameraPlatform {
       case ResolutionPreset.ultraHigh:
         videoQuality = VideoQuality.UHD;
       case ResolutionPreset.max:
+      case ResolutionPreset.photo:
+        // `ResolutionPreset.photo` is an iOS-specific concept; on Android
+        // we record at the highest video quality available, matching `max`.
         videoQuality = VideoQuality.highest;
       case null:
         // If no preset is specified, default to CameraX's default behavior
@@ -1826,4 +2581,16 @@ class AndroidCameraCameraX extends CameraPlatform {
         throw ArgumentError('"$orientation" is not a valid DeviceOrientation value');
     }
   }
+}
+
+/// A [AndroidCameraCameraX.setAspectRatio] call deferred until the current
+/// recording stops.
+///
+/// A class rather than a bare `double?` because `null` is a valid ratio meaning
+/// "no crop", so it cannot double as "nothing deferred".
+class _PendingAspectRatio {
+  const _PendingAspectRatio(this.value);
+
+  /// The requested ratio (width/height), or null to clear the crop.
+  final double? value;
 }

@@ -18,6 +18,8 @@ import androidx.annotation.Nullable;
 import androidx.lifecycle.LifecycleOwner;
 import io.flutter.plugin.common.BinaryMessenger;
 import io.flutter.view.TextureRegistry;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class ProxyApiRegistrar extends CameraXLibraryPigeonProxyApiRegistrar {
   @NonNull
@@ -134,6 +136,63 @@ public class ProxyApiRegistrar extends CameraXLibraryPigeonProxyApiRegistrar {
   @NonNull
   TextureRegistry getTextureRegistry() {
     return textureRegistry;
+  }
+
+  /**
+   * The executor {@link ImageCaptureProxyApi} hands to {@code ImageCapture.takePicture}.
+   *
+   * <p>One shared thread rather than one per shutter press. A {@code
+   * Executors.newSingleThreadExecutor()} per capture is only reclaimed when its finalizer runs, so
+   * a burst of photos leaves a pile of live threads behind, each pinning the decoded bitmap its
+   * callback was working on. A single thread also serialises the captures, which is what we want:
+   * they all funnel into the one render thread anyway.
+   *
+   * <p>Lives on the registrar because the ProxyApi objects do not: {@code getPigeonApiImageCapture}
+   * builds a fresh one per call, so a field there would be shared with nothing.
+   *
+   * <p>Runs at display priority. Everything the effects path does to a capture — the JPEG decode,
+   * the re-encode — is CPU-bound work on a 12MP frame, and at the default priority the scheduler is
+   * free to park it on a little core while the preview keeps the big ones busy. That showed up as
+   * the same capture taking 143ms to encode on one run and 283ms on the next.
+   */
+  @NonNull
+  private final ExecutorService captureExecutor =
+      Executors.newSingleThreadExecutor(
+          runnable -> {
+            final Thread thread =
+                new Thread(
+                    () -> {
+                      // Set from the thread itself: `setThreadPriority` with no tid argument
+                      // applies to the caller.
+                      android.os.Process.setThreadPriority(
+                          android.os.Process.THREAD_PRIORITY_DISPLAY);
+                      runnable.run();
+                    },
+                    "CameraXImageCapture");
+            // The process must not be held open by a capture that never completes.
+            thread.setDaemon(true);
+            return thread;
+          });
+
+  @NonNull
+  ExecutorService getCaptureExecutor() {
+    return captureExecutor;
+  }
+
+  /**
+   * Stops the threads the plugin's executors hold.
+   *
+   * <p>Called from {@link CameraAndroidCameraxPlugin#onDetachedFromEngine} rather than from an
+   * override of the generated {@code tearDown}, which is final.
+   *
+   * <p>{@code shutdown}, not {@code shutdownNow}: a capture already in flight has a Dart callback
+   * waiting on it and files half written to the cache directory, so it is left to finish.
+   */
+  void releaseExecutors() {
+    captureExecutor.shutdown();
+    if (previewProxyApi != null) {
+      previewProxyApi.releaseSurfaceReleaseExecutor();
+    }
   }
 
   long getDefaultClearFinalizedWeakReferencesInterval() {
@@ -435,5 +494,35 @@ public class ProxyApiRegistrar extends CameraXLibraryPigeonProxyApiRegistrar {
   @Override
   public PigeonApiImageProxyUtils getPigeonApiImageProxyUtils() {
     return new ImageProxyUtilsProxyApi(this);
+  }
+
+  @NonNull
+  @Override
+  public PigeonApiPlatformEffectsValues getPigeonApiPlatformEffectsValues() {
+    return new EffectsValuesProxyApi(this);
+  }
+
+  @NonNull
+  @Override
+  public PigeonApiCapturedPicturePaths getPigeonApiCapturedPicturePaths() {
+    return new CapturedPicturePathsProxyApi(this);
+  }
+
+  @NonNull
+  @Override
+  public PigeonApiCameraEffectsManager getPigeonApiCameraEffectsManager() {
+    return new CameraEffectsManagerProxyApi(this);
+  }
+
+  @NonNull
+  @Override
+  public PigeonApiViewPort getPigeonApiViewPort() {
+    return new ViewPortProxyApi(this);
+  }
+
+  @NonNull
+  @Override
+  public PigeonApiWhiteBalanceManager getPigeonApiWhiteBalanceManager() {
+    return new WhiteBalanceManagerProxyApi(this);
   }
 }

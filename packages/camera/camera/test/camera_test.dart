@@ -32,6 +32,10 @@ int get mockInitializeCamera => 13;
 CameraInitializedEvent get mockOnCameraInitializedEvent =>
     const CameraInitializedEvent(13, 75, 75, ExposureMode.auto, true, FocusMode.auto, true);
 
+/// Emitted by `onCameraResolutionChanged` while non-null, to stand in for a
+/// host that reports the preview surface's own size during `initializeCamera`.
+CameraResolutionChangedEvent? mockOnCameraResolutionChangedEvent;
+
 DeviceOrientationChangedEvent get mockOnDeviceOrientationChangedEvent =>
     const DeviceOrientationChangedEvent(DeviceOrientation.portraitUp);
 
@@ -40,6 +44,11 @@ CameraClosingEvent get mockOnCameraClosingEvent => const CameraClosingEvent(13);
 CameraErrorEvent get mockOnCameraErrorEvent => const CameraErrorEvent(13, 'closing');
 
 XFile mockTakePicture = XFile('foo/bar.png');
+
+(XFile, XFile) mockTakePictureWithOriginal = (
+  XFile('foo/bar_original.png'),
+  XFile('foo/bar_processed.png'),
+);
 
 XFile mockVideoRecordingXFile = XFile('foo/bar.mpeg');
 
@@ -93,6 +102,29 @@ void main() {
       expect(cameraController.value.aspectRatio, 1);
       expect(cameraController.value.previewSize, const Size(75, 75));
       expect(cameraController.value.isInitialized, isTrue);
+    });
+
+    test('keeps a preview size the platform reported while initializing', () async {
+      // The host reports the size of the surface it actually draws into, which
+      // accounts for any crop it applies; `CameraInitializedEvent` carries the
+      // camera's uncropped output. Finishing initialization must not fall back
+      // to the latter, or the preview is laid out to a shape the texture does
+      // not have — the symptom being a stretched preview after a lens switch,
+      // until something unrelated made the host report its size again.
+      mockOnCameraResolutionChangedEvent = const CameraResolutionChangedEvent(13, 60, 80);
+      addTearDown(() => mockOnCameraResolutionChangedEvent = null);
+
+      final cameraController = CameraController(
+        const CameraDescription(
+          name: 'cam',
+          lensDirection: CameraLensDirection.back,
+          sensorOrientation: 90,
+        ),
+        ResolutionPreset.max,
+      );
+      await cameraController.initialize();
+
+      expect(cameraController.value.previewSize, const Size(60, 80));
     });
 
     test('can be initialized with media settings', () async {
@@ -225,6 +257,77 @@ void main() {
       verify(
         CameraPlatform.instance.initializeCamera(13, imageFormatGroup: ImageFormatGroup.yuv420),
       ).called(1);
+    });
+
+    test('initialize() applies the aspect ratio before frames start flowing', () async {
+      // The ratio lives on the controller, not in `MediaSettings`, so a camera
+      // rebuilt by `setDescription` starts uncropped unless it is applied
+      // before `initializeCamera`. Applying it after means the host builds the
+      // preview twice and the frames in between arrive at the wrong shape.
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      final cameraController = CameraController(
+        const CameraDescription(
+          name: 'cam',
+          lensDirection: CameraLensDirection.back,
+          sensorOrientation: 90,
+        ),
+        ResolutionPreset.max,
+      );
+      await cameraController.initialize();
+      await cameraController.setAspectRatio(1.0);
+
+      // A `setDescription` rebuilds the camera; the ratio has to survive it.
+      clearInteractions(CameraPlatform.instance);
+      await cameraController.setDescription(
+        const CameraDescription(
+          name: 'cam2',
+          lensDirection: CameraLensDirection.front,
+          sensorOrientation: 90,
+        ),
+      );
+
+      verifyInOrder(<Object?>[
+        CameraPlatform.instance.setAspectRatio(13, 1.0),
+        CameraPlatform.instance.initializeCamera(13),
+      ]);
+      // The mock is shared and only built in `setUpAll`, so the `dispose` this
+      // `setDescription` recorded would otherwise surface in the next test.
+      clearInteractions(CameraPlatform.instance);
+    });
+
+    test('a constructed aspect ratio reaches createCamera, so nothing re-binds', () async {
+      // A controller replaced to change the resolution preset carries none of
+      // the old one's state, so there is no `setAspectRatio` to hoist ahead of
+      // `initializeCamera` — the ratio has to travel with the camera settings
+      // or the first frames arrive at the camera's own shape.
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      const description = CameraDescription(
+        name: 'cam',
+        lensDirection: CameraLensDirection.back,
+        sensorOrientation: 90,
+      );
+      final cameraController = CameraController(
+        description,
+        ResolutionPreset.veryHigh,
+        aspectRatio: 1.0,
+      );
+
+      expect(cameraController.mediaSettings.aspectRatio, 1.0);
+
+      // Verified through the mock's own signatures, whose parameters are
+      // nullable so `any` and `captureAny` type-check against them.
+      final mockPlatform = CameraPlatform.instance as MockCameraPlatform;
+      clearInteractions(mockPlatform);
+      await cameraController.initialize();
+
+      final settings =
+          verify(mockPlatform.createCameraWithSettings(any, captureAny)).captured.single
+              as MediaSettings;
+      expect(settings.aspectRatio, 1.0);
+      // Already in place before the camera was built, so re-applying it would
+      // only cost a second bind.
+      verifyNever(mockPlatform.setAspectRatio(any, any));
+      clearInteractions(mockPlatform);
     });
 
     test('setDescription waits for initialize before calling dispose', () async {
@@ -363,6 +466,100 @@ void main() {
           isA<CameraException>().having((CameraException error) => error.description, 'foo', 'bar'),
         ),
       );
+      mockPlatformException = false;
+    });
+
+    test('takePictureWithOriginal() throws $CameraException when uninitialized', () async {
+      final cameraController = CameraController(
+        const CameraDescription(
+          name: 'cam',
+          lensDirection: CameraLensDirection.back,
+          sensorOrientation: 90,
+        ),
+        ResolutionPreset.max,
+      );
+      expect(
+        cameraController.takePictureWithOriginal(),
+        throwsA(
+          isA<CameraException>()
+              .having(
+                (CameraException error) => error.code,
+                'code',
+                'Uninitialized CameraController',
+              )
+              .having(
+                (CameraException error) => error.description,
+                'description',
+                'takePictureWithOriginal() was called on an uninitialized CameraController.',
+              ),
+        ),
+      );
+    });
+
+    test(
+      'takePictureWithOriginal() throws $CameraException when isTakingPicture is true',
+      () async {
+        final cameraController = CameraController(
+          const CameraDescription(
+            name: 'cam',
+            lensDirection: CameraLensDirection.back,
+            sensorOrientation: 90,
+          ),
+          ResolutionPreset.max,
+        );
+        await cameraController.initialize();
+
+        cameraController.value = cameraController.value.copyWith(isTakingPicture: true);
+        expect(
+          cameraController.takePictureWithOriginal(),
+          throwsA(
+            isA<CameraException>().having(
+              (CameraException error) => error.description,
+              'Previous capture has not returned yet.',
+              'takePictureWithOriginal was called before the previous capture returned.',
+            ),
+          ),
+        );
+      },
+    );
+
+    test('takePictureWithOriginal() returns (original, processed) record', () async {
+      final cameraController = CameraController(
+        const CameraDescription(
+          name: 'cam',
+          lensDirection: CameraLensDirection.back,
+          sensorOrientation: 90,
+        ),
+        ResolutionPreset.max,
+      );
+      await cameraController.initialize();
+
+      final (XFile original, XFile processed) = await cameraController.takePictureWithOriginal();
+
+      expect(original.path, mockTakePictureWithOriginal.$1.path);
+      expect(processed.path, mockTakePictureWithOriginal.$2.path);
+      expect(cameraController.value.isTakingPicture, isFalse);
+    });
+
+    test('takePictureWithOriginal() throws $CameraException on $PlatformException', () async {
+      final cameraController = CameraController(
+        const CameraDescription(
+          name: 'cam',
+          lensDirection: CameraLensDirection.back,
+          sensorOrientation: 90,
+        ),
+        ResolutionPreset.max,
+      );
+      await cameraController.initialize();
+
+      mockPlatformException = true;
+      await expectLater(
+        cameraController.takePictureWithOriginal(),
+        throwsA(
+          isA<CameraException>().having((CameraException error) => error.description, 'foo', 'bar'),
+        ),
+      );
+      expect(cameraController.value.isTakingPicture, isFalse);
       mockPlatformException = false;
     });
 
@@ -830,6 +1027,26 @@ void main() {
       expect(() => cameraController.setJpegImageQuality(101), throwsA(isA<ArgumentError>()));
     });
 
+    test('getSupportedFlashModes() calls $CameraPlatform', () async {
+      final cameraController = CameraController(
+        const CameraDescription(
+          name: 'cam',
+          lensDirection: CameraLensDirection.back,
+          sensorOrientation: 90,
+        ),
+        ResolutionPreset.max,
+      );
+      await cameraController.initialize();
+      when(
+        CameraPlatform.instance.getSupportedFlashModes(cameraController.cameraId),
+      ).thenAnswer((_) async => <FlashMode>[FlashMode.off, FlashMode.auto, FlashMode.always]);
+
+      final Iterable<FlashMode> modes = await cameraController.getSupportedFlashModes();
+
+      verify(CameraPlatform.instance.getSupportedFlashModes(cameraController.cameraId)).called(1);
+      expect(modes, <FlashMode>[FlashMode.off, FlashMode.auto, FlashMode.always]);
+    });
+
     test('setExposureMode() calls $CameraPlatform', () async {
       final cameraController = CameraController(
         const CameraDescription(
@@ -873,6 +1090,92 @@ void main() {
           ),
         ),
       );
+    });
+
+    test('setWhiteBalance(null) calls $CameraPlatform and switches to auto', () async {
+      final cameraController = CameraController(
+        const CameraDescription(
+          name: 'cam',
+          lensDirection: CameraLensDirection.back,
+          sensorOrientation: 90,
+        ),
+        ResolutionPreset.max,
+      );
+      await cameraController.initialize();
+
+      await cameraController.setWhiteBalance(null);
+
+      verify(CameraPlatform.instance.setWhiteBalance(cameraController.cameraId, null)).called(1);
+      expect(cameraController.value.whiteBalanceValues, null);
+      expect(cameraController.value.whiteBalanceMode, WhiteBalanceMode.auto);
+    });
+
+    test('setWhiteBalance(values) forwards values and locks white balance', () async {
+      final cameraController = CameraController(
+        const CameraDescription(
+          name: 'cam',
+          lensDirection: CameraLensDirection.back,
+          sensorOrientation: 90,
+        ),
+        ResolutionPreset.max,
+      );
+      await cameraController.initialize();
+
+      final values = WhiteBalanceValues(temperature: 5500, tint: 25);
+      await cameraController.setWhiteBalance(values);
+
+      verify(CameraPlatform.instance.setWhiteBalance(cameraController.cameraId, values)).called(1);
+      expect(cameraController.value.whiteBalanceValues, values);
+      expect(cameraController.value.whiteBalanceMode, WhiteBalanceMode.locked);
+    });
+
+    test('supportsWhiteBalance() calls $CameraPlatform', () async {
+      final cameraController = CameraController(
+        const CameraDescription(
+          name: 'cam',
+          lensDirection: CameraLensDirection.back,
+          sensorOrientation: 90,
+        ),
+        ResolutionPreset.max,
+      );
+      await cameraController.initialize();
+      when(
+        CameraPlatform.instance.supportsWhiteBalance(cameraController.cameraId),
+      ).thenAnswer((_) async => true);
+
+      expect(await cameraController.supportsWhiteBalance(), isTrue);
+      verify(CameraPlatform.instance.supportsWhiteBalance(cameraController.cameraId)).called(1);
+    });
+
+    test('supportsWhiteBalance() throws $CameraException when not initialized', () async {
+      final cameraController = CameraController(
+        const CameraDescription(
+          name: 'cam',
+          lensDirection: CameraLensDirection.back,
+          sensorOrientation: 90,
+        ),
+        ResolutionPreset.max,
+      );
+
+      expect(cameraController.supportsWhiteBalance(), throwsA(isA<CameraException>()));
+    });
+
+    test('autoWhiteBalanceValues forwards values from the platform stream', () async {
+      final cameraController = CameraController(
+        const CameraDescription(
+          name: 'cam',
+          lensDirection: CameraLensDirection.back,
+          sensorOrientation: 90,
+        ),
+        ResolutionPreset.max,
+      );
+      await cameraController.initialize();
+
+      final ({double temperature, double tint}) value =
+          await cameraController.autoWhiteBalanceValues.first;
+
+      expect(value.temperature, 5500);
+      expect(value.tint, 12);
     });
 
     test('setExposurePoint() calls $CameraPlatform', () async {
@@ -3537,6 +3840,13 @@ void main() {
 }
 
 class MockCameraPlatform extends Mock with MockPlatformInterfaceMixin implements CameraPlatform {
+  // Overridden rather than left to `Mock`, which answers a `Future`-returning
+  // method with null, so the ordering against `initializeCamera` can be
+  // verified.
+  @override
+  Future<void> setAspectRatio(int? cameraId, double? aspectRatio) async =>
+      super.noSuchMethod(Invocation.method(#setAspectRatio, <Object?>[cameraId, aspectRatio]));
+
   @override
   Future<void> initializeCamera(
     int? cameraId, {
@@ -3558,13 +3868,23 @@ class MockCameraPlatform extends Mock with MockPlatformInterfaceMixin implements
   Future<List<CameraDescription>> availableCameras() =>
       Future<List<CameraDescription>>.value(mockAvailableCameras);
 
+  // Parameters widened to nullable, like `initializeCamera` above, so `any` and
+  // `captureAny` can be used against them.
   @override
   Future<int> createCameraWithSettings(
-    CameraDescription cameraDescription,
+    CameraDescription? cameraDescription,
     MediaSettings? mediaSettings,
-  ) => mockPlatformException
-      ? throw PlatformException(code: 'foo', message: 'bar')
-      : Future<int>.value(mockInitializeCamera);
+  ) {
+    // Recorded so tests can assert on the settings a camera is built with. The
+    // result stays fixed rather than coming from the stub, because callers here
+    // need a real camera id.
+    super.noSuchMethod(
+      Invocation.method(#createCameraWithSettings, <Object?>[cameraDescription, mediaSettings]),
+    );
+    return mockPlatformException
+        ? throw PlatformException(code: 'foo', message: 'bar')
+        : Future<int>.value(mockInitializeCamera);
+  }
 
   @override
   Future<int> createCamera(
@@ -3586,6 +3906,27 @@ class MockCameraPlatform extends Mock with MockPlatformInterfaceMixin implements
       Stream<CameraErrorEvent>.value(mockOnCameraErrorEvent);
 
   @override
+  Stream<CameraResolutionChangedEvent> onCameraResolutionChanged(int cameraId) {
+    final CameraResolutionChangedEvent? event = mockOnCameraResolutionChangedEvent;
+    return event == null
+        ? const Stream<CameraResolutionChangedEvent>.empty()
+        : Stream<CameraResolutionChangedEvent>.value(event);
+  }
+
+  @override
+  Stream<CameraAutoWhiteBalanceChangedEvent> onAutoWhiteBalanceChanged(int cameraId) {
+    // The real platform emits continuously while auto-WB is active. Mimic
+    // that with a periodic source so a subscriber attaching *after* the
+    // controller has wired its upstream still sees an event (single-shot
+    // `Stream.value` would race and silently drop, since the controller's
+    // public stream is broadcast and doesn't buffer pre-subscription).
+    return Stream<CameraAutoWhiteBalanceChangedEvent>.periodic(
+      const Duration(milliseconds: 10),
+      (_) => CameraAutoWhiteBalanceChangedEvent(cameraId, 5500, 12),
+    );
+  }
+
+  @override
   Stream<DeviceOrientationChangedEvent> onDeviceOrientationChanged() =>
       Stream<DeviceOrientationChangedEvent>.value(mockOnDeviceOrientationChangedEvent);
 
@@ -3593,6 +3934,11 @@ class MockCameraPlatform extends Mock with MockPlatformInterfaceMixin implements
   Future<XFile> takePicture(int cameraId) => mockPlatformException
       ? throw PlatformException(code: 'foo', message: 'bar')
       : Future<XFile>.value(mockTakePicture);
+
+  @override
+  Future<(XFile, XFile)> takePictureWithOriginal(int cameraId) => mockPlatformException
+      ? throw PlatformException(code: 'foo', message: 'bar')
+      : Future<(XFile, XFile)>.value(mockTakePictureWithOriginal);
 
   @override
   Future<void> prepareForVideoRecording() async =>
@@ -3653,12 +3999,37 @@ class MockCameraPlatform extends Mock with MockPlatformInterfaceMixin implements
       super.noSuchMethod(Invocation.method(#setFlashMode, <Object?>[cameraId, mode]));
 
   @override
+  Future<Iterable<FlashMode>> getSupportedFlashModes(int? cameraId) =>
+      super.noSuchMethod(
+            Invocation.method(#getSupportedFlashModes, <Object?>[cameraId]),
+            returnValue: Future<List<FlashMode>>.value(<FlashMode>[]),
+            returnValueForMissingStub: Future<List<FlashMode>>.value(<FlashMode>[]),
+          )
+          as Future<Iterable<FlashMode>>;
+
+  @override
   Future<void> setExposureMode(int? cameraId, ExposureMode? mode) async =>
       super.noSuchMethod(Invocation.method(#setExposureMode, <Object?>[cameraId, mode]));
 
   @override
   Future<void> setExposurePoint(int? cameraId, Point<double>? point) async =>
       super.noSuchMethod(Invocation.method(#setExposurePoint, <Object?>[cameraId, point]));
+
+  @override
+  Future<void> setWhiteBalance(int? cameraId, WhiteBalanceValues? values) async =>
+      super.noSuchMethod(
+        Invocation.method(#setWhiteBalance, <Object?>[cameraId, values]),
+        returnValue: Future<void>.value(),
+      );
+
+  @override
+  Future<bool> supportsWhiteBalance(int? cameraId) =>
+      super.noSuchMethod(
+            Invocation.method(#supportsWhiteBalance, <Object?>[cameraId]),
+            returnValue: Future<bool>.value(false),
+            returnValueForMissingStub: Future<bool>.value(false),
+          )
+          as Future<bool>;
 
   @override
   Future<double> getMinExposureOffset(int? cameraId) async =>

@@ -245,4 +245,80 @@ final class PhotoCaptureTests: XCTestCase {
 
     waitForExpectations(timeout: 30, handler: nil)
   }
+
+  func testCaptureToFilesWithOriginal_mustReportErrorIfDelegateCompletesWithError() {
+    let errorExpectation = expectation(
+      description: "Must surface error from the dual-output save delegate.")
+    let captureSessionQueue = DispatchQueue(label: "capture_session_queue")
+    captureSessionQueue.setSpecific(
+      key: captureSessionQueueSpecificKey, value: captureSessionQueueSpecificValue)
+    let cam = createCam(with: captureSessionQueue)
+    let error = NSError(domain: "test", code: 0, userInfo: nil)
+
+    let mockOutput = MockCapturePhotoOutput()
+    mockOutput.capturePhotoWithSettingsStub = { settings, _ in
+      let delegate =
+        cam.inProgressSavePhotoWithOriginalDelegates[settings.uniqueID]
+      let ioQueue = DispatchQueue(label: "io_queue")
+      ioQueue.async {
+        delegate?.completionHandler(.failure(error))
+      }
+    }
+    cam.capturePhotoOutput = mockOutput
+
+    captureSessionQueue.async {
+      cam.captureToFilesWithOriginal { result in
+        switch result {
+        case .success:
+          XCTFail("Expected failure")
+        case .failure:
+          break
+        }
+        errorExpectation.fulfill()
+      }
+    }
+
+    waitForExpectations(timeout: 30, handler: nil)
+  }
+
+  func testCaptureToFilesWithOriginal_mustReportBothPathsOnSuccess() {
+    let pathsExpectation = expectation(
+      description: "Must return both original and processed paths on success.")
+    let captureSessionQueue = DispatchQueue(label: "capture_session_queue")
+    captureSessionQueue.setSpecific(
+      key: captureSessionQueueSpecificKey, value: captureSessionQueueSpecificValue)
+    let cam = createCam(with: captureSessionQueue)
+
+    let mockOutput = MockCapturePhotoOutput()
+    mockOutput.capturePhotoWithSettingsStub = { settings, _ in
+      let delegate =
+        cam.inProgressSavePhotoWithOriginalDelegates[settings.uniqueID]
+      let ioQueue = DispatchQueue(label: "io_queue")
+      ioQueue.async {
+        delegate?.completionHandler(
+          .success(
+            (originalPath: delegate!.originalFilePath,
+              processedPath: delegate!.processedFilePath)))
+      }
+    }
+    cam.capturePhotoOutput = mockOutput
+
+    captureSessionQueue.async {
+      cam.captureToFilesWithOriginal { result in
+        switch result {
+        case .success(let paths):
+          XCTAssertNotEqual(paths.originalPath, paths.processedPath)
+          XCTAssertTrue(paths.originalPath.contains("/tmp/camera/pictures/"))
+          XCTAssertTrue(paths.processedPath.contains("/tmp/camera/pictures/"))
+          XCTAssertTrue(paths.originalPath.contains("CAP_ORIG_"))
+          XCTAssertTrue(paths.processedPath.contains("CAP_PROC_"))
+        case .failure:
+          XCTFail("Unexpected failure")
+        }
+        pathsExpectation.fulfill()
+      }
+    }
+
+    waitForExpectations(timeout: 30, handler: nil)
+  }
 }

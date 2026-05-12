@@ -105,6 +105,14 @@ void main() {
       },
     );
 
+    test('Default implementation of supportsWhiteBalance() should report false', () async {
+      // A platform that does not implement setWhiteBalance() cannot lock the
+      // white balance, so false is the answer rather than an error.
+      final cameraPlatform = ExtendsCameraPlatform();
+
+      expect(await cameraPlatform.supportsWhiteBalance(1), isFalse);
+    });
+
     test('Default implementation of dispose() should throw unimplemented error', () {
       // Arrange
       final cameraPlatform = ExtendsCameraPlatform();
@@ -220,6 +228,14 @@ void main() {
 
       // Act & Assert
       expect(() => cameraPlatform.setFlashMode(1, FlashMode.auto), throwsUnimplementedError);
+    });
+
+    test('Default implementation of getSupportedFlashModes() returns an empty list', () async {
+      // Arrange
+      final cameraPlatform = ExtendsCameraPlatform();
+
+      // Act & Assert
+      expect(await cameraPlatform.getSupportedFlashModes(1), <FlashMode>[]);
     });
 
     test('Default implementation of setExposureMode() should throw unimplemented error', () {

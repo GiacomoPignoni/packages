@@ -192,6 +192,11 @@ private func nilOrValue<T>(_ value: Any?) -> T? {
   return value as! T?
 }
 
+enum PlatformGrainBehavior: Int, CaseIterable {
+  case overlay = 0
+  case darkOnly = 1
+}
+
 enum PlatformCameraLensDirection: Int, CaseIterable {
   /// Front facing camera (a user looking at the screen is seen by the camera).
   case front = 0
@@ -254,6 +259,9 @@ enum PlatformResolutionPreset: Int, CaseIterable {
   case veryHigh = 3
   case ultraHigh = 4
   case max = 5
+  /// Maps to `AVCaptureSession.Preset.photo` — full-sensor stills at the
+  /// cost of a reduced video stream. See `ResolutionPreset.photo`.
+  case photo = 6
 }
 
 enum PlatformVideoStabilizationMode: Int, CaseIterable {
@@ -271,17 +279,23 @@ struct PlatformCameraDescription: Hashable, CustomStringConvertible {
   var lensDirection: PlatformCameraLensDirection
   /// The type of the camera lens.
   var lensType: PlatformCameraLensType
+  /// The approximate 35mm-equivalent focal length of the lens, in millimetres.
+  ///
+  /// Only populated on iOS (AVFoundation). Null on other platforms.
+  var equivalentFocalLength: Double? = nil
 
   // swift-format-ignore: AlwaysUseLowerCamelCase
   static func fromList(_ pigeonVar_list: [Any?]) -> PlatformCameraDescription? {
     let name = pigeonVar_list[0] as! String
     let lensDirection = pigeonVar_list[1] as! PlatformCameraLensDirection
     let lensType = pigeonVar_list[2] as! PlatformCameraLensType
+    let equivalentFocalLength: Double? = nilOrValue(pigeonVar_list[3])
 
     return PlatformCameraDescription(
       name: name,
       lensDirection: lensDirection,
-      lensType: lensType
+      lensType: lensType,
+      equivalentFocalLength: equivalentFocalLength
     )
   }
   func toList() -> [Any?] {
@@ -289,6 +303,7 @@ struct PlatformCameraDescription: Hashable, CustomStringConvertible {
       name,
       lensDirection,
       lensType,
+      equivalentFocalLength,
     ]
   }
   static func == (lhs: PlatformCameraDescription, rhs: PlatformCameraDescription) -> Bool {
@@ -298,6 +313,7 @@ struct PlatformCameraDescription: Hashable, CustomStringConvertible {
     return MessagesPigeonInternal.deepEquals(lhs.name, rhs.name)
       && MessagesPigeonInternal.deepEquals(lhs.lensDirection, rhs.lensDirection)
       && MessagesPigeonInternal.deepEquals(lhs.lensType, rhs.lensType)
+      && MessagesPigeonInternal.deepEquals(lhs.equivalentFocalLength, rhs.equivalentFocalLength)
   }
 
   func hash(into hasher: inout Hasher) {
@@ -305,11 +321,12 @@ struct PlatformCameraDescription: Hashable, CustomStringConvertible {
     MessagesPigeonInternal.deepHash(value: name, hasher: &hasher)
     MessagesPigeonInternal.deepHash(value: lensDirection, hasher: &hasher)
     MessagesPigeonInternal.deepHash(value: lensType, hasher: &hasher)
+    MessagesPigeonInternal.deepHash(value: equivalentFocalLength, hasher: &hasher)
   }
 
   public var description: String {
     return
-      "PlatformCameraDescription(name: \(String(describing: name)), lensDirection: \(String(describing: lensDirection)), lensType: \(String(describing: lensType)))"
+      "PlatformCameraDescription(name: \(String(describing: name)), lensDirection: \(String(describing: lensDirection)), lensType: \(String(describing: lensType)), equivalentFocalLength: \(String(describing: equivalentFocalLength)))"
   }
 }
 
@@ -510,6 +527,10 @@ struct PlatformMediaSettings: Hashable, CustomStringConvertible {
   var videoBitrate: Int64? = nil
   var audioBitrate: Int64? = nil
   var enableAudio: Bool
+  /// Aspect ratio (width/height) that center-crops preview, photo, and video
+  /// output. `null` means no crop. Only takes effect when the shader pipeline
+  /// is enabled.
+  var aspectRatio: Double? = nil
 
   // swift-format-ignore: AlwaysUseLowerCamelCase
   static func fromList(_ pigeonVar_list: [Any?]) -> PlatformMediaSettings? {
@@ -518,13 +539,15 @@ struct PlatformMediaSettings: Hashable, CustomStringConvertible {
     let videoBitrate: Int64? = nilOrValue(pigeonVar_list[2])
     let audioBitrate: Int64? = nilOrValue(pigeonVar_list[3])
     let enableAudio = pigeonVar_list[4] as! Bool
+    let aspectRatio: Double? = nilOrValue(pigeonVar_list[5])
 
     return PlatformMediaSettings(
       resolutionPreset: resolutionPreset,
       framesPerSecond: framesPerSecond,
       videoBitrate: videoBitrate,
       audioBitrate: audioBitrate,
-      enableAudio: enableAudio
+      enableAudio: enableAudio,
+      aspectRatio: aspectRatio
     )
   }
   func toList() -> [Any?] {
@@ -534,6 +557,7 @@ struct PlatformMediaSettings: Hashable, CustomStringConvertible {
       videoBitrate,
       audioBitrate,
       enableAudio,
+      aspectRatio,
     ]
   }
   static func == (lhs: PlatformMediaSettings, rhs: PlatformMediaSettings) -> Bool {
@@ -545,6 +569,7 @@ struct PlatformMediaSettings: Hashable, CustomStringConvertible {
       && MessagesPigeonInternal.deepEquals(lhs.videoBitrate, rhs.videoBitrate)
       && MessagesPigeonInternal.deepEquals(lhs.audioBitrate, rhs.audioBitrate)
       && MessagesPigeonInternal.deepEquals(lhs.enableAudio, rhs.enableAudio)
+      && MessagesPigeonInternal.deepEquals(lhs.aspectRatio, rhs.aspectRatio)
   }
 
   func hash(into hasher: inout Hasher) {
@@ -554,11 +579,12 @@ struct PlatformMediaSettings: Hashable, CustomStringConvertible {
     MessagesPigeonInternal.deepHash(value: videoBitrate, hasher: &hasher)
     MessagesPigeonInternal.deepHash(value: audioBitrate, hasher: &hasher)
     MessagesPigeonInternal.deepHash(value: enableAudio, hasher: &hasher)
+    MessagesPigeonInternal.deepHash(value: aspectRatio, hasher: &hasher)
   }
 
   public var description: String {
     return
-      "PlatformMediaSettings(resolutionPreset: \(String(describing: resolutionPreset)), framesPerSecond: \(String(describing: framesPerSecond)), videoBitrate: \(String(describing: videoBitrate)), audioBitrate: \(String(describing: audioBitrate)), enableAudio: \(String(describing: enableAudio)))"
+      "PlatformMediaSettings(resolutionPreset: \(String(describing: resolutionPreset)), framesPerSecond: \(String(describing: framesPerSecond)), videoBitrate: \(String(describing: videoBitrate)), audioBitrate: \(String(describing: audioBitrate)), enableAudio: \(String(describing: enableAudio)), aspectRatio: \(String(describing: aspectRatio)))"
   }
 }
 
@@ -643,83 +669,322 @@ struct PlatformSize: Hashable, CustomStringConvertible {
   }
 }
 
+/// Generated class from Pigeon that represents data sent in messages.
+struct PlatformEffectsValues: Hashable, CustomStringConvertible {
+  /// Radial darkening toward the frame edges (0.0 = off, 1.0 = full vignette).
+  var vignetteIntensity: Double
+  /// Absolute file path to the grain/noise source image.
+  /// Null disables the grain effect.
+  var grainNoisePath: String? = nil
+  /// Opacity of the grain overlay (0.0 = off, 1.0 = fully applied).
+  var grainOpacity: Double
+  /// Resolution-independent grain tile size (>= 0.0).
+  /// 1.0 = grain image spans the full frame; smaller values tile more finely; bigger values tile more coarsely.
+  var grainSize: Double
+  /// Controls where grain is visible across the tonal range.
+  var grainBehavior: PlatformGrainBehavior
+  /// Absolute file path to a 3D LUT color-grade image: a 512×512 PNG storing
+  /// a 64×64×64 cube as an 8×8 row-major grid of 64×64 tiles (tile index =
+  /// blue slice; within a tile x = red, y = green top-to-bottom).
+  /// Null disables the LUT color filter.
+  var lutFilePath: String? = nil
+  /// Intensity of the LUT color filter (0.0 = no effect, 1.0 = full LUT).
+  /// Ignored when [lutFilePath] is null.
+  var lutIntensity: Double
+  /// Simulates a low-resolution sensor (0.0 = off, 1.0 = full strength).
+  /// Adds a soft Gaussian blur and desaturation.
+  var resolution: Double
+  /// Chromatic aberration strength (0.0 = off, 1.0 = full strength).
+  var colorShift: Double
+  /// Dreamy mist / Orton-style soft glow (0.0 = off, 1.0 = full strength).
+  var mist: Double
+  /// Radial chromatic motion blur (0.0 = off, 1.0 = full strength).
+  var prism: Double
+  /// Cheap clip-on fisheye lens simulation (true = on).
+  var cheapFisheye: Bool
+  /// Highlight bloom / light-bleed glow (0.0 = off, 1.0 = full strength).
+  var bloom: Double
+  /// Diffusion / soft-focus filter (0.0 = off, 1.0 = full strength).
+  /// Mixes the frame toward a wide Gaussian blur of itself.
+  var diffusion: Double
+
+  // swift-format-ignore: AlwaysUseLowerCamelCase
+  static func fromList(_ pigeonVar_list: [Any?]) -> PlatformEffectsValues? {
+    let vignetteIntensity = pigeonVar_list[0] as! Double
+    let grainNoisePath: String? = nilOrValue(pigeonVar_list[1])
+    let grainOpacity = pigeonVar_list[2] as! Double
+    let grainSize = pigeonVar_list[3] as! Double
+    let grainBehavior = pigeonVar_list[4] as! PlatformGrainBehavior
+    let lutFilePath: String? = nilOrValue(pigeonVar_list[5])
+    let lutIntensity = pigeonVar_list[6] as! Double
+    let resolution = pigeonVar_list[7] as! Double
+    let colorShift = pigeonVar_list[8] as! Double
+    let mist = pigeonVar_list[9] as! Double
+    let prism = pigeonVar_list[10] as! Double
+    let cheapFisheye = pigeonVar_list[11] as! Bool
+    let bloom = pigeonVar_list[12] as! Double
+    let diffusion = pigeonVar_list[13] as! Double
+
+    return PlatformEffectsValues(
+      vignetteIntensity: vignetteIntensity,
+      grainNoisePath: grainNoisePath,
+      grainOpacity: grainOpacity,
+      grainSize: grainSize,
+      grainBehavior: grainBehavior,
+      lutFilePath: lutFilePath,
+      lutIntensity: lutIntensity,
+      resolution: resolution,
+      colorShift: colorShift,
+      mist: mist,
+      prism: prism,
+      cheapFisheye: cheapFisheye,
+      bloom: bloom,
+      diffusion: diffusion
+    )
+  }
+  func toList() -> [Any?] {
+    return [
+      vignetteIntensity,
+      grainNoisePath,
+      grainOpacity,
+      grainSize,
+      grainBehavior,
+      lutFilePath,
+      lutIntensity,
+      resolution,
+      colorShift,
+      mist,
+      prism,
+      cheapFisheye,
+      bloom,
+      diffusion,
+    ]
+  }
+  static func == (lhs: PlatformEffectsValues, rhs: PlatformEffectsValues) -> Bool {
+    if Swift.type(of: lhs) != Swift.type(of: rhs) {
+      return false
+    }
+    return MessagesPigeonInternal.deepEquals(lhs.vignetteIntensity, rhs.vignetteIntensity)
+      && MessagesPigeonInternal.deepEquals(lhs.grainNoisePath, rhs.grainNoisePath)
+      && MessagesPigeonInternal.deepEquals(lhs.grainOpacity, rhs.grainOpacity)
+      && MessagesPigeonInternal.deepEquals(lhs.grainSize, rhs.grainSize)
+      && MessagesPigeonInternal.deepEquals(lhs.grainBehavior, rhs.grainBehavior)
+      && MessagesPigeonInternal.deepEquals(lhs.lutFilePath, rhs.lutFilePath)
+      && MessagesPigeonInternal.deepEquals(lhs.lutIntensity, rhs.lutIntensity)
+      && MessagesPigeonInternal.deepEquals(lhs.resolution, rhs.resolution)
+      && MessagesPigeonInternal.deepEquals(lhs.colorShift, rhs.colorShift)
+      && MessagesPigeonInternal.deepEquals(lhs.mist, rhs.mist)
+      && MessagesPigeonInternal.deepEquals(lhs.prism, rhs.prism)
+      && MessagesPigeonInternal.deepEquals(lhs.cheapFisheye, rhs.cheapFisheye)
+      && MessagesPigeonInternal.deepEquals(lhs.bloom, rhs.bloom)
+      && MessagesPigeonInternal.deepEquals(lhs.diffusion, rhs.diffusion)
+  }
+
+  func hash(into hasher: inout Hasher) {
+    hasher.combine("PlatformEffectsValues")
+    MessagesPigeonInternal.deepHash(value: vignetteIntensity, hasher: &hasher)
+    MessagesPigeonInternal.deepHash(value: grainNoisePath, hasher: &hasher)
+    MessagesPigeonInternal.deepHash(value: grainOpacity, hasher: &hasher)
+    MessagesPigeonInternal.deepHash(value: grainSize, hasher: &hasher)
+    MessagesPigeonInternal.deepHash(value: grainBehavior, hasher: &hasher)
+    MessagesPigeonInternal.deepHash(value: lutFilePath, hasher: &hasher)
+    MessagesPigeonInternal.deepHash(value: lutIntensity, hasher: &hasher)
+    MessagesPigeonInternal.deepHash(value: resolution, hasher: &hasher)
+    MessagesPigeonInternal.deepHash(value: colorShift, hasher: &hasher)
+    MessagesPigeonInternal.deepHash(value: mist, hasher: &hasher)
+    MessagesPigeonInternal.deepHash(value: prism, hasher: &hasher)
+    MessagesPigeonInternal.deepHash(value: cheapFisheye, hasher: &hasher)
+    MessagesPigeonInternal.deepHash(value: bloom, hasher: &hasher)
+    MessagesPigeonInternal.deepHash(value: diffusion, hasher: &hasher)
+  }
+
+  public var description: String {
+    return
+      "PlatformEffectsValues(vignetteIntensity: \(String(describing: vignetteIntensity)), grainNoisePath: \(String(describing: grainNoisePath)), grainOpacity: \(String(describing: grainOpacity)), grainSize: \(String(describing: grainSize)), grainBehavior: \(String(describing: grainBehavior)), lutFilePath: \(String(describing: lutFilePath)), lutIntensity: \(String(describing: lutIntensity)), resolution: \(String(describing: resolution)), colorShift: \(String(describing: colorShift)), mist: \(String(describing: mist)), prism: \(String(describing: prism)), cheapFisheye: \(String(describing: cheapFisheye)), bloom: \(String(describing: bloom)), diffusion: \(String(describing: diffusion)))"
+  }
+}
+
+/// Paths to the two photo files produced by [CameraApi.takePictureWithOriginal].
+///
+/// Generated class from Pigeon that represents data sent in messages.
+struct PlatformCapturedPicturePaths: Hashable, CustomStringConvertible {
+  /// File path of the un-effected original. The configured `captureScale` crop
+  /// and resampling is preserved, but the custom Metal shader is not applied.
+  var originalPath: String
+  /// File path of the shader-processed photo (equivalent to
+  /// [CameraApi.takePicture]).
+  var processedPath: String
+
+  // swift-format-ignore: AlwaysUseLowerCamelCase
+  static func fromList(_ pigeonVar_list: [Any?]) -> PlatformCapturedPicturePaths? {
+    let originalPath = pigeonVar_list[0] as! String
+    let processedPath = pigeonVar_list[1] as! String
+
+    return PlatformCapturedPicturePaths(
+      originalPath: originalPath,
+      processedPath: processedPath
+    )
+  }
+  func toList() -> [Any?] {
+    return [
+      originalPath,
+      processedPath,
+    ]
+  }
+  static func == (lhs: PlatformCapturedPicturePaths, rhs: PlatformCapturedPicturePaths) -> Bool {
+    if Swift.type(of: lhs) != Swift.type(of: rhs) {
+      return false
+    }
+    return MessagesPigeonInternal.deepEquals(lhs.originalPath, rhs.originalPath)
+      && MessagesPigeonInternal.deepEquals(lhs.processedPath, rhs.processedPath)
+  }
+
+  func hash(into hasher: inout Hasher) {
+    hasher.combine("PlatformCapturedPicturePaths")
+    MessagesPigeonInternal.deepHash(value: originalPath, hasher: &hasher)
+    MessagesPigeonInternal.deepHash(value: processedPath, hasher: &hasher)
+  }
+
+  public var description: String {
+    return
+      "PlatformCapturedPicturePaths(originalPath: \(String(describing: originalPath)), processedPath: \(String(describing: processedPath)))"
+  }
+}
+
+/// Pigeon version of WhiteBalanceValues.
+///
+/// Generated class from Pigeon that represents data sent in messages.
+struct PlatformWhiteBalanceValues: Hashable, CustomStringConvertible {
+  /// The color temperature in Kelvin.
+  var temperature: Double
+  /// The tint offset, where `0` is neutral.
+  var tint: Double
+
+  // swift-format-ignore: AlwaysUseLowerCamelCase
+  static func fromList(_ pigeonVar_list: [Any?]) -> PlatformWhiteBalanceValues? {
+    let temperature = pigeonVar_list[0] as! Double
+    let tint = pigeonVar_list[1] as! Double
+
+    return PlatformWhiteBalanceValues(
+      temperature: temperature,
+      tint: tint
+    )
+  }
+  func toList() -> [Any?] {
+    return [
+      temperature,
+      tint,
+    ]
+  }
+  static func == (lhs: PlatformWhiteBalanceValues, rhs: PlatformWhiteBalanceValues) -> Bool {
+    if Swift.type(of: lhs) != Swift.type(of: rhs) {
+      return false
+    }
+    return MessagesPigeonInternal.deepEquals(lhs.temperature, rhs.temperature)
+      && MessagesPigeonInternal.deepEquals(lhs.tint, rhs.tint)
+  }
+
+  func hash(into hasher: inout Hasher) {
+    hasher.combine("PlatformWhiteBalanceValues")
+    MessagesPigeonInternal.deepHash(value: temperature, hasher: &hasher)
+    MessagesPigeonInternal.deepHash(value: tint, hasher: &hasher)
+  }
+
+  public var description: String {
+    return
+      "PlatformWhiteBalanceValues(temperature: \(String(describing: temperature)), tint: \(String(describing: tint)))"
+  }
+}
+
 private class MessagesPigeonCodecReader: FlutterStandardReader {
   override func readValue(ofType type: UInt8) -> Any? {
     switch type {
     case 129:
       let enumResultAsInt: Int? = nilOrValue(self.readValue() as! Int?)
       if let enumResultAsInt = enumResultAsInt {
-        return PlatformCameraLensDirection(rawValue: enumResultAsInt)
+        return PlatformGrainBehavior(rawValue: enumResultAsInt)
       }
       return nil
     case 130:
       let enumResultAsInt: Int? = nilOrValue(self.readValue() as! Int?)
       if let enumResultAsInt = enumResultAsInt {
-        return PlatformCameraLensType(rawValue: enumResultAsInt)
+        return PlatformCameraLensDirection(rawValue: enumResultAsInt)
       }
       return nil
     case 131:
       let enumResultAsInt: Int? = nilOrValue(self.readValue() as! Int?)
       if let enumResultAsInt = enumResultAsInt {
-        return PlatformDeviceOrientation(rawValue: enumResultAsInt)
+        return PlatformCameraLensType(rawValue: enumResultAsInt)
       }
       return nil
     case 132:
       let enumResultAsInt: Int? = nilOrValue(self.readValue() as! Int?)
       if let enumResultAsInt = enumResultAsInt {
-        return PlatformExposureMode(rawValue: enumResultAsInt)
+        return PlatformDeviceOrientation(rawValue: enumResultAsInt)
       }
       return nil
     case 133:
       let enumResultAsInt: Int? = nilOrValue(self.readValue() as! Int?)
       if let enumResultAsInt = enumResultAsInt {
-        return PlatformFlashMode(rawValue: enumResultAsInt)
+        return PlatformExposureMode(rawValue: enumResultAsInt)
       }
       return nil
     case 134:
       let enumResultAsInt: Int? = nilOrValue(self.readValue() as! Int?)
       if let enumResultAsInt = enumResultAsInt {
-        return PlatformFocusMode(rawValue: enumResultAsInt)
+        return PlatformFlashMode(rawValue: enumResultAsInt)
       }
       return nil
     case 135:
       let enumResultAsInt: Int? = nilOrValue(self.readValue() as! Int?)
       if let enumResultAsInt = enumResultAsInt {
-        return PlatformImageFileFormat(rawValue: enumResultAsInt)
+        return PlatformFocusMode(rawValue: enumResultAsInt)
       }
       return nil
     case 136:
       let enumResultAsInt: Int? = nilOrValue(self.readValue() as! Int?)
       if let enumResultAsInt = enumResultAsInt {
-        return PlatformImageFormatGroup(rawValue: enumResultAsInt)
+        return PlatformImageFileFormat(rawValue: enumResultAsInt)
       }
       return nil
     case 137:
       let enumResultAsInt: Int? = nilOrValue(self.readValue() as! Int?)
       if let enumResultAsInt = enumResultAsInt {
-        return PlatformResolutionPreset(rawValue: enumResultAsInt)
+        return PlatformImageFormatGroup(rawValue: enumResultAsInt)
       }
       return nil
     case 138:
       let enumResultAsInt: Int? = nilOrValue(self.readValue() as! Int?)
       if let enumResultAsInt = enumResultAsInt {
-        return PlatformVideoStabilizationMode(rawValue: enumResultAsInt)
+        return PlatformResolutionPreset(rawValue: enumResultAsInt)
       }
       return nil
     case 139:
-      return PlatformCameraDescription.fromList(self.readValue() as! [Any?])
+      let enumResultAsInt: Int? = nilOrValue(self.readValue() as! Int?)
+      if let enumResultAsInt = enumResultAsInt {
+        return PlatformVideoStabilizationMode(rawValue: enumResultAsInt)
+      }
+      return nil
     case 140:
-      return PlatformCameraState.fromList(self.readValue() as! [Any?])
+      return PlatformCameraDescription.fromList(self.readValue() as! [Any?])
     case 141:
-      return PlatformCameraImageData.fromList(self.readValue() as! [Any?])
+      return PlatformCameraState.fromList(self.readValue() as! [Any?])
     case 142:
-      return PlatformCameraImagePlane.fromList(self.readValue() as! [Any?])
+      return PlatformCameraImageData.fromList(self.readValue() as! [Any?])
     case 143:
-      return PlatformMediaSettings.fromList(self.readValue() as! [Any?])
+      return PlatformCameraImagePlane.fromList(self.readValue() as! [Any?])
     case 144:
-      return PlatformPoint.fromList(self.readValue() as! [Any?])
+      return PlatformMediaSettings.fromList(self.readValue() as! [Any?])
     case 145:
+      return PlatformPoint.fromList(self.readValue() as! [Any?])
+    case 146:
       return PlatformSize.fromList(self.readValue() as! [Any?])
+    case 147:
+      return PlatformEffectsValues.fromList(self.readValue() as! [Any?])
+    case 148:
+      return PlatformCapturedPicturePaths.fromList(self.readValue() as! [Any?])
+    case 149:
+      return PlatformWhiteBalanceValues.fromList(self.readValue() as! [Any?])
     default:
       return super.readValue(ofType: type)
     }
@@ -728,56 +993,68 @@ private class MessagesPigeonCodecReader: FlutterStandardReader {
 
 private class MessagesPigeonCodecWriter: FlutterStandardWriter {
   override func writeValue(_ value: Any) {
-    if let value = value as? PlatformCameraLensDirection {
+    if let value = value as? PlatformGrainBehavior {
       super.writeByte(129)
       super.writeValue(value.rawValue)
-    } else if let value = value as? PlatformCameraLensType {
+    } else if let value = value as? PlatformCameraLensDirection {
       super.writeByte(130)
       super.writeValue(value.rawValue)
-    } else if let value = value as? PlatformDeviceOrientation {
+    } else if let value = value as? PlatformCameraLensType {
       super.writeByte(131)
       super.writeValue(value.rawValue)
-    } else if let value = value as? PlatformExposureMode {
+    } else if let value = value as? PlatformDeviceOrientation {
       super.writeByte(132)
       super.writeValue(value.rawValue)
-    } else if let value = value as? PlatformFlashMode {
+    } else if let value = value as? PlatformExposureMode {
       super.writeByte(133)
       super.writeValue(value.rawValue)
-    } else if let value = value as? PlatformFocusMode {
+    } else if let value = value as? PlatformFlashMode {
       super.writeByte(134)
       super.writeValue(value.rawValue)
-    } else if let value = value as? PlatformImageFileFormat {
+    } else if let value = value as? PlatformFocusMode {
       super.writeByte(135)
       super.writeValue(value.rawValue)
-    } else if let value = value as? PlatformImageFormatGroup {
+    } else if let value = value as? PlatformImageFileFormat {
       super.writeByte(136)
       super.writeValue(value.rawValue)
-    } else if let value = value as? PlatformResolutionPreset {
+    } else if let value = value as? PlatformImageFormatGroup {
       super.writeByte(137)
       super.writeValue(value.rawValue)
-    } else if let value = value as? PlatformVideoStabilizationMode {
+    } else if let value = value as? PlatformResolutionPreset {
       super.writeByte(138)
       super.writeValue(value.rawValue)
-    } else if let value = value as? PlatformCameraDescription {
+    } else if let value = value as? PlatformVideoStabilizationMode {
       super.writeByte(139)
-      super.writeValue(value.toList())
-    } else if let value = value as? PlatformCameraState {
+      super.writeValue(value.rawValue)
+    } else if let value = value as? PlatformCameraDescription {
       super.writeByte(140)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformCameraImageData {
+    } else if let value = value as? PlatformCameraState {
       super.writeByte(141)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformCameraImagePlane {
+    } else if let value = value as? PlatformCameraImageData {
       super.writeByte(142)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformMediaSettings {
+    } else if let value = value as? PlatformCameraImagePlane {
       super.writeByte(143)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformPoint {
+    } else if let value = value as? PlatformMediaSettings {
       super.writeByte(144)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformSize {
+    } else if let value = value as? PlatformPoint {
       super.writeByte(145)
+      super.writeValue(value.toList())
+    } else if let value = value as? PlatformSize {
+      super.writeByte(146)
+      super.writeValue(value.toList())
+    } else if let value = value as? PlatformEffectsValues {
+      super.writeByte(147)
+      super.writeValue(value.toList())
+    } else if let value = value as? PlatformCapturedPicturePaths {
+      super.writeByte(148)
+      super.writeValue(value.toList())
+    } else if let value = value as? PlatformWhiteBalanceValues {
+      super.writeByte(149)
       super.writeValue(value.toList())
     } else {
       super.writeValue(value)
@@ -808,6 +1085,9 @@ protocol CameraApi {
   func getAvailableCameras(
     completion: @escaping (Result<[PlatformCameraDescription], Error>) -> Void)
   /// Create a new camera with the given settings, and returns its ID.
+  /// Every preview frame, recorded video frame, and captured photo is
+  /// rendered through the bundled Metal shader pipeline; when no effects or
+  /// crop are applied the pipeline is a pass-through.
   func create(
     cameraName: String, settings: PlatformMediaSettings,
     completion: @escaping (Result<Int64, Error>) -> Void)
@@ -836,6 +1116,11 @@ protocol CameraApi {
   /// Takes a picture with the current settings, and returns the path to the
   /// resulting file.
   func takePicture(completion: @escaping (Result<String, Error>) -> Void)
+  /// Takes a picture and saves it twice: the un-effected original (with the
+  /// configured `captureScale` crop preserved) and the shader-processed
+  /// version. Returns the paths to both files.
+  func takePictureWithOriginal(
+    completion: @escaping (Result<PlatformCapturedPicturePaths, Error>) -> Void)
   /// Does any preprocessing necessary before beginning to record video.
   func prepareForVideoRecording(completion: @escaping (Result<Void, Error>) -> Void)
   /// Begins recording video, optionally enabling streaming to Dart at the same
@@ -849,6 +1134,8 @@ protocol CameraApi {
   func resumeVideoRecording(completion: @escaping (Result<Void, Error>) -> Void)
   /// Switches the camera to the given flash mode.
   func setFlashMode(mode: PlatformFlashMode, completion: @escaping (Result<Void, Error>) -> Void)
+  /// Returns the flash modes supported by the camera.
+  func getSupportedFlashModes(completion: @escaping (Result<[PlatformFlashMode], Error>) -> Void)
   /// Switches the camera to the given exposure mode.
   func setExposureMode(
     mode: PlatformExposureMode, completion: @escaping (Result<Void, Error>) -> Void)
@@ -868,6 +1155,15 @@ protocol CameraApi {
   ///
   /// A null value resets to the default focus point.
   func setFocusPoint(point: PlatformPoint?, completion: @escaping (Result<Void, Error>) -> Void)
+  /// Sets the white balance for the camera.
+  ///
+  /// Null enables automatic white balance; a non-null value locks the white
+  /// balance to the given temperature and tint.
+  func setWhiteBalance(
+    values: PlatformWhiteBalanceValues?, completion: @escaping (Result<Void, Error>) -> Void)
+  /// Gets whether the camera can lock its white balance to a given temperature
+  /// and tint.
+  func isWhiteBalanceSupported(completion: @escaping (Result<Bool, Error>) -> Void)
   /// Returns the minimum zoom level supported by the camera.
   func getMinZoomLevel(completion: @escaping (Result<Double, Error>) -> Void)
   /// Returns the maximum zoom level supported by the camera.
@@ -894,6 +1190,25 @@ protocol CameraApi {
     format: PlatformImageFileFormat, completion: @escaping (Result<Void, Error>) -> Void)
   /// Sets the JPEG compression quality for still image capture.
   func setJpegImageQuality(quality: Int64, completion: @escaping (Result<Void, Error>) -> Void)
+  /// Applies visual effect parameters to the Metal shader pipeline.
+  /// Has no effect when no shader pipeline is active.
+  func setEffectsValues(
+    values: PlatformEffectsValues, completion: @escaping (Result<Void, Error>) -> Void)
+  /// Sets the center-crop aspect ratio (width/height) applied to preview,
+  /// photo, and video. Pass `null` to disable cropping. Has no effect when
+  /// no shader pipeline is active.
+  func setAspectRatio(aspectRatio: Double?, completion: @escaping (Result<Void, Error>) -> Void)
+  /// Sets the capture scale (0.1–1.0) applied inside the aspect-ratio crop.
+  /// 1.0 means no extra crop. Values below 1.0 narrow the captured area;
+  /// the preview shows the full aspect-ratio crop with the area outside the
+  /// scaled rectangle darkened, while photo and video files contain only
+  /// the scaled rectangle.
+  func setCaptureScale(scale: Double, completion: @escaping (Result<Void, Error>) -> Void)
+  /// Sets the corner radius of the captureScale rectangle in the preview.
+  /// The radius is in the range [0.0, 1.0], where 0.0 means square corners
+  /// and positive values round the corners of the darkened border.
+  /// Only affects the preview; saved photos and videos are unaffected.
+  func setCaptureCornerRadius(radius: Double, completion: @escaping (Result<Void, Error>) -> Void)
 }
 
 /// Generated setup class from Pigeon to handle messages through the `binaryMessenger`.
@@ -923,6 +1238,9 @@ class CameraApiSetup {
       getAvailableCamerasChannel.setMessageHandler(nil)
     }
     /// Create a new camera with the given settings, and returns its ID.
+    /// Every preview frame, recorded video frame, and captured photo is
+    /// rendered through the bundled Metal shader pipeline; when no effects or
+    /// crop are applied the pipeline is a pass-through.
     let createChannel = FlutterBasicMessageChannel(
       name: "dev.flutter.pigeon.camera_avfoundation.CameraApi.create\(channelSuffix)",
       binaryMessenger: binaryMessenger, codec: codec)
@@ -1103,6 +1421,27 @@ class CameraApiSetup {
     } else {
       takePictureChannel.setMessageHandler(nil)
     }
+    /// Takes a picture and saves it twice: the un-effected original (with the
+    /// configured `captureScale` crop preserved) and the shader-processed
+    /// version. Returns the paths to both files.
+    let takePictureWithOriginalChannel = FlutterBasicMessageChannel(
+      name:
+        "dev.flutter.pigeon.camera_avfoundation.CameraApi.takePictureWithOriginal\(channelSuffix)",
+      binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      takePictureWithOriginalChannel.setMessageHandler { _, reply in
+        api.takePictureWithOriginal { result in
+          switch result {
+          case .success(let res):
+            reply(wrapResult(res))
+          case .failure(let error):
+            reply(wrapError(error))
+          }
+        }
+      }
+    } else {
+      takePictureWithOriginalChannel.setMessageHandler(nil)
+    }
     /// Does any preprocessing necessary before beginning to record video.
     let prepareForVideoRecordingChannel = FlutterBasicMessageChannel(
       name:
@@ -1216,6 +1555,25 @@ class CameraApiSetup {
       }
     } else {
       setFlashModeChannel.setMessageHandler(nil)
+    }
+    /// Returns the flash modes supported by the camera.
+    let getSupportedFlashModesChannel = FlutterBasicMessageChannel(
+      name:
+        "dev.flutter.pigeon.camera_avfoundation.CameraApi.getSupportedFlashModes\(channelSuffix)",
+      binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      getSupportedFlashModesChannel.setMessageHandler { _, reply in
+        api.getSupportedFlashModes { result in
+          switch result {
+          case .success(let res):
+            reply(wrapResult(res))
+          case .failure(let error):
+            reply(wrapError(error))
+          }
+        }
+      }
+    } else {
+      getSupportedFlashModesChannel.setMessageHandler(nil)
     }
     /// Switches the camera to the given exposure mode.
     let setExposureModeChannel = FlutterBasicMessageChannel(
@@ -1356,6 +1714,49 @@ class CameraApiSetup {
       }
     } else {
       setFocusPointChannel.setMessageHandler(nil)
+    }
+    /// Sets the white balance for the camera.
+    ///
+    /// Null enables automatic white balance; a non-null value locks the white
+    /// balance to the given temperature and tint.
+    let setWhiteBalanceChannel = FlutterBasicMessageChannel(
+      name: "dev.flutter.pigeon.camera_avfoundation.CameraApi.setWhiteBalance\(channelSuffix)",
+      binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      setWhiteBalanceChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let valuesArg: PlatformWhiteBalanceValues? = nilOrValue(args[0])
+        api.setWhiteBalance(values: valuesArg) { result in
+          switch result {
+          case .success:
+            reply(wrapResult(nil))
+          case .failure(let error):
+            reply(wrapError(error))
+          }
+        }
+      }
+    } else {
+      setWhiteBalanceChannel.setMessageHandler(nil)
+    }
+    /// Gets whether the camera can lock its white balance to a given temperature
+    /// and tint.
+    let isWhiteBalanceSupportedChannel = FlutterBasicMessageChannel(
+      name:
+        "dev.flutter.pigeon.camera_avfoundation.CameraApi.isWhiteBalanceSupported\(channelSuffix)",
+      binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      isWhiteBalanceSupportedChannel.setMessageHandler { _, reply in
+        api.isWhiteBalanceSupported { result in
+          switch result {
+          case .success(let res):
+            reply(wrapResult(res))
+          case .failure(let error):
+            reply(wrapError(error))
+          }
+        }
+      }
+    } else {
+      isWhiteBalanceSupportedChannel.setMessageHandler(nil)
     }
     /// Returns the minimum zoom level supported by the camera.
     let getMinZoomLevelChannel = FlutterBasicMessageChannel(
@@ -1554,6 +1955,97 @@ class CameraApiSetup {
     } else {
       setJpegImageQualityChannel.setMessageHandler(nil)
     }
+    /// Applies visual effect parameters to the Metal shader pipeline.
+    /// Has no effect when no shader pipeline is active.
+    let setEffectsValuesChannel = FlutterBasicMessageChannel(
+      name: "dev.flutter.pigeon.camera_avfoundation.CameraApi.setEffectsValues\(channelSuffix)",
+      binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      setEffectsValuesChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let valuesArg = args[0] as! PlatformEffectsValues
+        api.setEffectsValues(values: valuesArg) { result in
+          switch result {
+          case .success:
+            reply(wrapResult(nil))
+          case .failure(let error):
+            reply(wrapError(error))
+          }
+        }
+      }
+    } else {
+      setEffectsValuesChannel.setMessageHandler(nil)
+    }
+    /// Sets the center-crop aspect ratio (width/height) applied to preview,
+    /// photo, and video. Pass `null` to disable cropping. Has no effect when
+    /// no shader pipeline is active.
+    let setAspectRatioChannel = FlutterBasicMessageChannel(
+      name: "dev.flutter.pigeon.camera_avfoundation.CameraApi.setAspectRatio\(channelSuffix)",
+      binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      setAspectRatioChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let aspectRatioArg: Double? = nilOrValue(args[0])
+        api.setAspectRatio(aspectRatio: aspectRatioArg) { result in
+          switch result {
+          case .success:
+            reply(wrapResult(nil))
+          case .failure(let error):
+            reply(wrapError(error))
+          }
+        }
+      }
+    } else {
+      setAspectRatioChannel.setMessageHandler(nil)
+    }
+    /// Sets the capture scale (0.1–1.0) applied inside the aspect-ratio crop.
+    /// 1.0 means no extra crop. Values below 1.0 narrow the captured area;
+    /// the preview shows the full aspect-ratio crop with the area outside the
+    /// scaled rectangle darkened, while photo and video files contain only
+    /// the scaled rectangle.
+    let setCaptureScaleChannel = FlutterBasicMessageChannel(
+      name: "dev.flutter.pigeon.camera_avfoundation.CameraApi.setCaptureScale\(channelSuffix)",
+      binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      setCaptureScaleChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let scaleArg = args[0] as! Double
+        api.setCaptureScale(scale: scaleArg) { result in
+          switch result {
+          case .success:
+            reply(wrapResult(nil))
+          case .failure(let error):
+            reply(wrapError(error))
+          }
+        }
+      }
+    } else {
+      setCaptureScaleChannel.setMessageHandler(nil)
+    }
+    /// Sets the corner radius of the captureScale rectangle in the preview.
+    /// The radius is in the range [0.0, 1.0], where 0.0 means square corners
+    /// and positive values round the corners of the darkened border.
+    /// Only affects the preview; saved photos and videos are unaffected.
+    let setCaptureCornerRadiusChannel = FlutterBasicMessageChannel(
+      name:
+        "dev.flutter.pigeon.camera_avfoundation.CameraApi.setCaptureCornerRadius\(channelSuffix)",
+      binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      setCaptureCornerRadiusChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let radiusArg = args[0] as! Double
+        api.setCaptureCornerRadius(radius: radiusArg) { result in
+          switch result {
+          case .success:
+            reply(wrapResult(nil))
+          case .failure(let error):
+            reply(wrapError(error))
+          }
+        }
+      }
+    } else {
+      setCaptureCornerRadiusChannel.setMessageHandler(nil)
+    }
   }
 }
 
@@ -1684,6 +2176,15 @@ protocol CameraEventApiProtocol {
   /// This should be used for errors that occur outside of the context of
   /// handling a specific HostApi call, such as during streaming.
   func error(message messageArg: String, completion: @escaping (Result<Void, PigeonError>) -> Void)
+  /// Called when the preview size changes (e.g., after an aspect ratio change).
+  func previewSizeChanged(
+    size sizeArg: PlatformSize, completion: @escaping (Result<Void, PigeonError>) -> Void)
+  /// Called while the camera is in auto white balance mode with the
+  /// temperature (Kelvin) and tint values currently selected by the
+  /// hardware. iOS only.
+  func autoWhiteBalanceChanged(
+    temperature temperatureArg: Double, tint tintArg: Double,
+    completion: @escaping (Result<Void, PigeonError>) -> Void)
 }
 class CameraEventApi: CameraEventApiProtocol {
   private let binaryMessenger: FlutterBinaryMessenger
@@ -1730,6 +2231,55 @@ class CameraEventApi: CameraEventApiProtocol {
     let channel = FlutterBasicMessageChannel(
       name: channelName, binaryMessenger: binaryMessenger, codec: codec)
     channel.sendMessage([messageArg] as [Any?]) { response in
+      guard let listResponse = response as? [Any?] else {
+        completion(.failure(createConnectionError(withChannelName: channelName)))
+        return
+      }
+      if listResponse.count > 1 {
+        let code: String = listResponse[0] as! String
+        let message: String? = nilOrValue(listResponse[1])
+        let details: String? = nilOrValue(listResponse[2])
+        completion(.failure(PigeonError(code: code, message: message, details: details)))
+      } else {
+        completion(.success(()))
+      }
+    }
+  }
+  /// Called when the preview size changes (e.g., after an aspect ratio change).
+  func previewSizeChanged(
+    size sizeArg: PlatformSize, completion: @escaping (Result<Void, PigeonError>) -> Void
+  ) {
+    let channelName: String =
+      "dev.flutter.pigeon.camera_avfoundation.CameraEventApi.previewSizeChanged\(messageChannelSuffix)"
+    let channel = FlutterBasicMessageChannel(
+      name: channelName, binaryMessenger: binaryMessenger, codec: codec)
+    channel.sendMessage([sizeArg] as [Any?]) { response in
+      guard let listResponse = response as? [Any?] else {
+        completion(.failure(createConnectionError(withChannelName: channelName)))
+        return
+      }
+      if listResponse.count > 1 {
+        let code: String = listResponse[0] as! String
+        let message: String? = nilOrValue(listResponse[1])
+        let details: String? = nilOrValue(listResponse[2])
+        completion(.failure(PigeonError(code: code, message: message, details: details)))
+      } else {
+        completion(.success(()))
+      }
+    }
+  }
+  /// Called while the camera is in auto white balance mode with the
+  /// temperature (Kelvin) and tint values currently selected by the
+  /// hardware. iOS only.
+  func autoWhiteBalanceChanged(
+    temperature temperatureArg: Double, tint tintArg: Double,
+    completion: @escaping (Result<Void, PigeonError>) -> Void
+  ) {
+    let channelName: String =
+      "dev.flutter.pigeon.camera_avfoundation.CameraEventApi.autoWhiteBalanceChanged\(messageChannelSuffix)"
+    let channel = FlutterBasicMessageChannel(
+      name: channelName, binaryMessenger: binaryMessenger, codec: codec)
+    channel.sendMessage([temperatureArg, tintArg] as [Any?]) { response in
       guard let listResponse = response as? [Any?] else {
         completion(.failure(createConnectionError(withChannelName: channelName)))
         return

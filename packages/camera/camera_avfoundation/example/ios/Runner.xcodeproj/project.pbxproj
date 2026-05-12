@@ -39,6 +39,8 @@
 		335A7B1F2F6B061D005902FE /* CameraPermissionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 335A7ADB2F6B061D005902FE /* CameraPermissionTests.swift */; };
 		335A7B202F6B061D005902FE /* MockCaptureDeviceInputFactory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 335A7AF12F6B061D005902FE /* MockCaptureDeviceInputFactory.swift */; };
 		335A7B212F6B061D005902FE /* SampleBufferTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 335A7B002F6B061D005902FE /* SampleBufferTests.swift */; };
+		335A7C132F6B061D005902FE /* VideoFrameRendererGrainTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 335A7C122F6B061D005902FE /* VideoFrameRendererGrainTests.swift */; };
+		335A7C152F6B061D005902FE /* VideoFrameRendererLutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 335A7C142F6B061D005902FE /* VideoFrameRendererLutTests.swift */; };
 		335A7B222F6B061D005902FE /* MockCaptureInput.swift in Sources */ = {isa = PBXBuildFile; fileRef = 335A7AF22F6B061D005902FE /* MockCaptureInput.swift */; };
 		335A7B232F6B061D005902FE /* CameraSetDeviceOrientationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 335A7AE62F6B061D005902FE /* CameraSetDeviceOrientationTests.swift */; };
 		335A7B242F6B061D005902FE /* MockCamera.swift in Sources */ = {isa = PBXBuildFile; fileRef = 335A7AEC2F6B061D005902FE /* MockCamera.swift */; };
@@ -128,6 +130,8 @@
 		335A7AFE2F6B061D005902FE /* PhotoCaptureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoCaptureTests.swift; sourceTree = "<group>"; };
 		335A7AFF2F6B061D005902FE /* QueueUtilsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QueueUtilsTests.swift; sourceTree = "<group>"; };
 		335A7B002F6B061D005902FE /* SampleBufferTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SampleBufferTests.swift; sourceTree = "<group>"; };
+		335A7C122F6B061D005902FE /* VideoFrameRendererGrainTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoFrameRendererGrainTests.swift; sourceTree = "<group>"; };
+		335A7C142F6B061D005902FE /* VideoFrameRendererLutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoFrameRendererLutTests.swift; sourceTree = "<group>"; };
 		335A7B012F6B061D005902FE /* SavePhotoDelegateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SavePhotoDelegateTests.swift; sourceTree = "<group>"; };
 		335A7B022F6B061D005902FE /* StreamingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamingTests.swift; sourceTree = "<group>"; };
 		3B3967151E833CAA004F5970 /* AppFrameworkInfo.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = AppFrameworkInfo.plist; path = Flutter/AppFrameworkInfo.plist; sourceTree = "<group>"; };
@@ -185,6 +189,8 @@
 				335A7B002F6B061D005902FE /* SampleBufferTests.swift */,
 				335A7B012F6B061D005902FE /* SavePhotoDelegateTests.swift */,
 				335A7B022F6B061D005902FE /* StreamingTests.swift */,
+				335A7C122F6B061D005902FE /* VideoFrameRendererGrainTests.swift */,
+				335A7C142F6B061D005902FE /* VideoFrameRendererLutTests.swift */,
 				335A7AFD2F6B061D005902FE /* Mocks */,
 			);
 			name = RunnerTests;
@@ -454,6 +460,8 @@
 				335A7B2A2F6B061D005902FE /* CameraInitRaceConditionsTests.swift in Sources */,
 				335A7B2B2F6B061D005902FE /* MockCaptureConnection.swift in Sources */,
 				335A7B2C2F6B061D005902FE /* StreamingTests.swift in Sources */,
+				335A7C132F6B061D005902FE /* VideoFrameRendererGrainTests.swift in Sources */,
+				335A7C152F6B061D005902FE /* VideoFrameRendererLutTests.swift in Sources */,
 				335A7B2D2F6B061D005902FE /* MockCaptureVideoDataOutput.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

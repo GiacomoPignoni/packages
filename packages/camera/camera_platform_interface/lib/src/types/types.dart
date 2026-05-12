@@ -5,6 +5,7 @@
 export 'camera_description.dart';
 export 'camera_exception.dart';
 export 'camera_image_data.dart';
+export 'effects_values.dart';
 export 'exposure_mode.dart';
 export 'flash_mode.dart';
 export 'focus_mode.dart';
@@ -14,3 +15,5 @@ export 'media_settings.dart';
 export 'resolution_preset.dart';
 export 'video_capture_options.dart';
 export 'video_stabilization_mode.dart';
+export 'white_balance_mode.dart';
+export 'white_balance_values.dart';
