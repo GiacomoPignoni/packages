@@ -51,6 +51,8 @@ class CameraValue {
     this.isPreviewPaused = false,
     this.previewPauseOrientation,
     this.videoStabilizationMode = VideoStabilizationMode.off,
+    this.captureScale = 1.0,
+    this.whiteBalanceValues,
   }) : _isRecordingPaused = isRecordingPaused;
 
   /// Creates a new camera controller state for an uninitialized controller.
@@ -70,6 +72,7 @@ class CameraValue {
         isPreviewPaused: false,
         description: description,
         videoStabilizationMode: VideoStabilizationMode.off,
+        captureScale: 1.0,
       );
 
   /// True after [CameraController.initialize] has completed successfully.
@@ -125,6 +128,18 @@ class CameraValue {
   /// The focus mode the camera is currently set to.
   final FocusMode focusMode;
 
+  /// The currently locked white balance values, or `null` when the camera is
+  /// in automatic white balance. iOS only.
+  final WhiteBalanceValues? whiteBalanceValues;
+
+  /// The white balance mode the camera is currently set to.
+  ///
+  /// Derived from [whiteBalanceValues]: [WhiteBalanceMode.auto] when
+  /// [whiteBalanceValues] is `null`, [WhiteBalanceMode.locked] otherwise.
+  WhiteBalanceMode get whiteBalanceMode => whiteBalanceValues == null
+      ? WhiteBalanceMode.auto
+      : WhiteBalanceMode.locked;
+
   /// Whether setting the exposure point is supported.
   final bool exposurePointSupported;
 
@@ -148,6 +163,10 @@ class CameraValue {
 
   /// The current video stabilization mode.
   final VideoStabilizationMode videoStabilizationMode;
+
+  /// The current capture scale. `1.0` means no extra crop; smaller values
+  /// further narrow the captured area. iOS only.
+  final double captureScale;
 
   /// Creates a modified copy of the object.
   ///
@@ -173,6 +192,8 @@ class CameraValue {
     CameraDescription? description,
     Optional<DeviceOrientation>? previewPauseOrientation,
     VideoStabilizationMode? videoStabilizationMode,
+    double? captureScale,
+    Optional<WhiteBalanceValues>? whiteBalanceValues,
   }) {
     return CameraValue(
       isInitialized: isInitialized ?? this.isInitialized,
@@ -202,6 +223,10 @@ class CameraValue {
           : previewPauseOrientation.orNull,
       videoStabilizationMode:
           videoStabilizationMode ?? this.videoStabilizationMode,
+      captureScale: captureScale ?? this.captureScale,
+      whiteBalanceValues: whiteBalanceValues == null
+          ? this.whiteBalanceValues
+          : whiteBalanceValues.orNull,
     );
   }
 
@@ -224,6 +249,8 @@ class CameraValue {
         'isPreviewPaused: $isPreviewPaused, '
         'previewPausedOrientation: $previewPauseOrientation, '
         'videoStabilizationMode: $videoStabilizationMode, '
+        'captureScale: $captureScale, '
+        'whiteBalanceValues: $whiteBalanceValues, '
         'description: $description)';
   }
 }
@@ -299,6 +326,46 @@ class CameraController extends ValueNotifier<CameraValue> {
   bool _isDisposed = false;
   StreamSubscription<CameraImageData>? _imageStreamSubscription;
 
+  // Latest effects values applied via [setEffectsValues]. Cached so that
+  // they can be re-applied to the native camera after a [setDescription]
+  // switch, since each native camera instance starts with no effects.
+  EffectsValues? _effectsValues;
+
+  // Latest aspect ratio applied via [setAspectRatio]. Cached so it can be
+  // re-applied after a [setDescription] camera switch. `_aspectRatioSet`
+  // distinguishes "never called" from a deliberate `null` (no crop).
+  double? _aspectRatio;
+  bool _aspectRatioSet = false;
+
+  // Latest capture scale applied via [setCaptureScale]. Cached so it can be
+  // re-applied after a [setDescription] camera switch.
+  double? _captureScale;
+
+  // Latest white balance values applied via [setWhiteBalance]. Cached so they
+  // can be re-applied after a [setDescription] camera switch. `_whiteBalanceSet`
+  // distinguishes "never called" (let the new camera start in its default
+  // auto WB) from a deliberate user choice — including locking to a value
+  // or explicitly switching back to auto via `setWhiteBalance(null)`.
+  WhiteBalanceValues? _whiteBalanceValues;
+  bool _whiteBalanceSet = false;
+
+  StreamSubscription<CameraResolutionChangedEvent>?
+  _resolutionChangedSubscription;
+
+  // Auto-WB events from the platform are filtered by `cameraId`, but
+  // `_cameraId` changes on every [setDescription]. Without rebinding, a
+  // subscriber that listened before the switch would silently stop receiving
+  // events from the new camera. We funnel the per-camera platform stream
+  // through this controller-owned broadcast so the public
+  // [autoWhiteBalanceValues] getter has a stable identity across switches —
+  // subscribers don't need to re-listen — while [_initializeWithDescription]
+  // swaps the upstream on every camera (re)create.
+  final StreamController<({double temperature, double tint})>
+  _autoWhiteBalanceStreamController =
+      StreamController<({double temperature, double tint})>.broadcast();
+  StreamSubscription<CameraAutoWhiteBalanceChangedEvent>?
+  _autoWhiteBalanceSubscription;
+
   // A Future awaiting an attempt to initialize (e.g. after `initialize` was
   // just called). If the controller has not been initialized at least once,
   // this value is null.
@@ -315,6 +382,16 @@ class CameraController extends ValueNotifier<CameraValue> {
 
   /// The camera identifier with which the controller is associated.
   int get cameraId => _cameraId;
+
+  /// Emits the temperature (Kelvin) and tint values selected by the camera's
+  /// auto white balance system. Only emits while the camera is in
+  /// [WhiteBalanceMode.auto]. iOS only — other platforms emit nothing.
+  ///
+  /// The stream identity is stable for the lifetime of the controller, even
+  /// across [setDescription] camera switches; subscribers do not need to
+  /// re-listen after a switch.
+  Stream<({double temperature, double tint})> get autoWhiteBalanceValues =>
+      _autoWhiteBalanceStreamController.stream;
 
   /// Initializes the camera on the device.
   ///
@@ -365,10 +442,64 @@ class CameraController extends ValueNotifier<CameraValue> {
         }),
       );
 
+      // Register the resolution-changed listener *before* `initializeCamera`
+      // so we don't miss the first `previewSizeChanged` event the host may
+      // emit when the renderer is built from the first sample buffer.
+      await _resolutionChangedSubscription?.cancel();
+      _resolutionChangedSubscription = CameraPlatform.instance
+          .onCameraResolutionChanged(_cameraId)
+          .listen((CameraResolutionChangedEvent event) {
+            value = value.copyWith(
+              previewSize: Size(event.captureWidth, event.captureHeight),
+            );
+          });
+
+      // Rebind the auto-WB upstream to the new `_cameraId`. The platform
+      // stream filters by camera id, so a subscription bound to the old id
+      // would silently stop receiving events after a `setDescription` swap.
+      await _autoWhiteBalanceSubscription?.cancel();
+      _autoWhiteBalanceSubscription = CameraPlatform.instance
+          .onAutoWhiteBalanceChanged(_cameraId)
+          .listen((CameraAutoWhiteBalanceChangedEvent event) {
+            if (!_autoWhiteBalanceStreamController.isClosed) {
+              _autoWhiteBalanceStreamController.add(
+                (temperature: event.temperature, tint: event.tint),
+              );
+            }
+          });
+
       await CameraPlatform.instance.initializeCamera(
         _cameraId,
         imageFormatGroup: imageFormatGroup ?? ImageFormatGroup.unknown,
       );
+
+      if (_effectsValues != null) {
+        await CameraPlatform.instance.setEffectsValues(
+          _cameraId,
+          _effectsValues!,
+        );
+      }
+
+      if (_aspectRatioSet) {
+        await CameraPlatform.instance.setAspectRatio(
+          _cameraId,
+          _aspectRatio,
+        );
+      }
+
+      if (_captureScale != null) {
+        await CameraPlatform.instance.setCaptureScale(
+          _cameraId,
+          _captureScale!,
+        );
+      }
+
+      if (_whiteBalanceSet) {
+        await CameraPlatform.instance.setWhiteBalance(
+          _cameraId,
+          _whiteBalanceValues,
+        );
+      }
 
       value = value.copyWith(
         isInitialized: true,
@@ -961,6 +1092,27 @@ class CameraController extends ValueNotifier<CameraValue> {
     }
   }
 
+  /// Sets the white balance for the camera.
+  ///
+  /// Pass `null` to enable automatic white balance. Pass a
+  /// [WhiteBalanceValues] to lock the white balance at the given temperature
+  /// and tint. Currently only supported on iOS.
+  ///
+  /// The value is cached and re-applied automatically after a
+  /// [setDescription] camera switch.
+  Future<void> setWhiteBalance(WhiteBalanceValues? values) async {
+    try {
+      await CameraPlatform.instance.setWhiteBalance(_cameraId, values);
+      _whiteBalanceValues = values;
+      _whiteBalanceSet = true;
+      value = value.copyWith(
+        whiteBalanceValues: Optional<WhiteBalanceValues>.fromNullable(values),
+      );
+    } on PlatformException catch (e) {
+      throw CameraException(e.code, e.message);
+    }
+  }
+
   /// Unlocks the capture orientation.
   Future<void> unlockCaptureOrientation() async {
     try {
@@ -994,6 +1146,61 @@ class CameraController extends ValueNotifier<CameraValue> {
     }
   }
 
+  /// Sets the values of the camera's effects.
+  ///
+  /// The values are cached and re-applied automatically after a
+  /// [setDescription] camera switch, so callers do not need to push them
+  /// again on every switch.
+  Future<void> setEffectsValues(EffectsValues values) async {
+    _effectsValues = values;
+    await CameraPlatform.instance.setEffectsValues(_cameraId, values);
+  }
+
+  /// Sets the aspect ratio (width/height) applied (as a center-crop) to
+  /// preview, photo, and video output. Pass `null` to disable cropping.
+  /// iOS only.
+  ///
+  /// The value is cached and re-applied automatically after a
+  /// [setDescription] camera switch.
+  Future<void> setAspectRatio(double? aspectRatio) async {
+    _aspectRatio = aspectRatio;
+    _aspectRatioSet = true;
+    await CameraPlatform.instance.setAspectRatio(_cameraId, aspectRatio);
+  }
+
+  /// Sets the capture scale applied inside the aspect-ratio crop. iOS only.
+  ///
+  /// `1.0` means no extra crop. Smaller values further narrow the captured
+  /// area; the preview keeps the full aspect-ratio framing with the outside
+  /// darkened, while saved photo and video files contain only the scaled
+  /// rectangle. Values are clamped to the supported `[0.1, 1.0]` range
+  /// before being applied — values below `0.1` would shrink the capture
+  /// rectangle to a degenerate size.
+  ///
+  /// `scale` must be a finite (non-NaN, non-infinite) number; a
+  /// non-finite value throws [ArgumentError].
+  ///
+  /// Calling this while a video is recording stashes the value; it takes
+  /// effect on the next recording. The AVAssetWriter is locked to the
+  /// renderer's dimensions for the duration of a take, so the scale cannot
+  /// change mid-recording without corrupting the file.
+  ///
+  /// The value is cached and re-applied automatically after a
+  /// [setDescription] camera switch.
+  Future<void> setCaptureScale(double scale) async {
+    if (scale.isNaN || scale.isInfinite) {
+      throw ArgumentError.value(
+        scale,
+        'scale',
+        'scale must be a finite number',
+      );
+    }
+    final double clamped = scale.clamp(0.1, 1.0);
+    await CameraPlatform.instance.setCaptureScale(_cameraId, clamped);
+    _captureScale = clamped;
+    value = value.copyWith(captureScale: clamped);
+  }
+
   /// Check whether the camera platform supports image streaming.
   bool supportsImageStreaming() =>
       CameraPlatform.instance.supportsImageStreaming();
@@ -1005,6 +1212,9 @@ class CameraController extends ValueNotifier<CameraValue> {
       return;
     }
     unawaited(_deviceOrientationSubscription?.cancel());
+    unawaited(_resolutionChangedSubscription?.cancel());
+    unawaited(_autoWhiteBalanceSubscription?.cancel());
+    unawaited(_autoWhiteBalanceStreamController.close());
     _isDisposed = true;
     super.dispose();
     if (_initializeFuture != null) {

@@ -48,6 +48,18 @@ protocol CaptureDevice: NSObjectProtocol {
     _ bias: Float, completionHandler handler: ((CMTime) -> Void)?)
   func isExposureModeSupported(_ mode: AVCaptureDevice.ExposureMode) -> Bool
 
+  // White Balance
+  var whiteBalanceMode: AVCaptureDevice.WhiteBalanceMode { get set }
+  var maxWhiteBalanceGain: Float { get }
+  func isWhiteBalanceModeSupported(_ mode: AVCaptureDevice.WhiteBalanceMode) -> Bool
+  func deviceWhiteBalanceGains(
+    for temperatureAndTintValues: AVCaptureDevice.WhiteBalanceTemperatureAndTintValues
+  ) -> AVCaptureDevice.WhiteBalanceGains
+  func currentDeviceWhiteBalanceGains() -> AVCaptureDevice.WhiteBalanceGains
+  func setWhiteBalanceModeLocked(
+    withDeviceWhiteBalanceGains gains: AVCaptureDevice.WhiteBalanceGains,
+    completionHandler: ((CMTime) -> Void)?)
+
   // Zoom
   var maxAvailableVideoZoomFactor: CGFloat { get }
   var minAvailableVideoZoomFactor: CGFloat { get }
@@ -103,6 +115,16 @@ extension AVCaptureDevice: CaptureDevice {
     return self.activeFormat.isVideoStabilizationModeSupported(videoStabilizationMode)
   }
 
+  func currentDeviceWhiteBalanceGains() -> AVCaptureDevice.WhiteBalanceGains {
+    return deviceWhiteBalanceGains
+  }
+
+  func setWhiteBalanceModeLocked(
+    withDeviceWhiteBalanceGains gains: AVCaptureDevice.WhiteBalanceGains,
+    completionHandler: ((CMTime) -> Void)?
+  ) {
+    setWhiteBalanceModeLocked(with: gains, completionHandler: completionHandler)
+  }
 }
 
 extension AVCaptureInput: CaptureInput {

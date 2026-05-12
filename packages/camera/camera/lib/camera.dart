@@ -8,12 +8,15 @@ export 'package:camera_platform_interface/camera_platform_interface.dart'
         CameraException,
         CameraLensDirection,
         CameraLensType,
+        EffectsValues,
         ExposureMode,
         FlashMode,
         FocusMode,
         ImageFormatGroup,
         ResolutionPreset,
         VideoStabilizationMode,
+        WhiteBalanceMode,
+        WhiteBalanceValues,
         XFile;
 
 export 'src/camera_controller.dart';

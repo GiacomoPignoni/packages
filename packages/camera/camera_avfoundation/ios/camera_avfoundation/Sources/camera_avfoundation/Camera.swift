@@ -63,6 +63,19 @@ protocol Camera: FlutterTexture, AVCaptureVideoDataOutputSampleBufferDelegate,
 
   func setImageFileFormat(_ fileFormat: PlatformImageFileFormat)
 
+  /// Applies visual effect parameters to the active Metal shader pipeline.
+  /// No-op when no shader pipeline is active.
+  func setEffectsValues(_ values: PlatformEffectsValues)
+
+  /// Sets the center-crop aspect ratio (width/height) applied to preview,
+  /// photo, and video. Pass `nil` to disable cropping. No-op when no shader
+  /// pipeline is active.
+  func setAspectRatio(_ aspectRatio: Double?)
+
+  /// Sets the capture scale (0.1–1.0) applied inside the aspect-ratio crop.
+  /// No-op when no shader pipeline is active.
+  func setCaptureScale(_ scale: Double)
+
   func setExposureMode(_ mode: PlatformExposureMode)
   func setExposureOffset(_ offset: Double)
 
@@ -93,6 +106,16 @@ protocol Camera: FlutterTexture, AVCaptureVideoDataOutputSampleBufferDelegate,
   func setFocusPoint(
     _ point: PlatformPoint?,
     completion: @escaping (Result<Void, any Error>) -> Void
+  )
+
+  /// Sets the white balance for the current AVCaptureDevice.
+  ///
+  /// If `values` is `nil`, switches to continuous auto white balance.
+  /// Otherwise, locks the white balance to the given temperature and tint.
+  /// Calls completion with an error if the required mode is not supported.
+  func setWhiteBalance(
+    _ values: PlatformWhiteBalanceValues?,
+    withCompletion: @escaping (Result<Void, any Error>) -> Void
   )
 
   func setZoomLevel(_ zoom: CGFloat, withCompletion: @escaping (Result<Void, any Error>) -> Void)

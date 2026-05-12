@@ -944,6 +944,75 @@ void main() {
       },
     );
 
+    test('setWhiteBalance(null) calls $CameraPlatform and switches to auto',
+        () async {
+      final cameraController = CameraController(
+        const CameraDescription(
+          name: 'cam',
+          lensDirection: CameraLensDirection.back,
+          sensorOrientation: 90,
+        ),
+        ResolutionPreset.max,
+      );
+      await cameraController.initialize();
+
+      await cameraController.setWhiteBalance(null);
+
+      verify(
+        CameraPlatform.instance.setWhiteBalance(
+          cameraController.cameraId,
+          null,
+        ),
+      ).called(1);
+      expect(cameraController.value.whiteBalanceValues, null);
+      expect(cameraController.value.whiteBalanceMode, WhiteBalanceMode.auto);
+    });
+
+    test('setWhiteBalance(values) forwards values and locks white balance',
+        () async {
+      final cameraController = CameraController(
+        const CameraDescription(
+          name: 'cam',
+          lensDirection: CameraLensDirection.back,
+          sensorOrientation: 90,
+        ),
+        ResolutionPreset.max,
+      );
+      await cameraController.initialize();
+
+      final values = WhiteBalanceValues(temperature: 5500, tint: 25);
+      await cameraController.setWhiteBalance(values);
+
+      verify(
+        CameraPlatform.instance.setWhiteBalance(
+          cameraController.cameraId,
+          values,
+        ),
+      ).called(1);
+      expect(cameraController.value.whiteBalanceValues, values);
+      expect(cameraController.value.whiteBalanceMode, WhiteBalanceMode.locked);
+    });
+
+    test(
+        'autoWhiteBalanceValues forwards values from the platform stream',
+        () async {
+      final cameraController = CameraController(
+        const CameraDescription(
+          name: 'cam',
+          lensDirection: CameraLensDirection.back,
+          sensorOrientation: 90,
+        ),
+        ResolutionPreset.max,
+      );
+      await cameraController.initialize();
+
+      final ({double temperature, double tint}) value =
+          await cameraController.autoWhiteBalanceValues.first;
+
+      expect(value.temperature, 5500);
+      expect(value.tint, 12);
+    });
+
     test('setExposurePoint() calls $CameraPlatform', () async {
       final cameraController = CameraController(
         const CameraDescription(
@@ -4004,6 +4073,26 @@ class MockCameraPlatform extends Mock
       Stream<CameraErrorEvent>.value(mockOnCameraErrorEvent);
 
   @override
+  Stream<CameraResolutionChangedEvent> onCameraResolutionChanged(
+    int cameraId,
+  ) => const Stream<CameraResolutionChangedEvent>.empty();
+
+  @override
+  Stream<CameraAutoWhiteBalanceChangedEvent> onAutoWhiteBalanceChanged(
+    int cameraId,
+  ) {
+    // The real platform emits continuously while auto-WB is active. Mimic
+    // that with a periodic source so a subscriber attaching *after* the
+    // controller has wired its upstream still sees an event (single-shot
+    // `Stream.value` would race and silently drop, since the controller's
+    // public stream is broadcast and doesn't buffer pre-subscription).
+    return Stream<CameraAutoWhiteBalanceChangedEvent>.periodic(
+      const Duration(milliseconds: 10),
+      (_) => CameraAutoWhiteBalanceChangedEvent(cameraId, 5500, 12),
+    );
+  }
+
+  @override
   Stream<DeviceOrientationChangedEvent> onDeviceOrientationChanged() =>
       Stream<DeviceOrientationChangedEvent>.value(
         mockOnDeviceOrientationChangedEvent,
@@ -4097,6 +4186,15 @@ class MockCameraPlatform extends Mock
       super.noSuchMethod(
         Invocation.method(#setExposurePoint, <Object?>[cameraId, point]),
       );
+
+  @override
+  Future<void> setWhiteBalance(
+    int? cameraId,
+    WhiteBalanceValues? values,
+  ) async => super.noSuchMethod(
+    Invocation.method(#setWhiteBalance, <Object?>[cameraId, values]),
+    returnValue: Future<void>.value(),
+  );
 
   @override
   Future<double> getMinExposureOffset(int? cameraId) async =>

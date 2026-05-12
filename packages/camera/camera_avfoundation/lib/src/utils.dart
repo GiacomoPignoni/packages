@@ -16,6 +16,7 @@ CameraDescription cameraDescriptionFromPlatform(
     lensDirection: cameraLensDirectionFromPlatform(camera.lensDirection),
     sensorOrientation: 90,
     lensType: cameraLensTypeFromPlatform(camera.lensType),
+    equivalentFocalLength: camera.equivalentFocalLength,
   );
 }
 

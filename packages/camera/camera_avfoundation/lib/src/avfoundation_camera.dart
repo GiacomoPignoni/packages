@@ -101,6 +101,7 @@ class AVFoundationCamera extends CameraPlatform {
           videoBitrate: mediaSettings?.videoBitrate,
           audioBitrate: mediaSettings?.audioBitrate,
           enableAudio: mediaSettings?.enableAudio ?? true,
+          aspectRatio: mediaSettings?.aspectRatio,
         ),
       );
     } on PlatformException catch (e) {
@@ -168,6 +169,15 @@ class AVFoundationCamera extends CameraPlatform {
   @override
   Stream<VideoRecordedEvent> onVideoRecordedEvent(int cameraId) {
     return _cameraEvents(cameraId).whereType<VideoRecordedEvent>();
+  }
+
+  @override
+  Stream<CameraAutoWhiteBalanceChangedEvent> onAutoWhiteBalanceChanged(
+    int cameraId,
+  ) {
+    return _cameraEvents(
+      cameraId,
+    ).whereType<CameraAutoWhiteBalanceChangedEvent>();
   }
 
   @override
@@ -357,6 +367,18 @@ class AVFoundationCamera extends CameraPlatform {
   }
 
   @override
+  Future<void> setWhiteBalance(int cameraId, WhiteBalanceValues? values) async {
+    await _hostApi.setWhiteBalance(
+      values == null
+          ? null
+          : PlatformWhiteBalanceValues(
+              temperature: values.temperature,
+              tint: values.tint,
+            ),
+    );
+  }
+
+  @override
   Future<double> getMaxZoomLevel(int cameraId) async {
     return _hostApi.getMaxZoomLevel();
   }
@@ -443,6 +465,26 @@ class AVFoundationCamera extends CameraPlatform {
   }
 
   @override
+  Future<void> setEffectsValues(int cameraId, EffectsValues values) async {
+    await _hostApi.setEffectsValues(
+      PlatformEffectsValues(vignetteIntensity: values.vignetteIntensity),
+    );
+  }
+
+  @override
+  Future<void> setAspectRatio(
+    int cameraId,
+    double? aspectRatio,
+  ) async {
+    await _hostApi.setAspectRatio(aspectRatio);
+  }
+
+  @override
+  Future<void> setCaptureScale(int cameraId, double scale) async {
+    await _hostApi.setCaptureScale(scale);
+  }
+
+  @override
   Widget buildPreview(int cameraId) {
     return Texture(textureId: cameraId);
   }
@@ -524,6 +566,8 @@ class AVFoundationCamera extends CameraPlatform {
         return PlatformResolutionPreset.medium;
       case ResolutionPreset.low:
         return PlatformResolutionPreset.low;
+      case ResolutionPreset.photo:
+        return PlatformResolutionPreset.photo;
     }
     // The enum comes from a different package, which could get a new value at
     // any time, so provide a fallback that ensures this won't break when used
@@ -608,6 +652,7 @@ class AVFoundationCamera extends CameraPlatform {
     }
     return PlatformPoint(x: point.x, y: point.y);
   }
+
 }
 
 /// Callback handler for device-level events from the platform host.
@@ -672,6 +717,20 @@ class HostCameraMessageHandler implements CameraEventApi {
         focusModeFromPlatform(initialState.focusMode),
         initialState.focusPointSupported,
       ),
+    );
+  }
+
+  @override
+  void previewSizeChanged(PlatformSize size) {
+    streamController.add(
+      CameraResolutionChangedEvent(cameraId, size.width, size.height),
+    );
+  }
+
+  @override
+  void autoWhiteBalanceChanged(double temperature, double tint) {
+    streamController.add(
+      CameraAutoWhiteBalanceChangedEvent(cameraId, temperature, tint),
     );
   }
 }

@@ -1601,6 +1601,10 @@ class AndroidCameraCameraX extends CameraPlatform {
         boundSize = CameraSize(width: 3840, height: 2160);
         aspectRatio = AspectRatio.ratio16To9;
       case ResolutionPreset.max:
+      case ResolutionPreset.photo:
+        // `ResolutionPreset.photo` is an iOS-specific concept
+        // (`AVCaptureSession.Preset.photo`); on Android there is no direct
+        // analogue, so we treat it the same as `max` — highest available.
         // Automatically set strategy to choose highest available.
         resolutionStrategy = ResolutionStrategy.highestAvailableStrategy;
         return ResolutionSelector(resolutionStrategy: resolutionStrategy);
@@ -1649,6 +1653,9 @@ class AndroidCameraCameraX extends CameraPlatform {
       case ResolutionPreset.ultraHigh:
         videoQuality = VideoQuality.UHD;
       case ResolutionPreset.max:
+      case ResolutionPreset.photo:
+        // `ResolutionPreset.photo` is an iOS-specific concept; on Android
+        // we record at the highest video quality available, matching `max`.
         videoQuality = VideoQuality.highest;
       case null:
         // If no preset is specified, default to CameraX's default behavior

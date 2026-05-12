@@ -32,6 +32,8 @@ final class MockCamera: NSObject, Camera {
   var setExposurePointStub: ((PlatformPoint?, @escaping (Result<Void, any Error>) -> Void) -> Void)?
   var setFocusModeStub: ((PlatformFocusMode) -> Void)?
   var setFocusPointStub: ((PlatformPoint?, @escaping (Result<Void, any Error>) -> Void) -> Void)?
+  var setWhiteBalanceStub:
+    ((PlatformWhiteBalanceValues?, @escaping (Result<Void, any Error>) -> Void) -> Void)?
   var setZoomLevelStub: ((CGFloat, @escaping (Result<Void, any Error>) -> Void) -> Void)?
   var setFlashModeStub: ((PlatformFlashMode, @escaping (Result<Void, any Error>) -> Void) -> Void)?
   var pausePreviewStub: (() -> Void)?
@@ -166,6 +168,17 @@ final class MockCamera: NSObject, Camera {
     _ point: PlatformPoint?, completion: @escaping (Result<Void, any Error>) -> Void
   ) {
     setFocusPointStub?(point, completion)
+  }
+
+  func setWhiteBalance(
+    _ values: PlatformWhiteBalanceValues?,
+    withCompletion completion: @escaping (Result<Void, any Error>) -> Void
+  ) {
+    if let stub = setWhiteBalanceStub {
+      stub(values, completion)
+    } else {
+      completion(.success(()))
+    }
   }
 
   func setZoomLevel(

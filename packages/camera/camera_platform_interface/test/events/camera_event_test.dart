@@ -462,4 +462,76 @@ void main() {
       expect(event.hashCode, expectedHashCode);
     });
   });
+
+  group('CameraAutoWhiteBalanceChangedEvent tests', () {
+    test('Constructor should initialize all properties', () {
+      const event = CameraAutoWhiteBalanceChangedEvent(1, 5500, 12);
+
+      expect(event.cameraId, 1);
+      expect(event.temperature, 5500);
+      expect(event.tint, 12);
+    });
+
+    test('equals returns true for identical events', () {
+      const a = CameraAutoWhiteBalanceChangedEvent(1, 5500, 12);
+      const b = CameraAutoWhiteBalanceChangedEvent(1, 5500, 12);
+
+      expect(a == b, true);
+      expect(a.hashCode, b.hashCode);
+    });
+
+    test('equals returns false when any field differs', () {
+      const base = CameraAutoWhiteBalanceChangedEvent(1, 5500, 12);
+
+      expect(
+        base == const CameraAutoWhiteBalanceChangedEvent(2, 5500, 12),
+        false,
+      );
+      expect(
+        base == const CameraAutoWhiteBalanceChangedEvent(1, 5400, 12),
+        false,
+      );
+      expect(
+        base == const CameraAutoWhiteBalanceChangedEvent(1, 5500, 13),
+        false,
+      );
+    });
+
+    test('fromJson should initialize all properties', () {
+      final event = CameraAutoWhiteBalanceChangedEvent.fromJson(
+        const <String, dynamic>{
+          'cameraId': 1,
+          'temperature': 5500.0,
+          'tint': 12.0,
+        },
+      );
+
+      expect(event.cameraId, 1);
+      expect(event.temperature, 5500);
+      expect(event.tint, 12);
+    });
+
+    test('fromJson accepts integer numeric values', () {
+      final event = CameraAutoWhiteBalanceChangedEvent.fromJson(
+        const <String, dynamic>{
+          'cameraId': 1,
+          'temperature': 5500,
+          'tint': 12,
+        },
+      );
+
+      expect(event.temperature, 5500.0);
+      expect(event.tint, 12.0);
+    });
+
+    test('toJson roundtrips through fromJson', () {
+      const event = CameraAutoWhiteBalanceChangedEvent(1, 5500, 12);
+
+      final roundTripped = CameraAutoWhiteBalanceChangedEvent.fromJson(
+        event.toJson(),
+      );
+
+      expect(roundTripped, event);
+    });
+  });
 }

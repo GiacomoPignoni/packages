@@ -104,6 +104,13 @@ class FakeController extends ValueNotifier<CameraValue>
   Future<void> setFocusPoint(Offset? point) async {}
 
   @override
+  Future<void> setWhiteBalance(WhiteBalanceValues? values) async {}
+
+  @override
+  Stream<({double temperature, double tint})> get autoWhiteBalanceValues =>
+      const Stream<({double temperature, double tint})>.empty();
+
+  @override
   Future<void> setZoomLevel(double zoom) async {}
 
   @override
@@ -151,6 +158,15 @@ class FakeController extends ValueNotifier<CameraValue>
 
   @override
   bool supportsImageStreaming() => true;
+  
+  @override
+  Future<void> setEffectsValues(EffectsValues values) async {}
+
+  @override
+  Future<void> setAspectRatio(double? aspectRatio) async {}
+
+  @override
+  Future<void> setCaptureScale(double scale) async {}
 }
 
 void main() {

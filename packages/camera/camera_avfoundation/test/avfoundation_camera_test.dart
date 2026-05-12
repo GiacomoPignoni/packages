@@ -100,6 +100,28 @@ void main() {
       },
     );
 
+    test('ResolutionPreset.photo forwards as PlatformResolutionPreset.photo',
+        () async {
+      final mockApi = MockCameraApi();
+      when(mockApi.create(any, any)).thenAnswer((_) async => 1);
+      final camera = AVFoundationCamera(api: mockApi);
+
+      await camera.createCamera(
+        const CameraDescription(
+          name: 'Test',
+          lensDirection: CameraLensDirection.back,
+          sensorOrientation: 0,
+        ),
+        ResolutionPreset.photo,
+      );
+
+      final VerificationResult verification = verify(
+        mockApi.create(captureAny, captureAny),
+      );
+      final settings = verification.captured[1] as PlatformMediaSettings?;
+      expect(settings?.resolutionPreset, PlatformResolutionPreset.photo);
+    });
+
     test(
       'Should throw CameraException when create throws a PlatformException',
       () {
@@ -308,6 +330,23 @@ void main() {
       expect(await streamQueue.next, event);
 
       // Clean up
+      await streamQueue.cancel();
+    });
+
+    test('Should receive autoWhiteBalanceChanged events', () async {
+      final Stream<CameraAutoWhiteBalanceChangedEvent> stream = camera
+          .onAutoWhiteBalanceChanged(cameraId);
+      final streamQueue = StreamQueue<CameraAutoWhiteBalanceChangedEvent>(
+        stream,
+      );
+
+      camera.hostCameraHandlers[cameraId]!.autoWhiteBalanceChanged(5500, 12);
+
+      final CameraAutoWhiteBalanceChangedEvent event = await streamQueue.next;
+      expect(event.cameraId, cameraId);
+      expect(event.temperature, 5500);
+      expect(event.tint, 12);
+
       await streamQueue.cancel();
     });
 
@@ -653,6 +692,26 @@ void main() {
       expect(passedPoint, null);
     });
 
+    test('Should forward setWhiteBalance(null) to the host API', () async {
+      await camera.setWhiteBalance(cameraId, null);
+
+      verify(mockApi.setWhiteBalance(null));
+    });
+
+    test('Should forward setWhiteBalance(values) to the host API', () async {
+      await camera.setWhiteBalance(
+        cameraId,
+        WhiteBalanceValues(temperature: 5500, tint: 25),
+      );
+
+      final List<Object?> captured =
+          verify(mockApi.setWhiteBalance(captureAny)).captured;
+      expect(captured.length, 1);
+      final forwarded = captured.single! as PlatformWhiteBalanceValues;
+      expect(forwarded.temperature, 5500);
+      expect(forwarded.tint, 25);
+    });
+
     test('Should build a texture widget as preview widget', () async {
       final Widget widget = camera.buildPreview(cameraId);
 
@@ -992,5 +1051,64 @@ void main() {
 
       verify(mockApi.setImageFileFormat(PlatformImageFileFormat.jpeg));
     });
+
+    test('Should forward setAspectRatio to the host API', () async {
+      await camera.setAspectRatio(cameraId, 1.0);
+      verify(mockApi.setAspectRatio(1.0));
+
+      await camera.setAspectRatio(cameraId, 9.0 / 16.0);
+      verify(mockApi.setAspectRatio(9.0 / 16.0));
+
+      await camera.setAspectRatio(cameraId, 3.0 / 4.0);
+      verify(mockApi.setAspectRatio(3.0 / 4.0));
+
+      await camera.setAspectRatio(cameraId, null);
+      verify(mockApi.setAspectRatio(null));
+    });
+
+    test('Should forward setCaptureScale to the host API', () async {
+      await camera.setCaptureScale(cameraId, 0.7);
+      verify(mockApi.setCaptureScale(0.7));
+
+      await camera.setCaptureScale(cameraId, 1.0);
+      verify(mockApi.setCaptureScale(1.0));
+    });
+
+    test('Should forward setEffectsValues to the host API', () async {
+      await camera.setEffectsValues(
+        cameraId,
+        const EffectsValues(vignetteIntensity: 0.6),
+      );
+
+      final List<Object?> captured =
+          verify(mockApi.setEffectsValues(captureAny)).captured;
+      expect(captured.length, 1);
+      final forwarded = captured.single! as PlatformEffectsValues;
+      expect(forwarded.vignetteIntensity, 0.6);
+    });
+
+    test(
+      'Should forward MediaSettings.aspectRatio when creating the camera',
+      () async {
+        final mockApi = MockCameraApi();
+        when(mockApi.create(any, any)).thenAnswer((_) async => 1);
+        final camera = AVFoundationCamera(api: mockApi);
+
+        await camera.createCameraWithSettings(
+          const CameraDescription(
+            name: 'Test',
+            lensDirection: CameraLensDirection.back,
+            sensorOrientation: 0,
+          ),
+          const MediaSettings(aspectRatio: 1.0),
+        );
+
+        final VerificationResult verification = verify(
+          mockApi.create(captureAny, captureAny),
+        );
+        final settings = verification.captured[1] as PlatformMediaSettings?;
+        expect(settings?.aspectRatio, 1.0);
+      },
+    );
   });
 }

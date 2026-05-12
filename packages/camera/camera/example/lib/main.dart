@@ -4,11 +4,13 @@
 
 import 'dart:async';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
+import 'package:flutter_image_gallery_saver/flutter_image_gallery_saver.dart';
 import 'package:video_player/video_player.dart';
 
 /// Camera example home widget.
@@ -136,20 +138,22 @@ class _CameraExampleHomeState extends State<CameraExampleHome>
       body: Column(
         children: <Widget>[
           Expanded(
-            child: Container(
-              decoration: BoxDecoration(
-                color: Colors.black,
-                border: Border.all(
-                  color:
-                      controller != null && controller!.value.isRecordingVideo
-                      ? Colors.redAccent
-                      : Colors.grey,
-                  width: 3.0,
+            child: Center(
+              child: Container(
+                margin: const EdgeInsets.all(12.0),
+                decoration: BoxDecoration(
+                  border: Border.all(
+                    color:
+                        controller != null && controller!.value.isRecordingVideo
+                        ? Colors.redAccent
+                        : Colors.grey,
+                    width: 3.0,
+                  ),
                 ),
-              ),
-              child: Padding(
-                padding: const EdgeInsets.all(1.0),
-                child: Center(child: _cameraPreviewWidget()),
+                child: Padding(
+                  padding: const EdgeInsets.all(1.0),
+                  child: _cameraPreviewWidget(),
+                ),
               ),
             ),
           ),
@@ -189,34 +193,29 @@ class _CameraExampleHomeState extends State<CameraExampleHome>
             builder: (BuildContext context, BoxConstraints constraints) {
               return GestureDetector(
                 behavior: HitTestBehavior.opaque,
-                onScaleStart: _handleScaleStart,
-                onScaleUpdate: _handleScaleUpdate,
-                onTapDown: (TapDownDetails details) =>
-                    onViewFinderTap(details, constraints),
+                onScaleStart: (ScaleStartDetails details) {
+                  _baseScale = _currentScale;
+                },
+                onScaleUpdate: (ScaleUpdateDetails details) async {
+                  // When there are not exactly two fingers on screen don't scale.
+                  if (controller == null || _pointers != 2) {
+                    return;
+                  }
+
+                  _currentScale = (_baseScale * details.scale).clamp(
+                    _minAvailableZoom,
+                    _maxAvailableZoom,
+                  );
+
+                  await controller!
+                      .setCaptureScale(min(max(0, details.scale), 1));
+                },
               );
             },
           ),
         ),
       );
     }
-  }
-
-  void _handleScaleStart(ScaleStartDetails details) {
-    _baseScale = _currentScale;
-  }
-
-  Future<void> _handleScaleUpdate(ScaleUpdateDetails details) async {
-    // When there are not exactly two fingers on screen don't scale
-    if (controller == null || _pointers != 2) {
-      return;
-    }
-
-    _currentScale = (_baseScale * details.scale).clamp(
-      _minAvailableZoom,
-      _maxAvailableZoom,
-    );
-
-    await controller!.setZoomLevel(_currentScale);
   }
 
   /// Display the thumbnail of the captured image or video.
@@ -635,7 +634,7 @@ class _CameraExampleHomeState extends State<CameraExampleHome>
   ) async {
     final cameraController = CameraController(
       cameraDescription,
-      kIsWeb ? ResolutionPreset.max : ResolutionPreset.medium,
+      kIsWeb ? ResolutionPreset.max : ResolutionPreset.ultraHigh,
       enableAudio: enableAudio,
       imageFormatGroup: ImageFormatGroup.jpeg,
     );
@@ -656,6 +655,14 @@ class _CameraExampleHomeState extends State<CameraExampleHome>
 
     try {
       await cameraController.initialize();
+      await cameraController.setEffectsValues(const EffectsValues(
+        vignetteIntensity: 1.0,
+      ));
+      await cameraController.setAspectRatio(1.0);
+      await cameraController.setWhiteBalance(
+        WhiteBalanceValues(temperature: 8000, tint: 0),
+      );
+
       await Future.wait(<Future<Object?>>[
         // The exposure mode is currently not supported on the web.
         ...!kIsWeb
@@ -810,14 +817,16 @@ class _CameraExampleHomeState extends State<CameraExampleHome>
   }
 
   void onStopButtonPressed() {
-    stopVideoRecording().then((XFile? file) {
+    stopVideoRecording().then((XFile? file) async {
       if (mounted) {
         setState(() {});
       }
       if (file != null) {
+        await ImageGallerySaver().saveFile(file.path);
         showInSnackBar('Video recorded to ${file.path}');
         videoFile = file;
-        _startVideoPlayer();
+        
+        //_startVideoPlayer();
       }
     });
   }

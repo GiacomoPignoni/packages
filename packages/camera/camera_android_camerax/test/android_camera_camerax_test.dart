@@ -866,6 +866,7 @@ void main() {
               height: 2160,
             );
           case ResolutionPreset.max:
+          case ResolutionPreset.photo:
             continue;
         }
 
@@ -1020,6 +1021,7 @@ void main() {
               height: 2160,
             );
           case ResolutionPreset.max:
+          case ResolutionPreset.photo:
             expectedPreferredResolution = null;
         }
 
@@ -1143,6 +1145,7 @@ void main() {
           // Medium resolution preset uses aspect ratio 3:2 which is unsupported
           // by CameraX.
           case ResolutionPreset.max:
+          case ResolutionPreset.photo:
         }
 
         if (expectedAspectRatio == null) {
@@ -1502,6 +1505,7 @@ void main() {
           case ResolutionPreset.ultraHigh:
             expectedVideoQuality = VideoQuality.UHD;
           case ResolutionPreset.max:
+          case ResolutionPreset.photo:
             expectedVideoQuality = VideoQuality.highest;
         }
 

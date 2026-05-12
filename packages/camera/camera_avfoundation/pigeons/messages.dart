@@ -63,7 +63,17 @@ enum PlatformImageFileFormat { jpeg, heif }
 enum PlatformImageFormatGroup { bgra8888, yuv420 }
 
 // Pigeon version of ResolutionPreset.
-enum PlatformResolutionPreset { low, medium, high, veryHigh, ultraHigh, max }
+enum PlatformResolutionPreset {
+  low,
+  medium,
+  high,
+  veryHigh,
+  ultraHigh,
+  max,
+  /// Maps to `AVCaptureSession.Preset.photo` — full-sensor stills at the
+  /// cost of a reduced video stream. See `ResolutionPreset.photo`.
+  photo,
+}
 
 enum PlatformVideoStabilizationMode {
   off,
@@ -78,6 +88,7 @@ class PlatformCameraDescription {
     required this.name,
     required this.lensDirection,
     required this.lensType,
+    this.equivalentFocalLength,
   });
 
   /// The name of the camera device.
@@ -88,6 +99,11 @@ class PlatformCameraDescription {
 
   /// The type of the camera lens.
   final PlatformCameraLensType lensType;
+
+  /// The approximate 35mm-equivalent focal length of the lens, in millimetres.
+  ///
+  /// Only populated on iOS (AVFoundation). Null on other platforms.
+  final double? equivalentFocalLength;
 }
 
 // Pigeon version of the data needed for a CameraInitializedEvent.
@@ -162,6 +178,7 @@ class PlatformMediaSettings {
     required this.videoBitrate,
     required this.audioBitrate,
     required this.enableAudio,
+    required this.aspectRatio,
   });
 
   final PlatformResolutionPreset resolutionPreset;
@@ -169,6 +186,11 @@ class PlatformMediaSettings {
   final int? videoBitrate;
   final int? audioBitrate;
   final bool enableAudio;
+
+  /// Aspect ratio (width/height) that center-crops preview, photo, and video
+  /// output. `null` means no crop. Only takes effect when the shader pipeline
+  /// is enabled.
+  final double? aspectRatio;
 }
 
 // Pigeon equivalent of CGPoint.
@@ -187,6 +209,25 @@ class PlatformSize {
   final double height;
 }
 
+// Visual effect parameters forwarded to the Metal shader pipeline.
+class PlatformEffectsValues {
+  PlatformEffectsValues({required this.vignetteIntensity});
+
+  /// Radial darkening toward the frame edges (0.0 = off, 1.0 = full vignette).
+  final double vignetteIntensity;
+}
+
+/// Pigeon version of WhiteBalanceValues.
+class PlatformWhiteBalanceValues {
+  PlatformWhiteBalanceValues({required this.temperature, required this.tint});
+
+  /// The color temperature in Kelvin.
+  final double temperature;
+
+  /// The tint offset, where `0` is neutral.
+  final double tint;
+}
+
 @HostApi()
 abstract class CameraApi {
   /// Returns the list of available cameras.
@@ -195,6 +236,9 @@ abstract class CameraApi {
   List<PlatformCameraDescription> getAvailableCameras();
 
   /// Create a new camera with the given settings, and returns its ID.
+  /// Every preview frame, recorded video frame, and captured photo is
+  /// rendered through the bundled Metal shader pipeline; when no effects or
+  /// crop are applied the pipeline is a pass-through.
   @async
   @ObjCSelector('createCameraWithName:settings:')
   int create(String cameraName, PlatformMediaSettings settings);
@@ -306,6 +350,14 @@ abstract class CameraApi {
   @ObjCSelector('setFocusPoint:')
   void setFocusPoint(PlatformPoint? point);
 
+  /// Sets the white balance for the camera.
+  ///
+  /// Null enables automatic white balance; a non-null value locks the white
+  /// balance to the given temperature and tint.
+  @async
+  @ObjCSelector('setWhiteBalance:')
+  void setWhiteBalance(PlatformWhiteBalanceValues? values);
+
   /// Returns the minimum zoom level supported by the camera.
   @async
   @ObjCSelector('getMinimumZoomLevel')
@@ -349,6 +401,28 @@ abstract class CameraApi {
   @async
   @ObjCSelector('setImageFileFormat:')
   void setImageFileFormat(PlatformImageFileFormat format);
+
+  /// Applies visual effect parameters to the Metal shader pipeline.
+  /// Has no effect when no shader pipeline is active.
+  @async
+  @ObjCSelector('setEffectsValues:')
+  void setEffectsValues(PlatformEffectsValues values);
+
+  /// Sets the center-crop aspect ratio (width/height) applied to preview,
+  /// photo, and video. Pass `null` to disable cropping. Has no effect when
+  /// no shader pipeline is active.
+  @async
+  @ObjCSelector('setAspectRatio:')
+  void setAspectRatio(double? aspectRatio);
+
+  /// Sets the capture scale (0.1–1.0) applied inside the aspect-ratio crop.
+  /// 1.0 means no extra crop. Values below 1.0 narrow the captured area;
+  /// the preview shows the full aspect-ratio crop with the area outside the
+  /// scaled rectangle darkened, while photo and video files contain only
+  /// the scaled rectangle.
+  @async
+  @ObjCSelector('setCaptureScale:')
+  void setCaptureScale(double scale);
 }
 
 @EventChannelApi()
@@ -378,4 +452,14 @@ abstract class CameraEventApi {
   /// handling a specific HostApi call, such as during streaming.
   @ObjCSelector('reportError:')
   void error(String message);
+
+  /// Called when the preview size changes (e.g., after an aspect ratio change).
+  @ObjCSelector('previewSizeChanged:')
+  void previewSizeChanged(PlatformSize size);
+
+  /// Called while the camera is in auto white balance mode with the
+  /// temperature (Kelvin) and tint values currently selected by the
+  /// hardware. iOS only.
+  @ObjCSelector('autoWhiteBalanceChangedWithTemperature:tint:')
+  void autoWhiteBalanceChanged(double temperature, double tint);
 }

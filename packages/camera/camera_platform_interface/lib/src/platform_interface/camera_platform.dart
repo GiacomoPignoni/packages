@@ -108,6 +108,16 @@ abstract class CameraPlatform extends PlatformInterface {
     throw UnimplementedError('onCameraTimeLimitReached() is not implemented.');
   }
 
+  /// Emits the temperature (Kelvin) and tint values selected by the camera's
+  /// auto white balance system. Only emits while the camera is in
+  /// [WhiteBalanceMode.auto]. iOS only — other platforms return an empty
+  /// stream.
+  Stream<CameraAutoWhiteBalanceChangedEvent> onAutoWhiteBalanceChanged(
+    int cameraId,
+  ) {
+    return const Stream<CameraAutoWhiteBalanceChangedEvent>.empty();
+  }
+
   /// The ui orientation changed.
   ///
   /// Implementations for this:
@@ -262,6 +272,15 @@ abstract class CameraPlatform extends PlatformInterface {
     throw UnimplementedError('setFocusPoint() is not implemented.');
   }
 
+  /// Sets the white balance for the selected camera.
+  ///
+  /// Passing `null` enables automatic white balance. Passing a
+  /// [WhiteBalanceValues] locks the white balance at the given temperature
+  /// and tint. Currently only supported on iOS.
+  Future<void> setWhiteBalance(int cameraId, WhiteBalanceValues? values) {
+    throw UnimplementedError('setWhiteBalance() is not implemented.');
+  }
+
   /// Gets the maximum supported zoom level for the selected camera.
   Future<double> getMaxZoomLevel(int cameraId) {
     throw UnimplementedError('getMaxZoomLevel() is not implemented.');
@@ -355,4 +374,28 @@ abstract class CameraPlatform extends PlatformInterface {
   Future<void> setJpegImageQuality(int cameraId, int quality) {
     throw UnimplementedError('setJpegImageQuality() is not implemented.');
   }
+
+  /// Applies visual effect parameters to the camera shader pipeline.
+  ///
+  /// On platforms that do not support shader effects this is a no-op.
+  Future<void> setEffectsValues(int cameraId, EffectsValues values) async {}
+
+  /// Sets the aspect ratio (width/height) applied (as a center-crop) to
+  /// preview, photo, and video output. Pass `null` to disable cropping.
+  ///
+  /// On platforms that do not support shader-based cropping this is a no-op.
+  Future<void> setAspectRatio(
+    int cameraId,
+    double? aspectRatio,
+  ) async {}
+
+  /// Sets the capture scale applied inside the aspect-ratio crop.
+  ///
+  /// Must be in the range `[0.1, 1.0]`. `1.0` (default) means no extra crop.
+  /// Smaller values further narrow the captured area; the preview keeps the
+  /// full aspect-ratio framing with the outside darkened, while saved photo
+  /// and video files contain only the scaled rectangle.
+  ///
+  /// On platforms that do not support shader-based cropping this is a no-op.
+  Future<void> setCaptureScale(int cameraId, double scale) async {}
 }

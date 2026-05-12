@@ -19,6 +19,7 @@ class MediaSettings {
     this.videoBitrate,
     this.audioBitrate,
     this.enableAudio = false,
+    this.aspectRatio,
   }) : assert(fps == null || fps > 0, 'fps must be null or greater than zero'),
        assert(
          videoBitrate == null || videoBitrate > 0,
@@ -44,6 +45,10 @@ class MediaSettings {
   /// Controls audio presence in recorded video.
   final bool enableAudio;
 
+  /// Aspect ratio (width/height) applied as a center-crop to preview, photo,
+  /// and video. `null` means no crop. iOS only.
+  final double? aspectRatio;
+
   @override
   bool operator ==(Object other) {
     if (identical(other, this)) {
@@ -57,7 +62,8 @@ class MediaSettings {
         fps == other.fps &&
         videoBitrate == other.videoBitrate &&
         audioBitrate == other.audioBitrate &&
-        enableAudio == other.enableAudio;
+        enableAudio == other.enableAudio &&
+        aspectRatio == other.aspectRatio;
   }
 
   @override
@@ -67,6 +73,7 @@ class MediaSettings {
     videoBitrate,
     audioBitrate,
     enableAudio,
+    aspectRatio,
   );
 
   @override
@@ -76,6 +83,7 @@ class MediaSettings {
         'fps: $fps, '
         'videoBitrate: $videoBitrate, '
         'audioBitrate: $audioBitrate, '
-        'enableAudio: $enableAudio}';
+        'enableAudio: $enableAudio, '
+        'aspectRatio: $aspectRatio}';
   }
 }

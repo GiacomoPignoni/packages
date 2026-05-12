@@ -143,16 +143,24 @@ extension CameraPlugin: CameraApi {
       for device in devices {
         let lensFacing = strongSelf.platformLensDirection(for: device)
         let lensType = strongSelf.platformLensType(for: device)
+        let focalLength = strongSelf.equivalentFocalLength(for: device)
         let cameraDescription = PlatformCameraDescription(
           name: device.uniqueID,
           lensDirection: lensFacing,
-          lensType: lensType
+          lensType: lensType,
+          equivalentFocalLength: focalLength
         )
         reply.append(cameraDescription)
       }
 
       completion(.success(reply))
     }
+  }
+
+  private func equivalentFocalLength(for device: CaptureDevice) -> Double {
+    let fov = device.avDevice.activeFormat.videoFieldOfView
+    let radians = Double(fov) * .pi / 180.0
+    return 35.0 / (2.0 * tan(radians / 2.0))
   }
 
   private func platformLensDirection(for device: CaptureDevice) -> PlatformCameraLensDirection {
@@ -232,7 +240,8 @@ extension CameraPlugin: CameraApi {
     completion: @escaping (Result<Int64, any Error>) -> Void
   ) {
     captureSessionQueue.async { [weak self] in
-      self?.sessionQueueCreateCamera(name: withName, settings: settings, completion: completion)
+      self?.sessionQueueCreateCamera(
+        name: withName, settings: settings, completion: completion)
     }
   }
 
@@ -253,7 +262,8 @@ extension CameraPlugin: CameraApi {
       captureSessionFactory: captureSessionFactory,
       captureSessionQueue: captureSessionQueue,
       captureDeviceInputFactory: captureDeviceInputFactory,
-      initialCameraName: name
+      initialCameraName: name,
+      aspectRatio: settings.aspectRatio
     )
 
     do {
@@ -477,6 +487,15 @@ extension CameraPlugin: CameraApi {
     }
   }
 
+  func setWhiteBalance(
+    values: PlatformWhiteBalanceValues?,
+    completion: @escaping (Result<Void, any Error>) -> Void
+  ) {
+    captureSessionQueue.async { [weak self] in
+      self?.camera?.setWhiteBalance(values, withCompletion: completion)
+    }
+  }
+
   func getMinZoomLevel(completion: @escaping (Result<Double, any Error>) -> Void) {
     captureSessionQueue.async { [weak self] in
       if let minZoom = self?.camera?.minimumAvailableZoomFactor {
@@ -552,6 +571,33 @@ extension CameraPlugin: CameraApi {
   ) {
     captureSessionQueue.async { [weak self] in
       self?.camera?.setImageFileFormat(format)
+      completion(.success(()))
+    }
+  }
+
+  func setEffectsValues(
+    values: PlatformEffectsValues, completion: @escaping (Result<Void, any Error>) -> Void
+  ) {
+    captureSessionQueue.async { [weak self] in
+      self?.camera?.setEffectsValues(values)
+      completion(.success(()))
+    }
+  }
+
+  func setAspectRatio(
+    aspectRatio: Double?, completion: @escaping (Result<Void, any Error>) -> Void
+  ) {
+    captureSessionQueue.async { [weak self] in
+      self?.camera?.setAspectRatio(aspectRatio)
+      completion(.success(()))
+    }
+  }
+
+  func setCaptureScale(
+    scale: Double, completion: @escaping (Result<Void, any Error>) -> Void
+  ) {
+    captureSessionQueue.async { [weak self] in
+      self?.camera?.setCaptureScale(scale)
       completion(.success(()))
     }
   }

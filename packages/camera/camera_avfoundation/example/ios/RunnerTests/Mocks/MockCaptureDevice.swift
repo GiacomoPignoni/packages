@@ -20,6 +20,13 @@ class MockCaptureDevice: NSObject, CaptureDevice {
   var setExposurePointOfInterestStub: ((CGPoint) -> Void)?
   var setExposureTargetBiasStub: ((Float, ((CMTime) -> Void)?) -> Void)?
   var isExposureModeSupportedStub: ((AVCaptureDevice.ExposureMode) -> Bool)?
+  var setWhiteBalanceModeStub: ((AVCaptureDevice.WhiteBalanceMode) -> Void)?
+  var isWhiteBalanceModeSupportedStub: ((AVCaptureDevice.WhiteBalanceMode) -> Bool)?
+  var deviceWhiteBalanceGainsForStub:
+    ((AVCaptureDevice.WhiteBalanceTemperatureAndTintValues) -> AVCaptureDevice.WhiteBalanceGains)?
+  var currentDeviceWhiteBalanceGainsStub: (() -> AVCaptureDevice.WhiteBalanceGains)?
+  var setWhiteBalanceModeLockedStub:
+    ((AVCaptureDevice.WhiteBalanceGains, ((CMTime) -> Void)?) -> Void)?
   var setVideoZoomFactorStub: ((CGFloat) -> Void)?
   var lockForConfigurationStub: (() throws -> Void)?
 
@@ -105,6 +112,36 @@ class MockCaptureDevice: NSObject, CaptureDevice {
 
   func isExposureModeSupported(_ mode: AVCaptureDevice.ExposureMode) -> Bool {
     return isExposureModeSupportedStub?(mode) ?? false
+  }
+
+  var whiteBalanceMode: AVCaptureDevice.WhiteBalanceMode {
+    get { .continuousAutoWhiteBalance }
+    set { setWhiteBalanceModeStub?(newValue) }
+  }
+
+  var maxWhiteBalanceGain: Float = 4.0
+
+  func isWhiteBalanceModeSupported(_ mode: AVCaptureDevice.WhiteBalanceMode) -> Bool {
+    return isWhiteBalanceModeSupportedStub?(mode) ?? false
+  }
+
+  func deviceWhiteBalanceGains(
+    for temperatureAndTintValues: AVCaptureDevice.WhiteBalanceTemperatureAndTintValues
+  ) -> AVCaptureDevice.WhiteBalanceGains {
+    return deviceWhiteBalanceGainsForStub?(temperatureAndTintValues)
+      ?? AVCaptureDevice.WhiteBalanceGains(redGain: 1, greenGain: 1, blueGain: 1)
+  }
+
+  func currentDeviceWhiteBalanceGains() -> AVCaptureDevice.WhiteBalanceGains {
+    return currentDeviceWhiteBalanceGainsStub?()
+      ?? AVCaptureDevice.WhiteBalanceGains(redGain: 1, greenGain: 1, blueGain: 1)
+  }
+
+  func setWhiteBalanceModeLocked(
+    withDeviceWhiteBalanceGains gains: AVCaptureDevice.WhiteBalanceGains,
+    completionHandler: ((CMTime) -> Void)?
+  ) {
+    setWhiteBalanceModeLockedStub?(gains, completionHandler)
   }
 
   var lensAperture: Float { 1.8 }
