@@ -36,7 +36,11 @@ dependencies:
       url: https://github.com/GiacomoPignoni/packages.git
       ref: rumi/camera
       path: packages/camera/camera_platform_interface
-  camera_web: ^0.3.3
+  camera_web:
+    git:
+      url: https://github.com/GiacomoPignoni/packages.git
+      ref: rumi/camera
+      path: packages/camera/camera_web
   flutter:
     sdk: flutter
   flutter_plugin_android_lifecycle: ^2.0.2
