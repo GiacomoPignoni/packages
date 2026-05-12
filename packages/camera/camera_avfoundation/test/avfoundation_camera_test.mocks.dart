@@ -22,6 +22,13 @@ import 'package:mockito/src/dummies.dart' as _i3;
 // ignore_for_file: unnecessary_parenthesis
 // ignore_for_file: camel_case_types
 // ignore_for_file: subtype_of_sealed_class
+// ignore_for_file: invalid_use_of_internal_member
+
+class _FakePlatformCapturedPicturePaths_0 extends _i1.SmartFake
+    implements _i2.PlatformCapturedPicturePaths {
+  _FakePlatformCapturedPicturePaths_0(Object parent, Invocation parentInvocation)
+    : super(parent, parentInvocation);
+}
 
 /// A class which mocks [CameraApi].
 ///
@@ -141,6 +148,25 @@ class MockCameraApi extends _i1.Mock implements _i2.CameraApi {
           as _i4.Future<String>);
 
   @override
+  _i4.Future<_i2.PlatformCapturedPicturePaths> takePictureWithOriginal() =>
+      (super.noSuchMethod(
+            Invocation.method(#takePictureWithOriginal, []),
+            returnValue: _i4.Future<_i2.PlatformCapturedPicturePaths>.value(
+              _FakePlatformCapturedPicturePaths_0(
+                this,
+                Invocation.method(#takePictureWithOriginal, []),
+              ),
+            ),
+            returnValueForMissingStub: _i4.Future<_i2.PlatformCapturedPicturePaths>.value(
+              _FakePlatformCapturedPicturePaths_0(
+                this,
+                Invocation.method(#takePictureWithOriginal, []),
+              ),
+            ),
+          )
+          as _i4.Future<_i2.PlatformCapturedPicturePaths>);
+
+  @override
   _i4.Future<void> prepareForVideoRecording() =>
       (super.noSuchMethod(
             Invocation.method(#prepareForVideoRecording, []),
@@ -197,6 +223,17 @@ class MockCameraApi extends _i1.Mock implements _i2.CameraApi {
             returnValueForMissingStub: _i4.Future<void>.value(),
           )
           as _i4.Future<void>);
+
+  @override
+  _i4.Future<List<_i2.PlatformFlashMode>> getSupportedFlashModes() =>
+      (super.noSuchMethod(
+            Invocation.method(#getSupportedFlashModes, []),
+            returnValue: _i4.Future<List<_i2.PlatformFlashMode>>.value(<_i2.PlatformFlashMode>[]),
+            returnValueForMissingStub: _i4.Future<List<_i2.PlatformFlashMode>>.value(
+              <_i2.PlatformFlashMode>[],
+            ),
+          )
+          as _i4.Future<List<_i2.PlatformFlashMode>>);
 
   @override
   _i4.Future<void> setExposureMode(_i2.PlatformExposureMode? mode) =>
@@ -260,6 +297,24 @@ class MockCameraApi extends _i1.Mock implements _i2.CameraApi {
             returnValueForMissingStub: _i4.Future<void>.value(),
           )
           as _i4.Future<void>);
+
+  @override
+  _i4.Future<void> setWhiteBalance(_i2.PlatformWhiteBalanceValues? values) =>
+      (super.noSuchMethod(
+            Invocation.method(#setWhiteBalance, [values]),
+            returnValue: _i4.Future<void>.value(),
+            returnValueForMissingStub: _i4.Future<void>.value(),
+          )
+          as _i4.Future<void>);
+
+  @override
+  _i4.Future<bool> isWhiteBalanceSupported() =>
+      (super.noSuchMethod(
+            Invocation.method(#isWhiteBalanceSupported, []),
+            returnValue: _i4.Future<bool>.value(false),
+            returnValueForMissingStub: _i4.Future<bool>.value(false),
+          )
+          as _i4.Future<bool>);
 
   @override
   _i4.Future<double> getMinZoomLevel() =>
@@ -337,6 +392,42 @@ class MockCameraApi extends _i1.Mock implements _i2.CameraApi {
   _i4.Future<void> setImageFileFormat(_i2.PlatformImageFileFormat? format) =>
       (super.noSuchMethod(
             Invocation.method(#setImageFileFormat, [format]),
+            returnValue: _i4.Future<void>.value(),
+            returnValueForMissingStub: _i4.Future<void>.value(),
+          )
+          as _i4.Future<void>);
+
+  @override
+  _i4.Future<void> setEffectsValues(_i2.PlatformEffectsValues? values) =>
+      (super.noSuchMethod(
+            Invocation.method(#setEffectsValues, [values]),
+            returnValue: _i4.Future<void>.value(),
+            returnValueForMissingStub: _i4.Future<void>.value(),
+          )
+          as _i4.Future<void>);
+
+  @override
+  _i4.Future<void> setAspectRatio(double? aspectRatio) =>
+      (super.noSuchMethod(
+            Invocation.method(#setAspectRatio, [aspectRatio]),
+            returnValue: _i4.Future<void>.value(),
+            returnValueForMissingStub: _i4.Future<void>.value(),
+          )
+          as _i4.Future<void>);
+
+  @override
+  _i4.Future<void> setCaptureScale(double? scale) =>
+      (super.noSuchMethod(
+            Invocation.method(#setCaptureScale, [scale]),
+            returnValue: _i4.Future<void>.value(),
+            returnValueForMissingStub: _i4.Future<void>.value(),
+          )
+          as _i4.Future<void>);
+
+  @override
+  _i4.Future<void> setCaptureCornerRadius(double? radius) =>
+      (super.noSuchMethod(
+            Invocation.method(#setCaptureCornerRadius, [radius]),
             returnValue: _i4.Future<void>.value(),
             returnValueForMissingStub: _i4.Future<void>.value(),
           )

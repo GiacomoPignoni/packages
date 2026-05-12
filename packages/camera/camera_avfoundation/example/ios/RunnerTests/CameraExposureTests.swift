@@ -60,16 +60,15 @@ final class CameraExposureTests: XCTestCase {
   }
 
   func testSetExposurePoint_setsExposurePointOfInterest() {
-    let (camera, mockDevice, mockDeviceOrientationProvider) = createCamera()
-    // UI is currently in landscape left orientation.
-    mockDeviceOrientationProvider.orientationStub = { .landscapeLeft }
+    let (camera, mockDevice, _) = createCamera()
     // Exposure point of interest is supported.
     mockDevice.isExposurePointOfInterestSupported = true
 
-    // Verify the focus point of interest has been set.
+    // Verify the point has been set. Preview space maps into sensor space by a fixed 90° ccw
+    // rotation, since the preview is pinned to portrait.
     var setPoint = CGPoint.zero
     mockDevice.setExposurePointOfInterestStub = { point in
-      if point == CGPoint(x: 1, y: 1) {
+      if point == CGPoint(x: 1, y: 0) {
         setPoint = point
       }
     }
@@ -82,7 +81,7 @@ final class CameraExposureTests: XCTestCase {
     }
 
     waitForExpectations(timeout: 30, handler: nil)
-    XCTAssertEqual(setPoint, CGPoint(x: 1.0, y: 1.0))
+    XCTAssertEqual(setPoint, CGPoint(x: 1.0, y: 0.0))
   }
 
   func testSetExposurePoint_returnsError_ifNotSupported() {

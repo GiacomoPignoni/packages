@@ -13,6 +13,19 @@ protocol CaptureSession: NSObjectProtocol {
   var automaticallyConfiguresApplicationAudioSession: Bool { get set }
   var isRunning: Bool { get }
 
+  /// Whether the underlying session supports continuing to deliver camera
+  /// frames while the app shares the foreground with another app on iPad
+  /// (Split View / Slide Over / Stage Manager). Maps to
+  /// `AVCaptureSession.isMultitaskingCameraAccessSupported` on iOS 16+ and is
+  /// always `false` on earlier OS versions.
+  var multitaskingCameraAccessSupported: Bool { get }
+
+  /// Enables/disables multitasking camera access. Only meaningful when
+  /// `multitaskingCameraAccessSupported` is `true`; the setter is a no-op on
+  /// older OS versions. Maps to
+  /// `AVCaptureSession.isMultitaskingCameraAccessEnabled` on iOS 16+.
+  var multitaskingCameraAccessEnabled: Bool { get set }
+
   func beginConfiguration()
   func commitConfiguration()
   func startRunning()
@@ -31,6 +44,27 @@ protocol CaptureSession: NSObjectProtocol {
 }
 
 extension AVCaptureSession: CaptureSession {
+  var multitaskingCameraAccessSupported: Bool {
+    if #available(iOS 16.0, *) {
+      return isMultitaskingCameraAccessSupported
+    }
+    return false
+  }
+
+  var multitaskingCameraAccessEnabled: Bool {
+    get {
+      if #available(iOS 16.0, *) {
+        return isMultitaskingCameraAccessEnabled
+      }
+      return false
+    }
+    set {
+      if #available(iOS 16.0, *) {
+        isMultitaskingCameraAccessEnabled = newValue
+      }
+    }
+  }
+
   func addInputWithNoConnections(_ input: CaptureInput) {
     addInputWithNoConnections(input.avInput)
   }

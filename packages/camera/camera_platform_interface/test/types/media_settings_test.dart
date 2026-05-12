@@ -40,6 +40,29 @@ void main() {
       isFalse,
       reason: 'MediaSettings constructor should have false default enableAudio',
     );
+
+    expect(
+      settingsWithNoParameters.aspectRatio,
+      isNull,
+      reason: 'MediaSettings constructor should have null default aspectRatio',
+    );
+  });
+
+  test('MediaSettings should hold aspectRatio parameter (square case)', () {
+    const settings = MediaSettings(aspectRatio: 1.0);
+
+    expect(settings.aspectRatio, 1.0);
+    expect(settings.toString(), contains('aspectRatio: 1.0'));
+  });
+
+  test('MediaSettings == compares aspectRatio', () {
+    const a = MediaSettings(aspectRatio: 1.0);
+    const b = MediaSettings(aspectRatio: 9.0 / 16.0);
+    const c = MediaSettings(aspectRatio: 1.0);
+
+    expect(a == b, isFalse);
+    expect(a == c, isTrue);
+    expect(a.hashCode == c.hashCode, isTrue);
   });
 
   test('MediaSettings fps should hold parameters', () {
@@ -89,7 +112,14 @@ void main() {
 
     expect(
       settings.hashCode,
-      Object.hash(ResolutionPreset.low, 20, 128000, 32000, true),
+      Object.hash(
+        ResolutionPreset.low,
+        20,
+        128000,
+        32000,
+        true,
+        null, // aspectRatio default
+      ),
       reason: 'MediaSettings hash() should be equal to Object.hash of parameters',
     );
   });

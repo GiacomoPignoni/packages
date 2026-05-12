@@ -76,6 +76,7 @@ class PigeonOverrides {
     ResolutionSelector? resolutionSelector,
     int? targetRotation,
     CameraIntegerRange? targetFpsRange,
+    WhiteBalanceManager? whiteBalanceManager,
   })?
   preview_new;
 
@@ -210,6 +211,49 @@ class PigeonOverrides {
   })?
   displayOrientedMeteringPointFactory_new;
 
+  /// Overrides [PlatformEffectsValues.new].
+  static PlatformEffectsValues Function({
+    required double vignetteIntensity,
+    required double grainOpacity,
+    required double grainSize,
+    required PlatformGrainBehavior grainBehavior,
+    required double lutIntensity,
+    required double resolution,
+    required double colorShift,
+    required double mist,
+    required double prism,
+    required bool cheapFisheye,
+    required double bloom,
+    required double diffusion,
+    String? grainNoisePath,
+    String? lutFilePath,
+  })?
+  platformEffectsValues_new;
+
+  /// Overrides [ViewPort.new].
+  static ViewPort Function({
+    required int aspectRatioWidth,
+    required int aspectRatioHeight,
+    required int rotation,
+  })?
+  viewPort_new;
+
+  /// Overrides [CameraEffectsManager.new].
+  static CameraEffectsManager Function({
+    required void Function(CameraEffectsManager pigeon_instance, int width, int height)
+    onPreviewSizeChanged,
+    required void Function(CameraEffectsManager pigeon_instance) onPreviewOutputLost,
+    double? aspectRatio,
+  })?
+  cameraEffectsManager_new;
+
+  /// Overrides [WhiteBalanceManager.new].
+  static WhiteBalanceManager Function({
+    required void Function(WhiteBalanceManager pigeon_instance, double temperature, double tint)
+    onAutoWhiteBalanceChanged,
+  })?
+  whiteBalanceManager_new;
+
   /// Overrides [CameraSelector.defaultBackCamera].
   static CameraSelector? cameraSelector_defaultBackCamera;
 
@@ -293,6 +337,10 @@ class PigeonOverrides {
     cameraCharacteristics_controlAvailableVideoStabilizationModes = null;
     camera2CameraInfo_from = null;
     displayOrientedMeteringPointFactory_new = null;
+    platformEffectsValues_new = null;
+    viewPort_new = null;
+    cameraEffectsManager_new = null;
+    whiteBalanceManager_new = null;
   }
 }
 
@@ -457,6 +505,12 @@ class PigeonInstanceManager {
     DisplayOrientedMeteringPointFactory.pigeon_setUpMessageHandlers(
       pigeon_instanceManager: instanceManager,
     );
+    PlatformEffectsValues.pigeon_setUpMessageHandlers(pigeon_instanceManager: instanceManager);
+    CapturedPicturePaths.pigeon_setUpMessageHandlers(pigeon_instanceManager: instanceManager);
+    CameraEffect.pigeon_setUpMessageHandlers(pigeon_instanceManager: instanceManager);
+    ViewPort.pigeon_setUpMessageHandlers(pigeon_instanceManager: instanceManager);
+    CameraEffectsManager.pigeon_setUpMessageHandlers(pigeon_instanceManager: instanceManager);
+    WhiteBalanceManager.pigeon_setUpMessageHandlers(pigeon_instanceManager: instanceManager);
     return instanceManager;
   }
 
@@ -776,7 +830,7 @@ enum CameraStateType {
   unknown,
 }
 
-/// The types (T) properly wrapped to be used as a LiveData<T>.
+/// The types (T) properly wrapped to be used as a `LiveData<T>`.
 enum LiveDataSupportedType { cameraState, zoomState }
 
 /// Video quality constraints that will be used by a QualitySelector to choose
@@ -948,6 +1002,18 @@ enum CameraStateErrorCode {
   unknown,
 }
 
+/// Controls where grain is visible across the tonal range.
+///
+/// Pigeon version of `GrainBehavior`.
+enum PlatformGrainBehavior {
+  /// Grain is applied uniformly (additive) across all tones.
+  overlay,
+
+  /// Grain is scaled by the inverse luminance of each pixel, so it fades out
+  /// on bright areas and is most visible in shadows.
+  darkOnly,
+}
+
 class _PigeonCodec extends StandardMessageCodec {
   const _PigeonCodec();
   @override
@@ -987,6 +1053,9 @@ class _PigeonCodec extends StandardMessageCodec {
       writeValue(buffer, value.index);
     } else if (value is CameraStateErrorCode) {
       buffer.putUint8(139);
+      writeValue(buffer, value.index);
+    } else if (value is PlatformGrainBehavior) {
+      buffer.putUint8(140);
       writeValue(buffer, value.index);
     } else {
       super.writeValue(buffer, value);
@@ -1029,6 +1098,9 @@ class _PigeonCodec extends StandardMessageCodec {
       case 139:
         final value = readValue(buffer) as int?;
         return value == null ? null : CameraStateErrorCode.values[value];
+      case 140:
+        final value = readValue(buffer) as int?;
+        return value == null ? null : PlatformGrainBehavior.values[value];
       default:
         return super.readValueOfType(type, buffer);
     }
@@ -2085,6 +2157,37 @@ class CameraInfo extends PigeonInternalProxyApiBaseClass {
     }
   }
 
+  /// Whether this camera has a flash unit.
+  Future<bool> hasFlashUnit() async {
+    final _PigeonInternalProxyApiBaseCodec pigeonChannelCodec = _pigeonVar_codecCameraInfo;
+    final BinaryMessenger? pigeonVar_binaryMessenger = pigeon_binaryMessenger;
+    const pigeonVar_channelName =
+        'dev.flutter.pigeon.camera_android_camerax.CameraInfo.hasFlashUnit';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[this]);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+    if (pigeonVar_replyList == null) {
+      throw _createConnectionError(pigeonVar_channelName);
+    } else if (pigeonVar_replyList.length > 1) {
+      throw PlatformException(
+        code: pigeonVar_replyList[0]! as String,
+        message: pigeonVar_replyList[1] as String?,
+        details: pigeonVar_replyList[2],
+      );
+    } else if (pigeonVar_replyList[0] == null) {
+      throw PlatformException(
+        code: 'null-error',
+        message: 'Host platform returned null value for non-null return value.',
+      );
+    } else {
+      return (pigeonVar_replyList[0] as bool?)!;
+    }
+  }
+
   @override
   CameraInfo pigeon_copy() {
     return CameraInfo.pigeon_detached(
@@ -2495,7 +2598,23 @@ class ProcessCameraProvider extends PigeonInternalProxyApiBaseClass {
   }
 
   /// Binds the collection of `UseCase` to a `LifecycleOwner`.
-  Future<Camera> bindToLifecycle(CameraSelector cameraSelector, List<UseCase> useCases) async {
+  ///
+  /// The `effects` are applied to every use case bound to the camera, not just
+  /// the ones passed in this call: CameraX stores them on the camera adapter
+  /// rather than on the `UseCaseGroup`. Callers that bind incrementally must
+  /// therefore pass the same list every time, or a later bind will clear the
+  /// effects set by an earlier one.
+  ///
+  /// A non-null `viewPort` center-crops every bound use case to its aspect
+  /// ratio. That is the only way to make CameraX size the preview surface and
+  /// the video encoder's surface to a crop, rather than resampling a cropped
+  /// frame into a surface of some other shape.
+  Future<Camera> bindToLifecycle(
+    CameraSelector cameraSelector,
+    List<UseCase> useCases,
+    List<CameraEffect> effects,
+    ViewPort? viewPort,
+  ) async {
     final _PigeonInternalProxyApiBaseCodec pigeonChannelCodec =
         _pigeonVar_codecProcessCameraProvider;
     final BinaryMessenger? pigeonVar_binaryMessenger = pigeon_binaryMessenger;
@@ -2510,6 +2629,8 @@ class ProcessCameraProvider extends PigeonInternalProxyApiBaseClass {
       this,
       cameraSelector,
       useCases,
+      effects,
+      viewPort,
     ]);
     final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
     if (pigeonVar_replyList == null) {
@@ -2527,6 +2648,67 @@ class ProcessCameraProvider extends PigeonInternalProxyApiBaseClass {
       );
     } else {
       return (pigeonVar_replyList[0] as Camera?)!;
+    }
+  }
+
+  /// The frame rate ranges the camera can actually deliver for the
+  /// configuration described by `useCases`, `effects` and `viewPort`.
+  ///
+  /// The stream configuration decides the answer, not the camera alone: a
+  /// combination that runs at 60 fps at 720p routinely tops out at 30 at 1080p,
+  /// and an effect adds a surface of its own to the session. Asking with the
+  /// exact group that is about to be bound is the only way to find out before
+  /// the fact.
+  ///
+  /// A frame rate is otherwise applied by writing
+  /// `CONTROL_AE_TARGET_FPS_RANGE` straight into the repeating request through
+  /// Camera2 interop, which CameraX neither sees nor validates. Forcing a range
+  /// the configuration cannot satisfy leaves a session that configures, reports
+  /// itself active, and never delivers a frame.
+  ///
+  /// Falls back to the camera's device-wide ranges when the backend cannot
+  /// answer for a specific configuration, and returns an empty list when it
+  /// cannot answer at all — in which case the caller should apply no range and
+  /// leave the choice to CameraX.
+  Future<List<CameraIntegerRange>> getSupportedFrameRateRanges(
+    CameraSelector cameraSelector,
+    List<UseCase> useCases,
+    List<CameraEffect> effects,
+    ViewPort? viewPort,
+  ) async {
+    final _PigeonInternalProxyApiBaseCodec pigeonChannelCodec =
+        _pigeonVar_codecProcessCameraProvider;
+    final BinaryMessenger? pigeonVar_binaryMessenger = pigeon_binaryMessenger;
+    const pigeonVar_channelName =
+        'dev.flutter.pigeon.camera_android_camerax.ProcessCameraProvider.getSupportedFrameRateRanges';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[
+      this,
+      cameraSelector,
+      useCases,
+      effects,
+      viewPort,
+    ]);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+    if (pigeonVar_replyList == null) {
+      throw _createConnectionError(pigeonVar_channelName);
+    } else if (pigeonVar_replyList.length > 1) {
+      throw PlatformException(
+        code: pigeonVar_replyList[0]! as String,
+        message: pigeonVar_replyList[1] as String?,
+        details: pigeonVar_replyList[2],
+      );
+    } else if (pigeonVar_replyList[0] == null) {
+      throw PlatformException(
+        code: 'null-error',
+        message: 'Host platform returned null value for non-null return value.',
+      );
+    } else {
+      return (pigeonVar_replyList[0] as List<Object?>?)!.cast<CameraIntegerRange>();
     }
   }
 
@@ -3406,18 +3588,25 @@ class DeviceOrientationManager extends PigeonInternalProxyApiBaseClass {
 ///
 /// See https://developer.android.com/reference/kotlin/androidx/camera/core/Preview.
 class Preview extends UseCase {
+  /// Creates a `Preview`.
+  ///
+  /// When `whiteBalanceManager` is non-null its Camera2 session capture
+  /// callback is attached to the preview's capture requests, which is the only
+  /// place the auto white balance gains chosen by the hardware are reported.
   factory Preview({
     BinaryMessenger? pigeon_binaryMessenger,
     PigeonInstanceManager? pigeon_instanceManager,
     ResolutionSelector? resolutionSelector,
     int? targetRotation,
     CameraIntegerRange? targetFpsRange,
+    WhiteBalanceManager? whiteBalanceManager,
   }) {
     if (PigeonOverrides.preview_new != null) {
       return PigeonOverrides.preview_new!(
         resolutionSelector: resolutionSelector,
         targetRotation: targetRotation,
         targetFpsRange: targetFpsRange,
+        whiteBalanceManager: whiteBalanceManager,
       );
     }
     return Preview.pigeon_new(
@@ -3426,9 +3615,15 @@ class Preview extends UseCase {
       resolutionSelector: resolutionSelector,
       targetRotation: targetRotation,
       targetFpsRange: targetFpsRange,
+      whiteBalanceManager: whiteBalanceManager,
     );
   }
 
+  /// Creates a `Preview`.
+  ///
+  /// When `whiteBalanceManager` is non-null its Camera2 session capture
+  /// callback is attached to the preview's capture requests, which is the only
+  /// place the auto white balance gains chosen by the hardware are reported.
   @protected
   Preview.pigeon_new({
     super.pigeon_binaryMessenger,
@@ -3436,6 +3631,7 @@ class Preview extends UseCase {
     this.resolutionSelector,
     int? targetRotation,
     CameraIntegerRange? targetFpsRange,
+    WhiteBalanceManager? whiteBalanceManager,
   }) : super.pigeon_detached() {
     final int pigeonVar_instanceIdentifier = pigeon_instanceManager.addDartCreatedInstance(this);
     final _PigeonInternalProxyApiBaseCodec pigeonChannelCodec = _pigeonVar_codecPreview;
@@ -3452,6 +3648,7 @@ class Preview extends UseCase {
       resolutionSelector,
       targetRotation,
       targetFpsRange,
+      whiteBalanceManager,
     ]);
     () async {
       final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
@@ -4929,6 +5126,51 @@ class ImageCapture extends UseCase {
       );
     } else {
       return (pigeonVar_replyList[0] as String?)!;
+    }
+  }
+
+  /// Captures a still image and renders it through the effects pipeline.
+  ///
+  /// The capture is taken in memory and handed straight to `effectsManager`,
+  /// so the frame never crosses the platform channel. When `includeOriginal`
+  /// is true the un-effected frame is saved as well, from the same shutter
+  /// event.
+  Future<CapturedPicturePaths> takePictureWithEffects(
+    SystemServicesManager systemServicesManager,
+    CameraEffectsManager effectsManager,
+    bool includeOriginal,
+  ) async {
+    final _PigeonInternalProxyApiBaseCodec pigeonChannelCodec = _pigeonVar_codecImageCapture;
+    final BinaryMessenger? pigeonVar_binaryMessenger = pigeon_binaryMessenger;
+    const pigeonVar_channelName =
+        'dev.flutter.pigeon.camera_android_camerax.ImageCapture.takePictureWithEffects';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[
+      this,
+      systemServicesManager,
+      effectsManager,
+      includeOriginal,
+    ]);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+    if (pigeonVar_replyList == null) {
+      throw _createConnectionError(pigeonVar_channelName);
+    } else if (pigeonVar_replyList.length > 1) {
+      throw PlatformException(
+        code: pigeonVar_replyList[0]! as String,
+        message: pigeonVar_replyList[1] as String?,
+        details: pigeonVar_replyList[2],
+      );
+    } else if (pigeonVar_replyList[0] == null) {
+      throw PlatformException(
+        code: 'null-error',
+        message: 'Host platform returned null value for non-null return value.',
+      );
+    } else {
+      return (pigeonVar_replyList[0] as CapturedPicturePaths?)!;
     }
   }
 
@@ -9480,6 +9722,37 @@ class Camera2CameraInfo extends PigeonInternalProxyApiBaseClass {
     }
   }
 
+  /// The approximate 35mm-equivalent focal length of this lens, in
+  /// millimetres, or null when the device does not report the focal length
+  /// and physical sensor size needed to compute it.
+  ///
+  /// Computed natively rather than from the raw characteristics because
+  /// `SizeF` and `float[]` have no Pigeon representation.
+  Future<double?> getEquivalentFocalLength() async {
+    final _PigeonInternalProxyApiBaseCodec pigeonChannelCodec = _pigeonVar_codecCamera2CameraInfo;
+    final BinaryMessenger? pigeonVar_binaryMessenger = pigeon_binaryMessenger;
+    const pigeonVar_channelName =
+        'dev.flutter.pigeon.camera_android_camerax.Camera2CameraInfo.getEquivalentFocalLength';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[this]);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+    if (pigeonVar_replyList == null) {
+      throw _createConnectionError(pigeonVar_channelName);
+    } else if (pigeonVar_replyList.length > 1) {
+      throw PlatformException(
+        code: pigeonVar_replyList[0]! as String,
+        message: pigeonVar_replyList[1] as String?,
+        details: pigeonVar_replyList[2],
+      );
+    } else {
+      return (pigeonVar_replyList[0] as double?);
+    }
+  }
+
   @override
   Camera2CameraInfo pigeon_copy() {
     return Camera2CameraInfo.pigeon_detached(
@@ -9782,6 +10055,1508 @@ class DisplayOrientedMeteringPointFactory extends MeteringPointFactory {
     return DisplayOrientedMeteringPointFactory.pigeon_detached(
       pigeon_binaryMessenger: pigeon_binaryMessenger,
       pigeon_instanceManager: pigeon_instanceManager,
+    );
+  }
+}
+
+/// Visual effect parameters forwarded to the OpenGL ES shader pipeline.
+///
+/// Field-for-field equivalent of `PlatformEffectsValues` in
+/// `camera_avfoundation`; the two platforms must stay in sync so the same
+/// `PlatformEffectsValues` renders the same on both.
+///
+/// A `@ProxyApi` rather than a data class because this file is a ProxyApi
+/// file, and Pigeon does not allow the two to be mixed.
+class PlatformEffectsValues extends PigeonInternalProxyApiBaseClass {
+  factory PlatformEffectsValues({
+    BinaryMessenger? pigeon_binaryMessenger,
+    PigeonInstanceManager? pigeon_instanceManager,
+    required double vignetteIntensity,
+    String? grainNoisePath,
+    required double grainOpacity,
+    required double grainSize,
+    required PlatformGrainBehavior grainBehavior,
+    String? lutFilePath,
+    required double lutIntensity,
+    required double resolution,
+    required double colorShift,
+    required double mist,
+    required double prism,
+    required bool cheapFisheye,
+    required double bloom,
+    required double diffusion,
+  }) {
+    if (PigeonOverrides.platformEffectsValues_new != null) {
+      return PigeonOverrides.platformEffectsValues_new!(
+        vignetteIntensity: vignetteIntensity,
+        grainNoisePath: grainNoisePath,
+        grainOpacity: grainOpacity,
+        grainSize: grainSize,
+        grainBehavior: grainBehavior,
+        lutFilePath: lutFilePath,
+        lutIntensity: lutIntensity,
+        resolution: resolution,
+        colorShift: colorShift,
+        mist: mist,
+        prism: prism,
+        cheapFisheye: cheapFisheye,
+        bloom: bloom,
+        diffusion: diffusion,
+      );
+    }
+    return PlatformEffectsValues.pigeon_new(
+      pigeon_binaryMessenger: pigeon_binaryMessenger,
+      pigeon_instanceManager: pigeon_instanceManager,
+      vignetteIntensity: vignetteIntensity,
+      grainNoisePath: grainNoisePath,
+      grainOpacity: grainOpacity,
+      grainSize: grainSize,
+      grainBehavior: grainBehavior,
+      lutFilePath: lutFilePath,
+      lutIntensity: lutIntensity,
+      resolution: resolution,
+      colorShift: colorShift,
+      mist: mist,
+      prism: prism,
+      cheapFisheye: cheapFisheye,
+      bloom: bloom,
+      diffusion: diffusion,
+    );
+  }
+
+  @protected
+  PlatformEffectsValues.pigeon_new({
+    super.pigeon_binaryMessenger,
+    super.pigeon_instanceManager,
+    required this.vignetteIntensity,
+    this.grainNoisePath,
+    required this.grainOpacity,
+    required this.grainSize,
+    required this.grainBehavior,
+    this.lutFilePath,
+    required this.lutIntensity,
+    required this.resolution,
+    required this.colorShift,
+    required this.mist,
+    required this.prism,
+    required this.cheapFisheye,
+    required this.bloom,
+    required this.diffusion,
+  }) {
+    final int pigeonVar_instanceIdentifier = pigeon_instanceManager.addDartCreatedInstance(this);
+    final _PigeonInternalProxyApiBaseCodec pigeonChannelCodec =
+        _pigeonVar_codecPlatformEffectsValues;
+    final BinaryMessenger? pigeonVar_binaryMessenger = pigeon_binaryMessenger;
+    const pigeonVar_channelName =
+        'dev.flutter.pigeon.camera_android_camerax.PlatformEffectsValues.pigeon_defaultConstructor';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[
+      pigeonVar_instanceIdentifier,
+      vignetteIntensity,
+      grainNoisePath,
+      grainOpacity,
+      grainSize,
+      grainBehavior,
+      lutFilePath,
+      lutIntensity,
+      resolution,
+      colorShift,
+      mist,
+      prism,
+      cheapFisheye,
+      bloom,
+      diffusion,
+    ]);
+    () async {
+      final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+      if (pigeonVar_replyList == null) {
+        throw _createConnectionError(pigeonVar_channelName);
+      } else if (pigeonVar_replyList.length > 1) {
+        throw PlatformException(
+          code: pigeonVar_replyList[0]! as String,
+          message: pigeonVar_replyList[1] as String?,
+          details: pigeonVar_replyList[2],
+        );
+      } else {
+        return;
+      }
+    }();
+  }
+
+  /// Constructs [PlatformEffectsValues] without creating the associated native object.
+  ///
+  /// This should only be used by subclasses created by this library or to
+  /// create copies for an [PigeonInstanceManager].
+  @protected
+  PlatformEffectsValues.pigeon_detached({
+    super.pigeon_binaryMessenger,
+    super.pigeon_instanceManager,
+    required this.vignetteIntensity,
+    this.grainNoisePath,
+    required this.grainOpacity,
+    required this.grainSize,
+    required this.grainBehavior,
+    this.lutFilePath,
+    required this.lutIntensity,
+    required this.resolution,
+    required this.colorShift,
+    required this.mist,
+    required this.prism,
+    required this.cheapFisheye,
+    required this.bloom,
+    required this.diffusion,
+  });
+
+  late final _PigeonInternalProxyApiBaseCodec _pigeonVar_codecPlatformEffectsValues =
+      _PigeonInternalProxyApiBaseCodec(pigeon_instanceManager);
+
+  /// Radial darkening toward the frame edges (0.0 = off, 1.0 = full vignette).
+  final double vignetteIntensity;
+
+  /// Absolute file path to the grain/noise source image.
+  /// Null disables the grain effect.
+  final String? grainNoisePath;
+
+  /// Opacity of the grain overlay (0.0 = off, 1.0 = fully applied).
+  final double grainOpacity;
+
+  /// Resolution-independent grain tile size (>= 0.0).
+  /// 1.0 = grain image spans the frame's shorter side; smaller values tile
+  /// more finely; bigger values tile more coarsely.
+  final double grainSize;
+
+  /// Controls where grain is visible across the tonal range.
+  final PlatformGrainBehavior grainBehavior;
+
+  /// Absolute file path to a 3D LUT color-grade image: a 512x512 PNG storing
+  /// a 64x64x64 cube as an 8x8 row-major grid of 64x64 tiles (tile index =
+  /// blue slice; within a tile x = red, y = green top-to-bottom).
+  /// Null disables the LUT color filter.
+  final String? lutFilePath;
+
+  /// Intensity of the LUT color filter (0.0 = no effect, 1.0 = full LUT).
+  /// Ignored when [lutFilePath] is null.
+  final double lutIntensity;
+
+  /// Simulates a low-resolution sensor (0.0 = off, 1.0 = full strength).
+  /// Adds a soft Gaussian blur and desaturation.
+  final double resolution;
+
+  /// Chromatic aberration strength (0.0 = off, 1.0 = full strength).
+  final double colorShift;
+
+  /// Dreamy mist / Orton-style soft glow (0.0 = off, 1.0 = full strength).
+  final double mist;
+
+  /// Radial chromatic motion blur (0.0 = off, 1.0 = full strength).
+  final double prism;
+
+  /// Cheap clip-on fisheye lens simulation (true = on).
+  final bool cheapFisheye;
+
+  /// Highlight bloom / light-bleed glow (0.0 = off, 1.0 = full strength).
+  final double bloom;
+
+  /// Diffusion / soft-focus filter (0.0 = off, 1.0 = full strength).
+  final double diffusion;
+
+  static void pigeon_setUpMessageHandlers({
+    bool pigeon_clearHandlers = false,
+    BinaryMessenger? pigeon_binaryMessenger,
+    PigeonInstanceManager? pigeon_instanceManager,
+    PlatformEffectsValues Function(
+      double vignetteIntensity,
+      String? grainNoisePath,
+      double grainOpacity,
+      double grainSize,
+      PlatformGrainBehavior grainBehavior,
+      String? lutFilePath,
+      double lutIntensity,
+      double resolution,
+      double colorShift,
+      double mist,
+      double prism,
+      bool cheapFisheye,
+      double bloom,
+      double diffusion,
+    )?
+    pigeon_newInstance,
+  }) {
+    final _PigeonInternalProxyApiBaseCodec pigeonChannelCodec = _PigeonInternalProxyApiBaseCodec(
+      pigeon_instanceManager ?? PigeonInstanceManager.instance,
+    );
+    final BinaryMessenger? binaryMessenger = pigeon_binaryMessenger;
+    {
+      final pigeonVar_channel = BasicMessageChannel<Object?>(
+        'dev.flutter.pigeon.camera_android_camerax.PlatformEffectsValues.pigeon_newInstance',
+        pigeonChannelCodec,
+        binaryMessenger: binaryMessenger,
+      );
+      if (pigeon_clearHandlers) {
+        pigeonVar_channel.setMessageHandler(null);
+      } else {
+        pigeonVar_channel.setMessageHandler((Object? message) async {
+          assert(
+            message != null,
+            'Argument for dev.flutter.pigeon.camera_android_camerax.PlatformEffectsValues.pigeon_newInstance was null.',
+          );
+          final List<Object?> args = (message as List<Object?>?)!;
+          final int? arg_pigeon_instanceIdentifier = (args[0] as int?);
+          assert(
+            arg_pigeon_instanceIdentifier != null,
+            'Argument for dev.flutter.pigeon.camera_android_camerax.PlatformEffectsValues.pigeon_newInstance was null, expected non-null int.',
+          );
+          final double? arg_vignetteIntensity = (args[1] as double?);
+          assert(
+            arg_vignetteIntensity != null,
+            'Argument for dev.flutter.pigeon.camera_android_camerax.PlatformEffectsValues.pigeon_newInstance was null, expected non-null double.',
+          );
+          final String? arg_grainNoisePath = (args[2] as String?);
+          final double? arg_grainOpacity = (args[3] as double?);
+          assert(
+            arg_grainOpacity != null,
+            'Argument for dev.flutter.pigeon.camera_android_camerax.PlatformEffectsValues.pigeon_newInstance was null, expected non-null double.',
+          );
+          final double? arg_grainSize = (args[4] as double?);
+          assert(
+            arg_grainSize != null,
+            'Argument for dev.flutter.pigeon.camera_android_camerax.PlatformEffectsValues.pigeon_newInstance was null, expected non-null double.',
+          );
+          final PlatformGrainBehavior? arg_grainBehavior = (args[5] as PlatformGrainBehavior?);
+          assert(
+            arg_grainBehavior != null,
+            'Argument for dev.flutter.pigeon.camera_android_camerax.PlatformEffectsValues.pigeon_newInstance was null, expected non-null PlatformGrainBehavior.',
+          );
+          final String? arg_lutFilePath = (args[6] as String?);
+          final double? arg_lutIntensity = (args[7] as double?);
+          assert(
+            arg_lutIntensity != null,
+            'Argument for dev.flutter.pigeon.camera_android_camerax.PlatformEffectsValues.pigeon_newInstance was null, expected non-null double.',
+          );
+          final double? arg_resolution = (args[8] as double?);
+          assert(
+            arg_resolution != null,
+            'Argument for dev.flutter.pigeon.camera_android_camerax.PlatformEffectsValues.pigeon_newInstance was null, expected non-null double.',
+          );
+          final double? arg_colorShift = (args[9] as double?);
+          assert(
+            arg_colorShift != null,
+            'Argument for dev.flutter.pigeon.camera_android_camerax.PlatformEffectsValues.pigeon_newInstance was null, expected non-null double.',
+          );
+          final double? arg_mist = (args[10] as double?);
+          assert(
+            arg_mist != null,
+            'Argument for dev.flutter.pigeon.camera_android_camerax.PlatformEffectsValues.pigeon_newInstance was null, expected non-null double.',
+          );
+          final double? arg_prism = (args[11] as double?);
+          assert(
+            arg_prism != null,
+            'Argument for dev.flutter.pigeon.camera_android_camerax.PlatformEffectsValues.pigeon_newInstance was null, expected non-null double.',
+          );
+          final bool? arg_cheapFisheye = (args[12] as bool?);
+          assert(
+            arg_cheapFisheye != null,
+            'Argument for dev.flutter.pigeon.camera_android_camerax.PlatformEffectsValues.pigeon_newInstance was null, expected non-null bool.',
+          );
+          final double? arg_bloom = (args[13] as double?);
+          assert(
+            arg_bloom != null,
+            'Argument for dev.flutter.pigeon.camera_android_camerax.PlatformEffectsValues.pigeon_newInstance was null, expected non-null double.',
+          );
+          final double? arg_diffusion = (args[14] as double?);
+          assert(
+            arg_diffusion != null,
+            'Argument for dev.flutter.pigeon.camera_android_camerax.PlatformEffectsValues.pigeon_newInstance was null, expected non-null double.',
+          );
+          try {
+            (pigeon_instanceManager ?? PigeonInstanceManager.instance).addHostCreatedInstance(
+              pigeon_newInstance?.call(
+                    arg_vignetteIntensity!,
+                    arg_grainNoisePath,
+                    arg_grainOpacity!,
+                    arg_grainSize!,
+                    arg_grainBehavior!,
+                    arg_lutFilePath,
+                    arg_lutIntensity!,
+                    arg_resolution!,
+                    arg_colorShift!,
+                    arg_mist!,
+                    arg_prism!,
+                    arg_cheapFisheye!,
+                    arg_bloom!,
+                    arg_diffusion!,
+                  ) ??
+                  PlatformEffectsValues.pigeon_detached(
+                    pigeon_binaryMessenger: pigeon_binaryMessenger,
+                    pigeon_instanceManager: pigeon_instanceManager,
+                    vignetteIntensity: arg_vignetteIntensity!,
+                    grainNoisePath: arg_grainNoisePath,
+                    grainOpacity: arg_grainOpacity!,
+                    grainSize: arg_grainSize!,
+                    grainBehavior: arg_grainBehavior!,
+                    lutFilePath: arg_lutFilePath,
+                    lutIntensity: arg_lutIntensity!,
+                    resolution: arg_resolution!,
+                    colorShift: arg_colorShift!,
+                    mist: arg_mist!,
+                    prism: arg_prism!,
+                    cheapFisheye: arg_cheapFisheye!,
+                    bloom: arg_bloom!,
+                    diffusion: arg_diffusion!,
+                  ),
+              arg_pigeon_instanceIdentifier!,
+            );
+            return wrapResponse(empty: true);
+          } on PlatformException catch (e) {
+            return wrapResponse(error: e);
+          } catch (e) {
+            return wrapResponse(
+              error: PlatformException(code: 'error', message: e.toString()),
+            );
+          }
+        });
+      }
+    }
+  }
+
+  @override
+  PlatformEffectsValues pigeon_copy() {
+    return PlatformEffectsValues.pigeon_detached(
+      pigeon_binaryMessenger: pigeon_binaryMessenger,
+      pigeon_instanceManager: pigeon_instanceManager,
+      vignetteIntensity: vignetteIntensity,
+      grainNoisePath: grainNoisePath,
+      grainOpacity: grainOpacity,
+      grainSize: grainSize,
+      grainBehavior: grainBehavior,
+      lutFilePath: lutFilePath,
+      lutIntensity: lutIntensity,
+      resolution: resolution,
+      colorShift: colorShift,
+      mist: mist,
+      prism: prism,
+      cheapFisheye: cheapFisheye,
+      bloom: bloom,
+      diffusion: diffusion,
+    );
+  }
+}
+
+/// Paths to the files produced by `ImageCapture.takePictureWithEffects`.
+class CapturedPicturePaths extends PigeonInternalProxyApiBaseClass {
+  /// Constructs [CapturedPicturePaths] without creating the associated native object.
+  ///
+  /// This should only be used by subclasses created by this library or to
+  /// create copies for an [PigeonInstanceManager].
+  @protected
+  CapturedPicturePaths.pigeon_detached({
+    super.pigeon_binaryMessenger,
+    super.pigeon_instanceManager,
+    this.originalPath,
+    required this.processedPath,
+  });
+
+  /// File path of the un-effected original, or null when the capture did not
+  /// request one.
+  ///
+  /// The configured aspect ratio and capture scale crop is preserved, but no
+  /// shader effect is applied.
+  final String? originalPath;
+
+  /// File path of the shader-processed photo.
+  final String processedPath;
+
+  static void pigeon_setUpMessageHandlers({
+    bool pigeon_clearHandlers = false,
+    BinaryMessenger? pigeon_binaryMessenger,
+    PigeonInstanceManager? pigeon_instanceManager,
+    CapturedPicturePaths Function(String? originalPath, String processedPath)? pigeon_newInstance,
+  }) {
+    final _PigeonInternalProxyApiBaseCodec pigeonChannelCodec = _PigeonInternalProxyApiBaseCodec(
+      pigeon_instanceManager ?? PigeonInstanceManager.instance,
+    );
+    final BinaryMessenger? binaryMessenger = pigeon_binaryMessenger;
+    {
+      final pigeonVar_channel = BasicMessageChannel<Object?>(
+        'dev.flutter.pigeon.camera_android_camerax.CapturedPicturePaths.pigeon_newInstance',
+        pigeonChannelCodec,
+        binaryMessenger: binaryMessenger,
+      );
+      if (pigeon_clearHandlers) {
+        pigeonVar_channel.setMessageHandler(null);
+      } else {
+        pigeonVar_channel.setMessageHandler((Object? message) async {
+          assert(
+            message != null,
+            'Argument for dev.flutter.pigeon.camera_android_camerax.CapturedPicturePaths.pigeon_newInstance was null.',
+          );
+          final List<Object?> args = (message as List<Object?>?)!;
+          final int? arg_pigeon_instanceIdentifier = (args[0] as int?);
+          assert(
+            arg_pigeon_instanceIdentifier != null,
+            'Argument for dev.flutter.pigeon.camera_android_camerax.CapturedPicturePaths.pigeon_newInstance was null, expected non-null int.',
+          );
+          final String? arg_originalPath = (args[1] as String?);
+          final String? arg_processedPath = (args[2] as String?);
+          assert(
+            arg_processedPath != null,
+            'Argument for dev.flutter.pigeon.camera_android_camerax.CapturedPicturePaths.pigeon_newInstance was null, expected non-null String.',
+          );
+          try {
+            (pigeon_instanceManager ?? PigeonInstanceManager.instance).addHostCreatedInstance(
+              pigeon_newInstance?.call(arg_originalPath, arg_processedPath!) ??
+                  CapturedPicturePaths.pigeon_detached(
+                    pigeon_binaryMessenger: pigeon_binaryMessenger,
+                    pigeon_instanceManager: pigeon_instanceManager,
+                    originalPath: arg_originalPath,
+                    processedPath: arg_processedPath!,
+                  ),
+              arg_pigeon_instanceIdentifier!,
+            );
+            return wrapResponse(empty: true);
+          } on PlatformException catch (e) {
+            return wrapResponse(error: e);
+          } catch (e) {
+            return wrapResponse(
+              error: PlatformException(code: 'error', message: e.toString()),
+            );
+          }
+        });
+      }
+    }
+  }
+
+  @override
+  CapturedPicturePaths pigeon_copy() {
+    return CapturedPicturePaths.pigeon_detached(
+      pigeon_binaryMessenger: pigeon_binaryMessenger,
+      pigeon_instanceManager: pigeon_instanceManager,
+      originalPath: originalPath,
+      processedPath: processedPath,
+    );
+  }
+}
+
+/// An effect applied to the frames flowing through one or more use cases.
+///
+/// See https://developer.android.com/reference/androidx/camera/core/CameraEffect.
+class CameraEffect extends PigeonInternalProxyApiBaseClass {
+  /// Constructs [CameraEffect] without creating the associated native object.
+  ///
+  /// This should only be used by subclasses created by this library or to
+  /// create copies for an [PigeonInstanceManager].
+  @protected
+  CameraEffect.pigeon_detached({super.pigeon_binaryMessenger, super.pigeon_instanceManager});
+
+  static void pigeon_setUpMessageHandlers({
+    bool pigeon_clearHandlers = false,
+    BinaryMessenger? pigeon_binaryMessenger,
+    PigeonInstanceManager? pigeon_instanceManager,
+    CameraEffect Function()? pigeon_newInstance,
+  }) {
+    final _PigeonInternalProxyApiBaseCodec pigeonChannelCodec = _PigeonInternalProxyApiBaseCodec(
+      pigeon_instanceManager ?? PigeonInstanceManager.instance,
+    );
+    final BinaryMessenger? binaryMessenger = pigeon_binaryMessenger;
+    {
+      final pigeonVar_channel = BasicMessageChannel<Object?>(
+        'dev.flutter.pigeon.camera_android_camerax.CameraEffect.pigeon_newInstance',
+        pigeonChannelCodec,
+        binaryMessenger: binaryMessenger,
+      );
+      if (pigeon_clearHandlers) {
+        pigeonVar_channel.setMessageHandler(null);
+      } else {
+        pigeonVar_channel.setMessageHandler((Object? message) async {
+          assert(
+            message != null,
+            'Argument for dev.flutter.pigeon.camera_android_camerax.CameraEffect.pigeon_newInstance was null.',
+          );
+          final List<Object?> args = (message as List<Object?>?)!;
+          final int? arg_pigeon_instanceIdentifier = (args[0] as int?);
+          assert(
+            arg_pigeon_instanceIdentifier != null,
+            'Argument for dev.flutter.pigeon.camera_android_camerax.CameraEffect.pigeon_newInstance was null, expected non-null int.',
+          );
+          try {
+            (pigeon_instanceManager ?? PigeonInstanceManager.instance).addHostCreatedInstance(
+              pigeon_newInstance?.call() ??
+                  CameraEffect.pigeon_detached(
+                    pigeon_binaryMessenger: pigeon_binaryMessenger,
+                    pigeon_instanceManager: pigeon_instanceManager,
+                  ),
+              arg_pigeon_instanceIdentifier!,
+            );
+            return wrapResponse(empty: true);
+          } on PlatformException catch (e) {
+            return wrapResponse(error: e);
+          } catch (e) {
+            return wrapResponse(
+              error: PlatformException(code: 'error', message: e.toString()),
+            );
+          }
+        });
+      }
+    }
+  }
+
+  @override
+  CameraEffect pigeon_copy() {
+    return CameraEffect.pigeon_detached(
+      pigeon_binaryMessenger: pigeon_binaryMessenger,
+      pigeon_instanceManager: pigeon_instanceManager,
+    );
+  }
+}
+
+/// The rectangle every use case in a `UseCaseGroup` is center-cropped to.
+///
+/// `aspectRatioWidth` : `aspectRatioHeight` is the wanted shape, expressed in
+/// the orientation named by `rotation` (a `Surface` rotation constant). CameraX
+/// maps it into sensor coordinates itself, so the ratio is the one the user
+/// sees rather than the one the buffer happens to arrive in.
+///
+/// See https://developer.android.com/reference/androidx/camera/core/ViewPort.
+class ViewPort extends PigeonInternalProxyApiBaseClass {
+  factory ViewPort({
+    BinaryMessenger? pigeon_binaryMessenger,
+    PigeonInstanceManager? pigeon_instanceManager,
+    required int aspectRatioWidth,
+    required int aspectRatioHeight,
+    required int rotation,
+  }) {
+    if (PigeonOverrides.viewPort_new != null) {
+      return PigeonOverrides.viewPort_new!(
+        aspectRatioWidth: aspectRatioWidth,
+        aspectRatioHeight: aspectRatioHeight,
+        rotation: rotation,
+      );
+    }
+    return ViewPort.pigeon_new(
+      pigeon_binaryMessenger: pigeon_binaryMessenger,
+      pigeon_instanceManager: pigeon_instanceManager,
+      aspectRatioWidth: aspectRatioWidth,
+      aspectRatioHeight: aspectRatioHeight,
+      rotation: rotation,
+    );
+  }
+
+  @protected
+  ViewPort.pigeon_new({
+    super.pigeon_binaryMessenger,
+    super.pigeon_instanceManager,
+    required int aspectRatioWidth,
+    required int aspectRatioHeight,
+    required int rotation,
+  }) {
+    final int pigeonVar_instanceIdentifier = pigeon_instanceManager.addDartCreatedInstance(this);
+    final _PigeonInternalProxyApiBaseCodec pigeonChannelCodec = _pigeonVar_codecViewPort;
+    final BinaryMessenger? pigeonVar_binaryMessenger = pigeon_binaryMessenger;
+    const pigeonVar_channelName =
+        'dev.flutter.pigeon.camera_android_camerax.ViewPort.pigeon_defaultConstructor';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[
+      pigeonVar_instanceIdentifier,
+      aspectRatioWidth,
+      aspectRatioHeight,
+      rotation,
+    ]);
+    () async {
+      final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+      if (pigeonVar_replyList == null) {
+        throw _createConnectionError(pigeonVar_channelName);
+      } else if (pigeonVar_replyList.length > 1) {
+        throw PlatformException(
+          code: pigeonVar_replyList[0]! as String,
+          message: pigeonVar_replyList[1] as String?,
+          details: pigeonVar_replyList[2],
+        );
+      } else {
+        return;
+      }
+    }();
+  }
+
+  /// Constructs [ViewPort] without creating the associated native object.
+  ///
+  /// This should only be used by subclasses created by this library or to
+  /// create copies for an [PigeonInstanceManager].
+  @protected
+  ViewPort.pigeon_detached({super.pigeon_binaryMessenger, super.pigeon_instanceManager});
+
+  late final _PigeonInternalProxyApiBaseCodec _pigeonVar_codecViewPort =
+      _PigeonInternalProxyApiBaseCodec(pigeon_instanceManager);
+
+  static void pigeon_setUpMessageHandlers({
+    bool pigeon_clearHandlers = false,
+    BinaryMessenger? pigeon_binaryMessenger,
+    PigeonInstanceManager? pigeon_instanceManager,
+    ViewPort Function()? pigeon_newInstance,
+  }) {
+    final _PigeonInternalProxyApiBaseCodec pigeonChannelCodec = _PigeonInternalProxyApiBaseCodec(
+      pigeon_instanceManager ?? PigeonInstanceManager.instance,
+    );
+    final BinaryMessenger? binaryMessenger = pigeon_binaryMessenger;
+    {
+      final pigeonVar_channel = BasicMessageChannel<Object?>(
+        'dev.flutter.pigeon.camera_android_camerax.ViewPort.pigeon_newInstance',
+        pigeonChannelCodec,
+        binaryMessenger: binaryMessenger,
+      );
+      if (pigeon_clearHandlers) {
+        pigeonVar_channel.setMessageHandler(null);
+      } else {
+        pigeonVar_channel.setMessageHandler((Object? message) async {
+          assert(
+            message != null,
+            'Argument for dev.flutter.pigeon.camera_android_camerax.ViewPort.pigeon_newInstance was null.',
+          );
+          final List<Object?> args = (message as List<Object?>?)!;
+          final int? arg_pigeon_instanceIdentifier = (args[0] as int?);
+          assert(
+            arg_pigeon_instanceIdentifier != null,
+            'Argument for dev.flutter.pigeon.camera_android_camerax.ViewPort.pigeon_newInstance was null, expected non-null int.',
+          );
+          try {
+            (pigeon_instanceManager ?? PigeonInstanceManager.instance).addHostCreatedInstance(
+              pigeon_newInstance?.call() ??
+                  ViewPort.pigeon_detached(
+                    pigeon_binaryMessenger: pigeon_binaryMessenger,
+                    pigeon_instanceManager: pigeon_instanceManager,
+                  ),
+              arg_pigeon_instanceIdentifier!,
+            );
+            return wrapResponse(empty: true);
+          } on PlatformException catch (e) {
+            return wrapResponse(error: e);
+          } catch (e) {
+            return wrapResponse(
+              error: PlatformException(code: 'error', message: e.toString()),
+            );
+          }
+        });
+      }
+    }
+  }
+
+  @override
+  ViewPort pigeon_copy() {
+    return ViewPort.pigeon_detached(
+      pigeon_binaryMessenger: pigeon_binaryMessenger,
+      pigeon_instanceManager: pigeon_instanceManager,
+    );
+  }
+}
+
+/// Owns the OpenGL ES pipeline that renders the camera frames.
+///
+/// A single GL context backs the preview, the recorded video and the still
+/// capture path, so all three see the same effects, crop and capture scale.
+class CameraEffectsManager extends PigeonInternalProxyApiBaseClass {
+  /// Creates a manager with an optional initial center-crop aspect ratio
+  /// (width/height); null means no crop.
+  factory CameraEffectsManager({
+    BinaryMessenger? pigeon_binaryMessenger,
+    PigeonInstanceManager? pigeon_instanceManager,
+    required void Function(CameraEffectsManager pigeon_instance, int width, int height)
+    onPreviewSizeChanged,
+    required void Function(CameraEffectsManager pigeon_instance) onPreviewOutputLost,
+    double? aspectRatio,
+  }) {
+    if (PigeonOverrides.cameraEffectsManager_new != null) {
+      return PigeonOverrides.cameraEffectsManager_new!(
+        onPreviewSizeChanged: onPreviewSizeChanged,
+        onPreviewOutputLost: onPreviewOutputLost,
+        aspectRatio: aspectRatio,
+      );
+    }
+    return CameraEffectsManager.pigeon_new(
+      pigeon_binaryMessenger: pigeon_binaryMessenger,
+      pigeon_instanceManager: pigeon_instanceManager,
+      onPreviewSizeChanged: onPreviewSizeChanged,
+      onPreviewOutputLost: onPreviewOutputLost,
+      aspectRatio: aspectRatio,
+    );
+  }
+
+  /// Creates a manager with an optional initial center-crop aspect ratio
+  /// (width/height); null means no crop.
+  @protected
+  CameraEffectsManager.pigeon_new({
+    super.pigeon_binaryMessenger,
+    super.pigeon_instanceManager,
+    required this.onPreviewSizeChanged,
+    required this.onPreviewOutputLost,
+    double? aspectRatio,
+  }) {
+    final int pigeonVar_instanceIdentifier = pigeon_instanceManager.addDartCreatedInstance(this);
+    final _PigeonInternalProxyApiBaseCodec pigeonChannelCodec =
+        _pigeonVar_codecCameraEffectsManager;
+    final BinaryMessenger? pigeonVar_binaryMessenger = pigeon_binaryMessenger;
+    const pigeonVar_channelName =
+        'dev.flutter.pigeon.camera_android_camerax.CameraEffectsManager.pigeon_defaultConstructor';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[
+      pigeonVar_instanceIdentifier,
+      aspectRatio,
+    ]);
+    () async {
+      final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+      if (pigeonVar_replyList == null) {
+        throw _createConnectionError(pigeonVar_channelName);
+      } else if (pigeonVar_replyList.length > 1) {
+        throw PlatformException(
+          code: pigeonVar_replyList[0]! as String,
+          message: pigeonVar_replyList[1] as String?,
+          details: pigeonVar_replyList[2],
+        );
+      } else {
+        return;
+      }
+    }();
+  }
+
+  /// Constructs [CameraEffectsManager] without creating the associated native object.
+  ///
+  /// This should only be used by subclasses created by this library or to
+  /// create copies for an [PigeonInstanceManager].
+  @protected
+  CameraEffectsManager.pigeon_detached({
+    super.pigeon_binaryMessenger,
+    super.pigeon_instanceManager,
+    required this.onPreviewSizeChanged,
+    required this.onPreviewOutputLost,
+  });
+
+  late final _PigeonInternalProxyApiBaseCodec _pigeonVar_codecCameraEffectsManager =
+      _PigeonInternalProxyApiBaseCodec(pigeon_instanceManager);
+
+  /// Emitted when the size of the processed preview output changes, either
+  /// because the camera picked a new resolution or because the aspect ratio
+  /// changed.
+  ///
+  /// For the associated Native object to be automatically garbage collected,
+  /// it is required that the implementation of this `Function` doesn't have a
+  /// strong reference to the encapsulating class instance. When this `Function`
+  /// references a non-local variable, it is strongly recommended to access it
+  /// with a `WeakReference`:
+  ///
+  /// ```dart
+  /// final WeakReference weakMyVariable = WeakReference(myVariable);
+  /// final CameraEffectsManager instance = CameraEffectsManager(
+  ///  onPreviewSizeChanged: (CameraEffectsManager pigeon_instance, ...) {
+  ///    print(weakMyVariable?.target);
+  ///  },
+  /// );
+  /// ```
+  ///
+  /// Alternatively, [PigeonInstanceManager.removeWeakReference] can be used to
+  /// release the associated Native object manually.
+  final void Function(CameraEffectsManager pigeon_instance, int width, int height)
+  onPreviewSizeChanged;
+
+  /// Emitted when the pipeline loses the surface it was drawing the preview
+  /// into and cannot get it back on its own.
+  ///
+  /// A consumer can abandon a surface at any time — a lens switch and a
+  /// backgrounded app both do it — and the pipeline then has nothing to draw
+  /// into. Nothing in CameraX notices, because the camera is still running and
+  /// still delivering frames; they simply stop reaching the screen, which looks
+  /// exactly like a frozen preview. Re-binding the preview is what asks CameraX
+  /// for a new surface, and only the Dart side can do that.
+  ///
+  /// For the associated Native object to be automatically garbage collected,
+  /// it is required that the implementation of this `Function` doesn't have a
+  /// strong reference to the encapsulating class instance. When this `Function`
+  /// references a non-local variable, it is strongly recommended to access it
+  /// with a `WeakReference`:
+  ///
+  /// ```dart
+  /// final WeakReference weakMyVariable = WeakReference(myVariable);
+  /// final CameraEffectsManager instance = CameraEffectsManager(
+  ///  onPreviewOutputLost: (CameraEffectsManager pigeon_instance, ...) {
+  ///    print(weakMyVariable?.target);
+  ///  },
+  /// );
+  /// ```
+  ///
+  /// Alternatively, [PigeonInstanceManager.removeWeakReference] can be used to
+  /// release the associated Native object manually.
+  final void Function(CameraEffectsManager pigeon_instance) onPreviewOutputLost;
+
+  static void pigeon_setUpMessageHandlers({
+    bool pigeon_clearHandlers = false,
+    BinaryMessenger? pigeon_binaryMessenger,
+    PigeonInstanceManager? pigeon_instanceManager,
+    void Function(CameraEffectsManager pigeon_instance, int width, int height)?
+    onPreviewSizeChanged,
+    void Function(CameraEffectsManager pigeon_instance)? onPreviewOutputLost,
+  }) {
+    final _PigeonInternalProxyApiBaseCodec pigeonChannelCodec = _PigeonInternalProxyApiBaseCodec(
+      pigeon_instanceManager ?? PigeonInstanceManager.instance,
+    );
+    final BinaryMessenger? binaryMessenger = pigeon_binaryMessenger;
+    {
+      final pigeonVar_channel = BasicMessageChannel<Object?>(
+        'dev.flutter.pigeon.camera_android_camerax.CameraEffectsManager.onPreviewSizeChanged',
+        pigeonChannelCodec,
+        binaryMessenger: binaryMessenger,
+      );
+      if (pigeon_clearHandlers) {
+        pigeonVar_channel.setMessageHandler(null);
+      } else {
+        pigeonVar_channel.setMessageHandler((Object? message) async {
+          assert(
+            message != null,
+            'Argument for dev.flutter.pigeon.camera_android_camerax.CameraEffectsManager.onPreviewSizeChanged was null.',
+          );
+          final List<Object?> args = (message as List<Object?>?)!;
+          final CameraEffectsManager? arg_pigeon_instance = (args[0] as CameraEffectsManager?);
+          assert(
+            arg_pigeon_instance != null,
+            'Argument for dev.flutter.pigeon.camera_android_camerax.CameraEffectsManager.onPreviewSizeChanged was null, expected non-null CameraEffectsManager.',
+          );
+          final int? arg_width = (args[1] as int?);
+          assert(
+            arg_width != null,
+            'Argument for dev.flutter.pigeon.camera_android_camerax.CameraEffectsManager.onPreviewSizeChanged was null, expected non-null int.',
+          );
+          final int? arg_height = (args[2] as int?);
+          assert(
+            arg_height != null,
+            'Argument for dev.flutter.pigeon.camera_android_camerax.CameraEffectsManager.onPreviewSizeChanged was null, expected non-null int.',
+          );
+          try {
+            (onPreviewSizeChanged ?? arg_pigeon_instance!.onPreviewSizeChanged).call(
+              arg_pigeon_instance!,
+              arg_width!,
+              arg_height!,
+            );
+            return wrapResponse(empty: true);
+          } on PlatformException catch (e) {
+            return wrapResponse(error: e);
+          } catch (e) {
+            return wrapResponse(
+              error: PlatformException(code: 'error', message: e.toString()),
+            );
+          }
+        });
+      }
+    }
+
+    {
+      final pigeonVar_channel = BasicMessageChannel<Object?>(
+        'dev.flutter.pigeon.camera_android_camerax.CameraEffectsManager.onPreviewOutputLost',
+        pigeonChannelCodec,
+        binaryMessenger: binaryMessenger,
+      );
+      if (pigeon_clearHandlers) {
+        pigeonVar_channel.setMessageHandler(null);
+      } else {
+        pigeonVar_channel.setMessageHandler((Object? message) async {
+          assert(
+            message != null,
+            'Argument for dev.flutter.pigeon.camera_android_camerax.CameraEffectsManager.onPreviewOutputLost was null.',
+          );
+          final List<Object?> args = (message as List<Object?>?)!;
+          final CameraEffectsManager? arg_pigeon_instance = (args[0] as CameraEffectsManager?);
+          assert(
+            arg_pigeon_instance != null,
+            'Argument for dev.flutter.pigeon.camera_android_camerax.CameraEffectsManager.onPreviewOutputLost was null, expected non-null CameraEffectsManager.',
+          );
+          try {
+            (onPreviewOutputLost ?? arg_pigeon_instance!.onPreviewOutputLost).call(
+              arg_pigeon_instance!,
+            );
+            return wrapResponse(empty: true);
+          } on PlatformException catch (e) {
+            return wrapResponse(error: e);
+          } catch (e) {
+            return wrapResponse(
+              error: PlatformException(code: 'error', message: e.toString()),
+            );
+          }
+        });
+      }
+    }
+  }
+
+  /// Re-emits [onPreviewSizeChanged] for the current preview surface, or does
+  /// nothing if there is not one yet.
+  ///
+  /// Used to make the size land *after* `CameraInitializedEvent`, which carries
+  /// the uncropped resolution and would otherwise overwrite it.
+  Future<void> notifyPreviewSize() async {
+    final _PigeonInternalProxyApiBaseCodec pigeonChannelCodec =
+        _pigeonVar_codecCameraEffectsManager;
+    final BinaryMessenger? pigeonVar_binaryMessenger = pigeon_binaryMessenger;
+    const pigeonVar_channelName =
+        'dev.flutter.pigeon.camera_android_camerax.CameraEffectsManager.notifyPreviewSize';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[this]);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+    if (pigeonVar_replyList == null) {
+      throw _createConnectionError(pigeonVar_channelName);
+    } else if (pigeonVar_replyList.length > 1) {
+      throw PlatformException(
+        code: pigeonVar_replyList[0]! as String,
+        message: pigeonVar_replyList[1] as String?,
+        details: pigeonVar_replyList[2],
+      );
+    } else {
+      return;
+    }
+  }
+
+  /// The `CameraEffect` to bind alongside the camera's use cases.
+  ///
+  /// Targets preview and video capture; still capture is rendered separately
+  /// by `ImageCapture.takePictureWithEffects` so that an un-effected original
+  /// can be produced from the same shutter event.
+  Future<CameraEffect> getCameraEffect() async {
+    final _PigeonInternalProxyApiBaseCodec pigeonChannelCodec =
+        _pigeonVar_codecCameraEffectsManager;
+    final BinaryMessenger? pigeonVar_binaryMessenger = pigeon_binaryMessenger;
+    const pigeonVar_channelName =
+        'dev.flutter.pigeon.camera_android_camerax.CameraEffectsManager.getCameraEffect';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[this]);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+    if (pigeonVar_replyList == null) {
+      throw _createConnectionError(pigeonVar_channelName);
+    } else if (pigeonVar_replyList.length > 1) {
+      throw PlatformException(
+        code: pigeonVar_replyList[0]! as String,
+        message: pigeonVar_replyList[1] as String?,
+        details: pigeonVar_replyList[2],
+      );
+    } else if (pigeonVar_replyList[0] == null) {
+      throw PlatformException(
+        code: 'null-error',
+        message: 'Host platform returned null value for non-null return value.',
+      );
+    } else {
+      return (pigeonVar_replyList[0] as CameraEffect?)!;
+    }
+  }
+
+  /// Applies visual effect parameters to the pipeline.
+  Future<void> setEffectsValues(PlatformEffectsValues values) async {
+    final _PigeonInternalProxyApiBaseCodec pigeonChannelCodec =
+        _pigeonVar_codecCameraEffectsManager;
+    final BinaryMessenger? pigeonVar_binaryMessenger = pigeon_binaryMessenger;
+    const pigeonVar_channelName =
+        'dev.flutter.pigeon.camera_android_camerax.CameraEffectsManager.setEffectsValues';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[this, values]);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+    if (pigeonVar_replyList == null) {
+      throw _createConnectionError(pigeonVar_channelName);
+    } else if (pigeonVar_replyList.length > 1) {
+      throw PlatformException(
+        code: pigeonVar_replyList[0]! as String,
+        message: pigeonVar_replyList[1] as String?,
+        details: pigeonVar_replyList[2],
+      );
+    } else {
+      return;
+    }
+  }
+
+  /// Sets the center-crop aspect ratio (width/height), or null to disable
+  /// cropping.
+  Future<void> setAspectRatio(double? aspectRatio) async {
+    final _PigeonInternalProxyApiBaseCodec pigeonChannelCodec =
+        _pigeonVar_codecCameraEffectsManager;
+    final BinaryMessenger? pigeonVar_binaryMessenger = pigeon_binaryMessenger;
+    const pigeonVar_channelName =
+        'dev.flutter.pigeon.camera_android_camerax.CameraEffectsManager.setAspectRatio';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[
+      this,
+      aspectRatio,
+    ]);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+    if (pigeonVar_replyList == null) {
+      throw _createConnectionError(pigeonVar_channelName);
+    } else if (pigeonVar_replyList.length > 1) {
+      throw PlatformException(
+        code: pigeonVar_replyList[0]! as String,
+        message: pigeonVar_replyList[1] as String?,
+        details: pigeonVar_replyList[2],
+      );
+    } else {
+      return;
+    }
+  }
+
+  /// Sets the capture scale (0.1-1.0) applied inside the aspect-ratio crop.
+  Future<void> setCaptureScale(double scale) async {
+    final _PigeonInternalProxyApiBaseCodec pigeonChannelCodec =
+        _pigeonVar_codecCameraEffectsManager;
+    final BinaryMessenger? pigeonVar_binaryMessenger = pigeon_binaryMessenger;
+    const pigeonVar_channelName =
+        'dev.flutter.pigeon.camera_android_camerax.CameraEffectsManager.setCaptureScale';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[this, scale]);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+    if (pigeonVar_replyList == null) {
+      throw _createConnectionError(pigeonVar_channelName);
+    } else if (pigeonVar_replyList.length > 1) {
+      throw PlatformException(
+        code: pigeonVar_replyList[0]! as String,
+        message: pigeonVar_replyList[1] as String?,
+        details: pigeonVar_replyList[2],
+      );
+    } else {
+      return;
+    }
+  }
+
+  /// Sets the corner radius (0.0-1.0) of the capture-scale rectangle drawn in
+  /// the preview.
+  Future<void> setCaptureCornerRadius(double radius) async {
+    final _PigeonInternalProxyApiBaseCodec pigeonChannelCodec =
+        _pigeonVar_codecCameraEffectsManager;
+    final BinaryMessenger? pigeonVar_binaryMessenger = pigeon_binaryMessenger;
+    const pigeonVar_channelName =
+        'dev.flutter.pigeon.camera_android_camerax.CameraEffectsManager.setCaptureCornerRadius';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[this, radius]);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+    if (pigeonVar_replyList == null) {
+      throw _createConnectionError(pigeonVar_channelName);
+    } else if (pigeonVar_replyList.length > 1) {
+      throw PlatformException(
+        code: pigeonVar_replyList[0]! as String,
+        message: pigeonVar_replyList[1] as String?,
+        details: pigeonVar_replyList[2],
+      );
+    } else {
+      return;
+    }
+  }
+
+  /// Detaches the preview and encoder outputs, keeping the pipeline itself.
+  ///
+  /// What a camera's `dispose` calls. One manager is deliberately shared by
+  /// every camera the plugin opens: CameraX stores bound effects on a cached
+  /// per-camera adapter and never clears them, so a manager released with a
+  /// camera would leave that adapter pointing at a dead pipeline, and the next
+  /// bind that picked it up would render nothing.
+  Future<void> detachOutputs() async {
+    final _PigeonInternalProxyApiBaseCodec pigeonChannelCodec =
+        _pigeonVar_codecCameraEffectsManager;
+    final BinaryMessenger? pigeonVar_binaryMessenger = pigeon_binaryMessenger;
+    const pigeonVar_channelName =
+        'dev.flutter.pigeon.camera_android_camerax.CameraEffectsManager.detachOutputs';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[this]);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+    if (pigeonVar_replyList == null) {
+      throw _createConnectionError(pigeonVar_channelName);
+    } else if (pigeonVar_replyList.length > 1) {
+      throw PlatformException(
+        code: pigeonVar_replyList[0]! as String,
+        message: pigeonVar_replyList[1] as String?,
+        details: pigeonVar_replyList[2],
+      );
+    } else {
+      return;
+    }
+  }
+
+  /// Releases the GL context and every texture it owns.
+  ///
+  /// Not called per camera; the plugin does it natively when it detaches from
+  /// the engine. See [detachOutputs].
+  Future<void> release() async {
+    final _PigeonInternalProxyApiBaseCodec pigeonChannelCodec =
+        _pigeonVar_codecCameraEffectsManager;
+    final BinaryMessenger? pigeonVar_binaryMessenger = pigeon_binaryMessenger;
+    const pigeonVar_channelName =
+        'dev.flutter.pigeon.camera_android_camerax.CameraEffectsManager.release';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[this]);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+    if (pigeonVar_replyList == null) {
+      throw _createConnectionError(pigeonVar_channelName);
+    } else if (pigeonVar_replyList.length > 1) {
+      throw PlatformException(
+        code: pigeonVar_replyList[0]! as String,
+        message: pigeonVar_replyList[1] as String?,
+        details: pigeonVar_replyList[2],
+      );
+    } else {
+      return;
+    }
+  }
+
+  @override
+  CameraEffectsManager pigeon_copy() {
+    return CameraEffectsManager.pigeon_detached(
+      pigeon_binaryMessenger: pigeon_binaryMessenger,
+      pigeon_instanceManager: pigeon_instanceManager,
+      onPreviewSizeChanged: onPreviewSizeChanged,
+      onPreviewOutputLost: onPreviewOutputLost,
+    );
+  }
+}
+
+/// Manages the white balance of a camera.
+///
+/// Locking the white balance goes through Camera2 interop, because CameraX
+/// exposes no white balance control of its own.
+class WhiteBalanceManager extends PigeonInternalProxyApiBaseClass {
+  factory WhiteBalanceManager({
+    BinaryMessenger? pigeon_binaryMessenger,
+    PigeonInstanceManager? pigeon_instanceManager,
+    required void Function(WhiteBalanceManager pigeon_instance, double temperature, double tint)
+    onAutoWhiteBalanceChanged,
+  }) {
+    if (PigeonOverrides.whiteBalanceManager_new != null) {
+      return PigeonOverrides.whiteBalanceManager_new!(
+        onAutoWhiteBalanceChanged: onAutoWhiteBalanceChanged,
+      );
+    }
+    return WhiteBalanceManager.pigeon_new(
+      pigeon_binaryMessenger: pigeon_binaryMessenger,
+      pigeon_instanceManager: pigeon_instanceManager,
+      onAutoWhiteBalanceChanged: onAutoWhiteBalanceChanged,
+    );
+  }
+
+  @protected
+  WhiteBalanceManager.pigeon_new({
+    super.pigeon_binaryMessenger,
+    super.pigeon_instanceManager,
+    required this.onAutoWhiteBalanceChanged,
+  }) {
+    final int pigeonVar_instanceIdentifier = pigeon_instanceManager.addDartCreatedInstance(this);
+    final _PigeonInternalProxyApiBaseCodec pigeonChannelCodec = _pigeonVar_codecWhiteBalanceManager;
+    final BinaryMessenger? pigeonVar_binaryMessenger = pigeon_binaryMessenger;
+    const pigeonVar_channelName =
+        'dev.flutter.pigeon.camera_android_camerax.WhiteBalanceManager.pigeon_defaultConstructor';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[
+      pigeonVar_instanceIdentifier,
+    ]);
+    () async {
+      final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+      if (pigeonVar_replyList == null) {
+        throw _createConnectionError(pigeonVar_channelName);
+      } else if (pigeonVar_replyList.length > 1) {
+        throw PlatformException(
+          code: pigeonVar_replyList[0]! as String,
+          message: pigeonVar_replyList[1] as String?,
+          details: pigeonVar_replyList[2],
+        );
+      } else {
+        return;
+      }
+    }();
+  }
+
+  /// Constructs [WhiteBalanceManager] without creating the associated native object.
+  ///
+  /// This should only be used by subclasses created by this library or to
+  /// create copies for an [PigeonInstanceManager].
+  @protected
+  WhiteBalanceManager.pigeon_detached({
+    super.pigeon_binaryMessenger,
+    super.pigeon_instanceManager,
+    required this.onAutoWhiteBalanceChanged,
+  });
+
+  late final _PigeonInternalProxyApiBaseCodec _pigeonVar_codecWhiteBalanceManager =
+      _PigeonInternalProxyApiBaseCodec(pigeon_instanceManager);
+
+  /// Emitted while the camera is in auto white balance mode, with the
+  /// temperature (Kelvin) and tint the hardware has settled on.
+  ///
+  /// Devices that do not report `COLOR_CORRECTION_GAINS` in their capture
+  /// results simply never emit.
+  ///
+  /// For the associated Native object to be automatically garbage collected,
+  /// it is required that the implementation of this `Function` doesn't have a
+  /// strong reference to the encapsulating class instance. When this `Function`
+  /// references a non-local variable, it is strongly recommended to access it
+  /// with a `WeakReference`:
+  ///
+  /// ```dart
+  /// final WeakReference weakMyVariable = WeakReference(myVariable);
+  /// final WhiteBalanceManager instance = WhiteBalanceManager(
+  ///  onAutoWhiteBalanceChanged: (WhiteBalanceManager pigeon_instance, ...) {
+  ///    print(weakMyVariable?.target);
+  ///  },
+  /// );
+  /// ```
+  ///
+  /// Alternatively, [PigeonInstanceManager.removeWeakReference] can be used to
+  /// release the associated Native object manually.
+  final void Function(WhiteBalanceManager pigeon_instance, double temperature, double tint)
+  onAutoWhiteBalanceChanged;
+
+  static void pigeon_setUpMessageHandlers({
+    bool pigeon_clearHandlers = false,
+    BinaryMessenger? pigeon_binaryMessenger,
+    PigeonInstanceManager? pigeon_instanceManager,
+    void Function(WhiteBalanceManager pigeon_instance, double temperature, double tint)?
+    onAutoWhiteBalanceChanged,
+  }) {
+    final _PigeonInternalProxyApiBaseCodec pigeonChannelCodec = _PigeonInternalProxyApiBaseCodec(
+      pigeon_instanceManager ?? PigeonInstanceManager.instance,
+    );
+    final BinaryMessenger? binaryMessenger = pigeon_binaryMessenger;
+    {
+      final pigeonVar_channel = BasicMessageChannel<Object?>(
+        'dev.flutter.pigeon.camera_android_camerax.WhiteBalanceManager.onAutoWhiteBalanceChanged',
+        pigeonChannelCodec,
+        binaryMessenger: binaryMessenger,
+      );
+      if (pigeon_clearHandlers) {
+        pigeonVar_channel.setMessageHandler(null);
+      } else {
+        pigeonVar_channel.setMessageHandler((Object? message) async {
+          assert(
+            message != null,
+            'Argument for dev.flutter.pigeon.camera_android_camerax.WhiteBalanceManager.onAutoWhiteBalanceChanged was null.',
+          );
+          final List<Object?> args = (message as List<Object?>?)!;
+          final WhiteBalanceManager? arg_pigeon_instance = (args[0] as WhiteBalanceManager?);
+          assert(
+            arg_pigeon_instance != null,
+            'Argument for dev.flutter.pigeon.camera_android_camerax.WhiteBalanceManager.onAutoWhiteBalanceChanged was null, expected non-null WhiteBalanceManager.',
+          );
+          final double? arg_temperature = (args[1] as double?);
+          assert(
+            arg_temperature != null,
+            'Argument for dev.flutter.pigeon.camera_android_camerax.WhiteBalanceManager.onAutoWhiteBalanceChanged was null, expected non-null double.',
+          );
+          final double? arg_tint = (args[2] as double?);
+          assert(
+            arg_tint != null,
+            'Argument for dev.flutter.pigeon.camera_android_camerax.WhiteBalanceManager.onAutoWhiteBalanceChanged was null, expected non-null double.',
+          );
+          try {
+            (onAutoWhiteBalanceChanged ?? arg_pigeon_instance!.onAutoWhiteBalanceChanged).call(
+              arg_pigeon_instance!,
+              arg_temperature!,
+              arg_tint!,
+            );
+            return wrapResponse(empty: true);
+          } on PlatformException catch (e) {
+            return wrapResponse(error: e);
+          } catch (e) {
+            return wrapResponse(
+              error: PlatformException(code: 'error', message: e.toString()),
+            );
+          }
+        });
+      }
+    }
+  }
+
+  /// Whether `cameraInfo`'s camera can have its white balance locked to a
+  /// chosen temperature and tint.
+  ///
+  /// Reads the camera's Camera2 characteristics; involves no capture request.
+  Future<bool> isWhiteBalanceSupported(Camera2CameraInfo cameraInfo) async {
+    final _PigeonInternalProxyApiBaseCodec pigeonChannelCodec = _pigeonVar_codecWhiteBalanceManager;
+    final BinaryMessenger? pigeonVar_binaryMessenger = pigeon_binaryMessenger;
+    const pigeonVar_channelName =
+        'dev.flutter.pigeon.camera_android_camerax.WhiteBalanceManager.isWhiteBalanceSupported';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[
+      this,
+      cameraInfo,
+    ]);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+    if (pigeonVar_replyList == null) {
+      throw _createConnectionError(pigeonVar_channelName);
+    } else if (pigeonVar_replyList.length > 1) {
+      throw PlatformException(
+        code: pigeonVar_replyList[0]! as String,
+        message: pigeonVar_replyList[1] as String?,
+        details: pigeonVar_replyList[2],
+      );
+    } else if (pigeonVar_replyList[0] == null) {
+      throw PlatformException(
+        code: 'null-error',
+        message: 'Host platform returned null value for non-null return value.',
+      );
+    } else {
+      return (pigeonVar_replyList[0] as bool?)!;
+    }
+  }
+
+  /// Forgets the requested white balance and the sensor calibration cached for
+  /// the camera this manager was last attached to.
+  ///
+  /// This manager outlives any one camera, so call it when a camera is created
+  /// to keep a lock set on a previous one from being re-applied by
+  /// `attachToCamera`.
+  Future<void> reset() async {
+    final _PigeonInternalProxyApiBaseCodec pigeonChannelCodec = _pigeonVar_codecWhiteBalanceManager;
+    final BinaryMessenger? pigeonVar_binaryMessenger = pigeon_binaryMessenger;
+    const pigeonVar_channelName =
+        'dev.flutter.pigeon.camera_android_camerax.WhiteBalanceManager.reset';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[this]);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+    if (pigeonVar_replyList == null) {
+      throw _createConnectionError(pigeonVar_channelName);
+    } else if (pigeonVar_replyList.length > 1) {
+      throw PlatformException(
+        code: pigeonVar_replyList[0]! as String,
+        message: pigeonVar_replyList[1] as String?,
+        details: pigeonVar_replyList[2],
+      );
+    } else {
+      return;
+    }
+  }
+
+  /// Locks the white balance to `temperature` Kelvin and `tint`, or returns
+  /// the camera to auto white balance when both are null.
+  ///
+  /// Throws when the camera does not support the requested mode.
+  Future<void> setWhiteBalance(
+    Camera2CameraControl cameraControl,
+    Camera2CameraInfo cameraInfo,
+    double? temperature,
+    double? tint,
+  ) async {
+    final _PigeonInternalProxyApiBaseCodec pigeonChannelCodec = _pigeonVar_codecWhiteBalanceManager;
+    final BinaryMessenger? pigeonVar_binaryMessenger = pigeon_binaryMessenger;
+    const pigeonVar_channelName =
+        'dev.flutter.pigeon.camera_android_camerax.WhiteBalanceManager.setWhiteBalance';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[
+      this,
+      cameraControl,
+      cameraInfo,
+      temperature,
+      tint,
+    ]);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+    if (pigeonVar_replyList == null) {
+      throw _createConnectionError(pigeonVar_channelName);
+    } else if (pigeonVar_replyList.length > 1) {
+      throw PlatformException(
+        code: pigeonVar_replyList[0]! as String,
+        message: pigeonVar_replyList[1] as String?,
+        details: pigeonVar_replyList[2],
+      );
+    } else {
+      return;
+    }
+  }
+
+  /// Re-derives the sensor calibration for `cameraInfo` and re-sends the last
+  /// requested white balance, if any, to the newly bound camera.
+  ///
+  /// Camera2 capture request options live on the `Camera` instance, which every
+  /// `bindToLifecycle` replaces, so call this whenever the camera is rebound.
+  /// Does nothing when the white balance has never been set.
+  Future<void> attachToCamera(
+    Camera2CameraControl cameraControl,
+    Camera2CameraInfo cameraInfo,
+  ) async {
+    final _PigeonInternalProxyApiBaseCodec pigeonChannelCodec = _pigeonVar_codecWhiteBalanceManager;
+    final BinaryMessenger? pigeonVar_binaryMessenger = pigeon_binaryMessenger;
+    const pigeonVar_channelName =
+        'dev.flutter.pigeon.camera_android_camerax.WhiteBalanceManager.attachToCamera';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[
+      this,
+      cameraControl,
+      cameraInfo,
+    ]);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+    if (pigeonVar_replyList == null) {
+      throw _createConnectionError(pigeonVar_channelName);
+    } else if (pigeonVar_replyList.length > 1) {
+      throw PlatformException(
+        code: pigeonVar_replyList[0]! as String,
+        message: pigeonVar_replyList[1] as String?,
+        details: pigeonVar_replyList[2],
+      );
+    } else {
+      return;
+    }
+  }
+
+  @override
+  WhiteBalanceManager pigeon_copy() {
+    return WhiteBalanceManager.pigeon_detached(
+      pigeon_binaryMessenger: pigeon_binaryMessenger,
+      pigeon_instanceManager: pigeon_instanceManager,
+      onAutoWhiteBalanceChanged: onAutoWhiteBalanceChanged,
     );
   }
 }

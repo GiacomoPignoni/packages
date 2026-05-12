@@ -4,14 +4,19 @@
 
 package io.flutter.plugins.camerax;
 
+import android.graphics.ImageFormat;
+import android.hardware.camera2.CaptureResult;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.annotation.OptIn;
+import androidx.camera.camera2.interop.Camera2Interop;
+import androidx.camera.camera2.interop.ExperimentalCamera2Interop;
 import androidx.camera.core.ImageCapture;
 import androidx.camera.core.ImageCaptureException;
+import androidx.camera.core.ImageProxy;
 import androidx.camera.core.resolutionselector.ResolutionSelector;
 import java.io.File;
 import java.io.IOException;
-import java.util.concurrent.Executors;
 import kotlin.Result;
 import kotlin.Unit;
 import kotlin.jvm.functions.Function1;
@@ -37,6 +42,7 @@ class ImageCaptureProxyApi extends PigeonApiImageCapture {
 
   @NonNull
   @Override
+  @OptIn(markerClass = ExperimentalCamera2Interop.class)
   public ImageCapture pigeon_defaultConstructor(
       @Nullable ResolutionSelector resolutionSelector,
       @Nullable Long targetRotation,
@@ -61,6 +67,27 @@ class ImageCaptureProxyApi extends PigeonApiImageCapture {
     }
     if (resolutionSelector != null) {
       builder.setResolutionSelector(resolutionSelector);
+    }
+    if (UncompressedCaptureSupport.isSupported(getPigeonRegistrar().getContext())) {
+      // Skips the ISP's JPEG encode and the decode that used to undo it: the effects pipeline
+      // wants pixels, and a JPEG in between is a lossy round trip that costs ~140ms of CPU on a
+      // 12MP frame. `ImagePipeline` leaves a non-JPEG buffer format alone rather than converting
+      // it, so the frame arrives as it was captured.
+      //
+      // Asked for per device rather than unconditionally, and withdrawn if this device turns out
+      // not to cope — see UncompressedCaptureSupport, which also explains why "not coping" is not
+      // always an error. Either way the frame is delivered to `takePictureWithEffects`, which
+      // handles both formats: `StillCaptureProcessor` decodes if a JPEG arrives.
+      builder.setBufferFormat(ImageFormat.YUV_420_888);
+      // An uncompressed frame carries no Exif, so the exposure the photo was taken with has to be
+      // read from the camera's own result for that frame. See CaptureResultCache.
+      final CaptureResultCache resultCache = new CaptureResultCache();
+      new Camera2Interop.Extender<>(builder)
+          .setSessionCaptureCallback(resultCache.getCaptureCallback());
+      final ImageCapture imageCapture = builder.build();
+      CaptureResultCache.register(imageCapture, resultCache);
+      UncompressedCaptureSupport.markUncompressed(imageCapture);
+      return imageCapture;
     }
     return builder.build();
   }
@@ -102,7 +129,79 @@ class ImageCaptureProxyApi extends PigeonApiImageCapture {
         createOnImageSavedCallback(temporaryCaptureFile, systemServicesManager, callback);
 
     pigeonInstance.takePicture(
-        outputFileOptions, Executors.newSingleThreadExecutor(), onImageSavedCallback);
+        outputFileOptions, getPigeonRegistrar().getCaptureExecutor(), onImageSavedCallback);
+  }
+
+  @Override
+  public void takePictureWithEffects(
+      @NonNull ImageCapture pigeonInstance,
+      @NonNull SystemServicesManager systemServicesManager,
+      @NonNull CameraEffectsManager effectsManager,
+      boolean includeOriginal,
+      @NonNull Function1<? super Result<CapturedPicturePaths>, Unit> callback) {
+    // Captured in memory rather than straight to a file: `takePictureWithOriginal` has to produce
+    // both an un-effected original and a processed photo from the *same* shutter event, which a
+    // file-backed capture cannot give.
+    pigeonInstance.takePicture(
+        getPigeonRegistrar().getCaptureExecutor(),
+        new ImageCapture.OnImageCapturedCallback() {
+          @Override
+          public void onCaptureSuccess(@NonNull ImageProxy image) {
+            // An uncompressed capture carries no Exif of its own, so the exposure it was taken
+            // with is looked up from the camera's result for that frame.
+            final CaptureResultCache resultCache = CaptureResultCache.of(pigeonInstance);
+            final CaptureResult captureResult =
+                resultCache == null
+                    ? null
+                    : resultCache.resultFor(image.getImageInfo().getTimestamp());
+            try {
+              final CapturedPicturePaths paths =
+                  StillCaptureProcessor.process(
+                      image,
+                      effectsManager,
+                      includeOriginal,
+                      getPigeonRegistrar().getContext().getCacheDir(),
+                      captureResult);
+              replyOnMainThread(() -> ResultCompat.success(paths, callback));
+            } catch (Throwable t) {
+              // Catches Throwable, not just Exception: decoding/rendering a full-resolution
+              // capture can throw OutOfMemoryError, and the Dart Future must still be completed
+              // rather than left hanging forever.
+              systemServicesManager.onCameraError(
+                  "Failed to process the captured image: " + t.getMessage());
+              replyOnMainThread(() -> ResultCompat.failure(t, callback));
+            } finally {
+              image.close();
+            }
+          }
+
+          @Override
+          public void onError(@NonNull ImageCaptureException exception) {
+            systemServicesManager.onCameraError(
+                getImageCaptureExceptionDescription(exception.getImageCaptureError()));
+            replyOnMainThread(() -> ResultCompat.failure(exception, callback));
+          }
+        });
+  }
+
+  /**
+   * Answers the pending Dart call from the main thread.
+   *
+   * <p>Unlike {@link #takePicture}, which hands back a plain path string, this method's result is a
+   * {@link CapturedPicturePaths} proxy: returning one registers it with the instance manager, which
+   * sends a message over the binary messenger, and Flutter rejects those from any thread but the
+   * main one. The capture callbacks above run on the executor {@code takePicture} was handed, so
+   * only the reply hops — the decode, render and JPEG encode stay off the main thread.
+   */
+  private void replyOnMainThread(@NonNull Runnable reply) {
+    getPigeonRegistrar()
+        .runOnMainThread(
+            new ProxyApiRegistrar.FlutterMethodRunnable() {
+              @Override
+              public void run() {
+                reply.run();
+              }
+            });
   }
 
   @Override

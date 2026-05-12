@@ -13,6 +13,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
+import android.hardware.camera2.CameraCaptureSession;
 import android.hardware.camera2.CaptureRequest;
 import android.util.Range;
 import android.util.Size;
@@ -56,11 +57,34 @@ public class PreviewTest {
                   .thenReturn(mock);
             })) {
       final Preview instance =
-          api.pigeon_defaultConstructor(mockResolutionSelector, targetResolution, targetFpsRange);
+          api.pigeon_defaultConstructor(
+              mockResolutionSelector, targetResolution, targetFpsRange, null);
 
       assertEquals(mockResolutionSelector, instance.getResolutionSelector());
       assertEquals(Surface.ROTATION_0, instance.getTargetRotation());
       assertEquals(1, mockCamera2InteropExtender.constructed().size());
+    }
+  }
+
+  // See the note on the test above about the raw Extender type.
+  @SuppressWarnings({"unchecked", "rawtypes"})
+  @Test
+  public void pigeon_defaultConstructor_attachesTheWhiteBalanceCaptureCallback() {
+    // The capture results are the only place the auto white balance gains are reported, and this
+    // is the only hook Camera2 interop offers for reading them.
+    final PigeonApiPreview api = new TestProxyApiRegistrar().getPigeonApiPreview();
+    final WhiteBalanceManager mockWhiteBalanceManager = mock(WhiteBalanceManager.class);
+    final CameraCaptureSession.CaptureCallback captureCallback =
+        mock(CameraCaptureSession.CaptureCallback.class);
+    when(mockWhiteBalanceManager.getCaptureCallback()).thenReturn(captureCallback);
+
+    try (MockedConstruction<Camera2Interop.Extender> mockCamera2InteropExtender =
+        Mockito.mockConstruction(Camera2Interop.Extender.class)) {
+      api.pigeon_defaultConstructor(null, null, null, mockWhiteBalanceManager);
+
+      assertEquals(1, mockCamera2InteropExtender.constructed().size());
+      verify(mockCamera2InteropExtender.constructed().get(0))
+          .setSessionCaptureCallback(captureCallback);
     }
   }
 
@@ -254,6 +278,17 @@ public class PreviewTest {
     api.releaseSurfaceProvider(instance);
 
     verify(mockSurfaceProducer).release();
+  }
+
+  @Test
+  public void releaseSurfaceProvider_isANoOpWhenThereIsNothingToRelease() {
+    // `dispose` is the last thing to run on a camera that may have failed halfway through being
+    // created, or that is being disposed a second time; in both cases there is no surface producer.
+    // Throwing from the final step of a teardown is how one failed camera switch cascades into a
+    // broken plugin, so releasing what is not there has to be allowed.
+    final PigeonApiPreview api = new TestProxyApiRegistrar().getPigeonApiPreview();
+
+    api.releaseSurfaceProvider(mock(Preview.class));
   }
 
   @Test

@@ -37,6 +37,7 @@ class CameraConfiguration {
   var deviceOrientationProvider: DeviceOrientationProvider
   let initialCameraName: String
   var orientation: UIDeviceOrientation
+  let aspectRatio: Double?
 
   init(
     mediaSettings: PlatformMediaSettings,
@@ -46,7 +47,8 @@ class CameraConfiguration {
     captureSessionFactory: @escaping CaptureSessionFactory,
     captureSessionQueue: DispatchQueue,
     captureDeviceInputFactory: CaptureDeviceInputFactory,
-    initialCameraName: String
+    initialCameraName: String,
+    aspectRatio: Double? = nil
   ) {
     self.mediaSettings = mediaSettings
     self.mediaSettingsWrapper = mediaSettingsWrapper
@@ -59,6 +61,7 @@ class CameraConfiguration {
     self.initialCameraName = initialCameraName
     self.orientation = UIDevice.current.orientation
     self.deviceOrientationProvider = DefaultDeviceOrientationProvider()
+    self.aspectRatio = aspectRatio
 
     self.videoDimensionsConverter = { format in
       return CMVideoFormatDescriptionGetDimensions(format.formatDescription)

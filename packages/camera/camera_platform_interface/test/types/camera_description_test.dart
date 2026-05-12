@@ -31,12 +31,24 @@ void main() {
         lensDirection: CameraLensDirection.front,
         sensorOrientation: 90,
         lensType: CameraLensType.ultraWide,
+        equivalentFocalLength: 26.0,
       );
 
       expect(description.name, 'Test');
       expect(description.lensDirection, CameraLensDirection.front);
       expect(description.sensorOrientation, 90);
       expect(description.lensType, CameraLensType.ultraWide);
+      expect(description.equivalentFocalLength, 26.0);
+    });
+
+    test('Constructor should default equivalentFocalLength to null', () {
+      const description = CameraDescription(
+        name: 'Test',
+        lensDirection: CameraLensDirection.front,
+        sensorOrientation: 90,
+      );
+
+      expect(description.equivalentFocalLength, null);
     });
 
     test('equals should return true if objects are the same', () {
@@ -45,15 +57,38 @@ void main() {
         lensDirection: CameraLensDirection.front,
         sensorOrientation: 90,
         lensType: CameraLensType.ultraWide,
+        equivalentFocalLength: 26.0,
       );
       const secondDescription = CameraDescription(
         name: 'Test',
         lensDirection: CameraLensDirection.front,
         sensorOrientation: 90,
         lensType: CameraLensType.ultraWide,
+        equivalentFocalLength: 26.0,
       );
 
       expect(firstDescription == secondDescription, true);
+    });
+
+    test('equals should return true even when equivalentFocalLength differs '
+        '(field is intentionally excluded from equality)', () {
+      const firstDescription = CameraDescription(
+        name: 'Test',
+        lensDirection: CameraLensDirection.front,
+        sensorOrientation: 90,
+        lensType: CameraLensType.ultraWide,
+        equivalentFocalLength: 26.0,
+      );
+      const secondDescription = CameraDescription(
+        name: 'Test',
+        lensDirection: CameraLensDirection.front,
+        sensorOrientation: 90,
+        lensType: CameraLensType.ultraWide,
+        equivalentFocalLength: 52.0,
+      );
+
+      expect(firstDescription == secondDescription, true);
+      expect(firstDescription.hashCode, secondDescription.hashCode);
     });
 
     test('equals should return false if name is different', () {
@@ -113,6 +148,7 @@ void main() {
         lensDirection: CameraLensDirection.front,
         sensorOrientation: 0,
         lensType: CameraLensType.ultraWide,
+        equivalentFocalLength: 26.0,
       );
       final int expectedHashCode = Object.hash(
         description.name,
@@ -129,11 +165,25 @@ void main() {
         lensDirection: CameraLensDirection.front,
         sensorOrientation: 90,
         lensType: CameraLensType.ultraWide,
+        equivalentFocalLength: 26.0,
       );
 
       expect(
         description.toString(),
-        'CameraDescription(Test, CameraLensDirection.front, 90, CameraLensType.ultraWide)',
+        'CameraDescription(Test, CameraLensDirection.front, 90, CameraLensType.ultraWide, 26.0)',
+      );
+    });
+
+    test('toString should show null when equivalentFocalLength is not set', () {
+      const description = CameraDescription(
+        name: 'Test',
+        lensDirection: CameraLensDirection.front,
+        sensorOrientation: 90,
+      );
+
+      expect(
+        description.toString(),
+        'CameraDescription(Test, CameraLensDirection.front, 90, CameraLensType.unknown, null)',
       );
     });
   });

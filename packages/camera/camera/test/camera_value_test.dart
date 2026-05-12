@@ -48,6 +48,9 @@ void main() {
       expect(cameraValue.isPreviewPaused, false);
       expect(cameraValue.previewPauseOrientation, DeviceOrientation.portraitUp);
       expect(cameraValue.videoStabilizationMode, VideoStabilizationMode.level2);
+      expect(cameraValue.captureScale, 1.0);
+      expect(cameraValue.whiteBalanceValues, null);
+      expect(cameraValue.whiteBalanceMode, WhiteBalanceMode.auto);
     });
 
     test('Can be created as uninitialized', () {
@@ -71,6 +74,9 @@ void main() {
       expect(cameraValue.isPreviewPaused, isFalse);
       expect(cameraValue.previewPauseOrientation, null);
       expect(cameraValue.videoStabilizationMode, VideoStabilizationMode.off);
+      expect(cameraValue.captureScale, 1.0);
+      expect(cameraValue.whiteBalanceValues, null);
+      expect(cameraValue.whiteBalanceMode, WhiteBalanceMode.auto);
     });
 
     test('Can be copied with isInitialized', () {
@@ -161,11 +167,57 @@ void main() {
         'isPreviewPaused: true, '
         'previewPausedOrientation: DeviceOrientation.portraitUp, '
         'videoStabilizationMode: VideoStabilizationMode.level3, '
+        'captureScale: 1.0, '
+        'captureCornerRadius: 0.0, '
+        'whiteBalanceValues: null, '
         // CameraDescription.toString is defined in the platform interface
         // package, so don't assert a specific value for it, only that
         // whatever it returns is inserted as expected.
         'description: ${FakeController.fakeDescription})',
       );
+    });
+
+    test('copyWith updates captureScale', () {
+      const cv = CameraValue.uninitialized(FakeController.fakeDescription);
+      final CameraValue cameraValue = cv.copyWith(captureScale: 0.5);
+
+      expect(cameraValue.captureScale, 0.5);
+      expect(cameraValue.whiteBalanceValues, null);
+    });
+
+    test('copyWith sets whiteBalanceValues when given Optional.of', () {
+      const cv = CameraValue.uninitialized(FakeController.fakeDescription);
+      final values = WhiteBalanceValues(temperature: 5500, tint: 25);
+      final CameraValue cameraValue = cv.copyWith(
+        whiteBalanceValues: Optional<WhiteBalanceValues>.of(values),
+      );
+
+      expect(cameraValue.whiteBalanceValues, values);
+      expect(cameraValue.whiteBalanceMode, WhiteBalanceMode.locked);
+    });
+
+    test('copyWith clears whiteBalanceValues when given Optional.absent', () {
+      final values = WhiteBalanceValues(temperature: 5500, tint: 25);
+      final CameraValue withValues = const CameraValue.uninitialized(
+        FakeController.fakeDescription,
+      ).copyWith(whiteBalanceValues: Optional<WhiteBalanceValues>.of(values));
+      final CameraValue cleared = withValues.copyWith(
+        whiteBalanceValues: const Optional<WhiteBalanceValues>.absent(),
+      );
+
+      expect(cleared.whiteBalanceValues, null);
+      expect(cleared.whiteBalanceMode, WhiteBalanceMode.auto);
+    });
+
+    test('copyWith leaves whiteBalanceValues alone when omitted', () {
+      final values = WhiteBalanceValues(temperature: 5500, tint: 25);
+      final CameraValue withValues = const CameraValue.uninitialized(
+        FakeController.fakeDescription,
+      ).copyWith(whiteBalanceValues: Optional<WhiteBalanceValues>.of(values));
+      final CameraValue copied = withValues.copyWith(isInitialized: true);
+
+      expect(copied.whiteBalanceValues, values);
+      expect(copied.whiteBalanceMode, WhiteBalanceMode.locked);
     });
   });
 }

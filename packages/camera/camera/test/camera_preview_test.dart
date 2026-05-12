@@ -97,10 +97,23 @@ class FakeController extends ValueNotifier<CameraValue> implements CameraControl
   Future<void> setFlashMode(FlashMode mode) async {}
 
   @override
+  Future<Iterable<FlashMode>> getSupportedFlashModes() async => const [];
+
+  @override
   Future<void> setFocusMode(FocusMode mode) async {}
 
   @override
   Future<void> setFocusPoint(Offset? point) async {}
+
+  @override
+  Future<void> setWhiteBalance(WhiteBalanceValues? values) async {}
+
+  @override
+  Future<bool> supportsWhiteBalance() async => false;
+
+  @override
+  Stream<({double temperature, double tint})> get autoWhiteBalanceValues =>
+      const Stream<({double temperature, double tint})>.empty();
 
   @override
   Future<void> setZoomLevel(double zoom) async {}
@@ -122,6 +135,9 @@ class FakeController extends ValueNotifier<CameraValue> implements CameraControl
 
   @override
   Future<XFile> takePicture() async => XFile('');
+
+  @override
+  Future<(XFile, XFile)> takePictureWithOriginal() async => (XFile(''), XFile(''));
 
   @override
   Future<void> unlockCaptureOrientation() async {}
@@ -150,6 +166,18 @@ class FakeController extends ValueNotifier<CameraValue> implements CameraControl
 
   @override
   bool supportsImageStreaming() => true;
+
+  @override
+  Future<void> setEffectsValues(EffectsValues values) async {}
+
+  @override
+  Future<void> setAspectRatio(double? aspectRatio) async {}
+
+  @override
+  Future<void> setCaptureScale(double scale) async {}
+
+  @override
+  Future<void> setCaptureCornerRadius(double radius) async {}
 }
 
 void main() {

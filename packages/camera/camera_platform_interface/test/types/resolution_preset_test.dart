@@ -6,10 +6,10 @@ import 'package:camera_platform_interface/camera_platform_interface.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  test('ResolutionPreset should contain 6 options', () {
+  test('ResolutionPreset should contain 7 options', () {
     const List<ResolutionPreset> values = ResolutionPreset.values;
 
-    expect(values.length, 6);
+    expect(values.length, 7);
   });
 
   test('ResolutionPreset enum should have items in correct index', () {
@@ -21,5 +21,6 @@ void main() {
     expect(values[3], ResolutionPreset.veryHigh);
     expect(values[4], ResolutionPreset.ultraHigh);
     expect(values[5], ResolutionPreset.max);
+    expect(values[6], ResolutionPreset.photo);
   });
 }

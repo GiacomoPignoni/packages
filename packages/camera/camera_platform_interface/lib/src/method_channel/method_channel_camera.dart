@@ -515,6 +515,11 @@ class MethodChannelCamera extends CameraPlatform {
         return 'medium';
       case ResolutionPreset.low:
         return 'low';
+      case ResolutionPreset.photo:
+        // No legacy method-channel string for `photo`; fall back to `max` so
+        // implementations that haven't been updated still pick the highest
+        // resolution available on the device.
+        return 'max';
     }
   }
 

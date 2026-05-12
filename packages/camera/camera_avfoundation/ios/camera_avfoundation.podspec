@@ -13,7 +13,12 @@ A Flutter plugin to use the camera from your Flutter app.
   s.author           = { 'Flutter Dev Team' => 'flutter-dev@googlegroups.com' }
   s.source           = { :http => 'https://github.com/flutter/packages/tree/main/packages/camera_avfoundation' }
   s.documentation_url = 'https://pub.dev/packages/camera_avfoundation'
-  s.source_files = 'camera_avfoundation/Sources/camera_avfoundation/**/*.swift'
+  # The shader-types header is shared between Swift and Metal (see
+  # camera_avfoundation_shader_types); as a public header it reaches the pod's
+  # Swift code via the framework umbrella, while SwiftPM builds it as its own
+  # headers-only target.
+  s.source_files = 'camera_avfoundation/Sources/camera_avfoundation/**/*.{swift,metal}',
+                   'camera_avfoundation/Sources/camera_avfoundation_shader_types/**/*.{h,c}'
   s.swift_version = '5.0'
   s.xcconfig = {
      'LIBRARY_SEARCH_PATHS' => '$(TOOLCHAIN_DIR)/usr/lib/swift/$(PLATFORM_NAME)/ $(SDKROOT)/usr/lib/swift',

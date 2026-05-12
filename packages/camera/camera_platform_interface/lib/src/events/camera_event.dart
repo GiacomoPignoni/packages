@@ -272,3 +272,44 @@ class VideoRecordedEvent extends CameraEvent {
   @override
   int get hashCode => Object.hash(super.hashCode, file, maxVideoDuration);
 }
+
+/// An event fired while the camera is in auto white balance mode with the
+/// temperature (Kelvin) and tint values currently selected by the hardware.
+class CameraAutoWhiteBalanceChangedEvent extends CameraEvent {
+  /// Build a CameraAutoWhiteBalanceChanged event triggered from the camera
+  /// represented by `cameraId`.
+  const CameraAutoWhiteBalanceChangedEvent(super.cameraId, this.temperature, this.tint);
+
+  /// Converts the supplied [Map] to an instance of the
+  /// [CameraAutoWhiteBalanceChangedEvent] class.
+  CameraAutoWhiteBalanceChangedEvent.fromJson(Map<String, dynamic> json)
+    : temperature = (json['temperature']! as num).toDouble(),
+      tint = (json['tint']! as num).toDouble(),
+      super(json['cameraId']! as int);
+
+  /// The current auto white balance temperature in Kelvin.
+  final double temperature;
+
+  /// The current auto white balance tint.
+  final double tint;
+
+  /// Converts the [CameraAutoWhiteBalanceChangedEvent] instance into a [Map]
+  /// instance that can be serialized to JSON.
+  Map<String, dynamic> toJson() => <String, Object>{
+    'cameraId': cameraId,
+    'temperature': temperature,
+    'tint': tint,
+  };
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      super == other &&
+          other is CameraAutoWhiteBalanceChangedEvent &&
+          runtimeType == other.runtimeType &&
+          temperature == other.temperature &&
+          tint == other.tint;
+
+  @override
+  int get hashCode => Object.hash(super.hashCode, temperature, tint);
+}

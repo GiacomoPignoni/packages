@@ -627,4 +627,25 @@ final class CameraPluginDelegatingMethodTests: XCTestCase {
 
     XCTAssertTrue(getMinimumExposureOffsetCalled)
   }
+
+  func testGetSupportedFlashModes_returnsValueFromCamera() {
+    let (cameraPlugin, mockCamera) = createCameraPlugin()
+    let expectation = expectation(description: "Call completed")
+
+    mockCamera.getSupportedFlashModesStub = {
+      return [.off, .auto, .always]
+    }
+
+    cameraPlugin.getSupportedFlashModes { result in
+      switch result {
+      case .success(let modes):
+        XCTAssertEqual(modes, [.off, .auto, .always])
+      case .failure:
+        XCTFail("Unexpected error")
+      }
+      expectation.fulfill()
+    }
+
+    waitForExpectations(timeout: 30, handler: nil)
+  }
 }

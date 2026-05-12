@@ -17,12 +17,21 @@ let package = Package(
   ],
   dependencies: [],
   targets: [
+    // Headers-only C target holding the types shared between the Swift
+    // renderer and the Metal shaders (uniform struct, format constants,
+    // texture slots). The .metal file includes the header by relative path;
+    // Swift imports this module.
+    .target(
+      name: "camera_avfoundation_shader_types",
+      path: "Sources/camera_avfoundation_shader_types"
+    ),
     .target(
       name: "camera_avfoundation",
+      dependencies: ["camera_avfoundation_shader_types"],
       path: "Sources/camera_avfoundation",
       resources: [
         .process("Resources")
       ]
-    )
+    ),
   ]
 )

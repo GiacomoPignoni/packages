@@ -294,12 +294,15 @@ final class CameraSampleBufferTests: XCTestCase {
     }
 
     camera.startVideoRecording(completion: { error in }, messengerForStreaming: nil)
-    var completionCalled = false
+    // The completion is delivered asynchronously: `stopVideoRecording` hops
+    // back to the capture session queue to tear down the writer graph before
+    // reporting the result.
+    let completionExpectation = expectation(description: "Completion was called.")
     camera.stopVideoRecording(completion: { result in
-      completionCalled = true
+      completionExpectation.fulfill()
     })
 
-    XCTAssert(completionCalled, "Completion was not called.")
+    waitForExpectations(timeout: 30, handler: nil)
   }
 
   func testStartWritingShouldNotBeCalledBetweenSampleCreationAndAppending() {

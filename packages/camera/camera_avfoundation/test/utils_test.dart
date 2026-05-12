@@ -25,6 +25,33 @@ void main() {
       );
     });
 
+    test(
+        'cameraDescriptionFromPlatform should pass through equivalentFocalLength',
+        () {
+      final platform = PlatformCameraDescription(
+        name: 'test',
+        lensDirection: PlatformCameraLensDirection.back,
+        lensType: PlatformCameraLensType.wide,
+        equivalentFocalLength: 26.0,
+      );
+      final description = cameraDescriptionFromPlatform(platform);
+
+      expect(description.equivalentFocalLength, 26.0);
+    });
+
+    test(
+        'cameraDescriptionFromPlatform should pass through null equivalentFocalLength',
+        () {
+      final platform = PlatformCameraDescription(
+        name: 'test',
+        lensDirection: PlatformCameraLensDirection.back,
+        lensType: PlatformCameraLensType.wide,
+      );
+      final description = cameraDescriptionFromPlatform(platform);
+
+      expect(description.equivalentFocalLength, null);
+    });
+
     test('serializeDeviceOrientation() should serialize correctly', () {
       expect(
         serializeDeviceOrientation(DeviceOrientation.portraitUp),

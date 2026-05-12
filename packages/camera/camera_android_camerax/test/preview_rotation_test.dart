@@ -6,7 +6,7 @@ import 'package:camera_android_camerax/camera_android_camerax.dart';
 import 'package:camera_android_camerax/src/camerax_library.dart';
 import 'package:camera_platform_interface/camera_platform_interface.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter/widgets.dart' show MatrixUtils, RotatedBox, Texture, Transform;
+import 'package:flutter/widgets.dart' show RotatedBox, Texture;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mockito/mockito.dart';
 
@@ -40,6 +40,23 @@ void main() {
   setUp(() {
     PigeonOverrides.pigeon_reset();
     GenericsPigeonOverrides.reset();
+
+    // `createCameraWithSettings` builds both of these, so without overrides
+    // every test here would block on a platform channel that has no host.
+    final mockEffectsManager = MockCameraEffectsManager();
+    when(mockEffectsManager.getCameraEffect()).thenAnswer((_) async => MockCameraEffect());
+    PigeonOverrides.cameraEffectsManager_new =
+        ({
+          required void Function(CameraEffectsManager, int, int) onPreviewSizeChanged,
+          required void Function(CameraEffectsManager) onPreviewOutputLost,
+          double? aspectRatio,
+        }) => mockEffectsManager;
+    PigeonOverrides.viewPort_new =
+        ({required int aspectRatioWidth, required int aspectRatioHeight, required int rotation}) =>
+            ViewPort.pigeon_detached();
+    PigeonOverrides.whiteBalanceManager_new =
+        ({required void Function(WhiteBalanceManager, double, double) onAutoWhiteBalanceChanged}) =>
+            MockWhiteBalanceManager();
   });
 
   /// Sets up mock CameraSelector and mock ProcessCameraProvider used to
@@ -60,7 +77,9 @@ void main() {
     final mockCamera = MockCamera();
 
     // Mock retrieving available test camera.
-    when(mockProcessCameraProvider.bindToLifecycle(any, any)).thenAnswer((_) async => mockCamera);
+    when(
+      mockProcessCameraProvider.bindToLifecycle(any, any, any, any),
+    ).thenAnswer((_) async => mockCamera);
     when(mockCamera.getCameraInfo()).thenAnswer((_) async => mockCameraInfo);
     when(
       mockProcessCameraProvider.getAvailableCameraInfos(),
@@ -87,7 +106,6 @@ void main() {
     required MockProcessCameraProvider mockProcessCameraProvider,
     required CameraSelector Function({LensFacing? requireLensFacing, dynamic cameraInfoForFilter})
     createCameraSelector,
-    required bool handlesCropAndRotation,
   }) {
     PigeonOverrides.processCameraProvider_getInstance = () async => mockProcessCameraProvider;
     PigeonOverrides.cameraSelector_new = createCameraSelector;
@@ -96,11 +114,9 @@ void main() {
           int? targetRotation,
           CameraIntegerRange? targetFpsRange,
           ResolutionSelector? resolutionSelector,
+          WhiteBalanceManager? whiteBalanceManager,
         }) {
           final preview = MockPreview();
-          when(
-            preview.surfaceProducerHandlesCropAndRotation(),
-          ).thenAnswer((_) async => handlesCropAndRotation);
           when(
             preview.getResolutionInfo(),
           ).thenAnswer((_) async => ResolutionInfo.pigeon_detached(resolution: MockCameraSize()));
@@ -193,7 +209,6 @@ void main() {
     required MockProcessCameraProvider mockProcessCameraProvider,
     required CameraSelector Function({LensFacing? requireLensFacing, dynamic cameraInfoForFilter})
     createCameraSelector,
-    required bool handlesCropAndRotation,
     required Future<String> Function() getUiOrientation,
     required Future<int> Function() getDefaultDisplayRotation,
   }) {
@@ -206,7 +221,6 @@ void main() {
       deviceOrientationManager,
       mockProcessCameraProvider: mockProcessCameraProvider,
       createCameraSelector: createCameraSelector,
-      handlesCropAndRotation: handlesCropAndRotation,
     );
   }
 
@@ -246,65 +260,7 @@ void main() {
   String getExpectedRotationTestFailureReason(int expectedQuarterTurns, int actualQuarterTurns) =>
       'Expected the preview to be rotated by $expectedQuarterTurns quarter turns (which is ${expectedQuarterTurns * 90} degrees clockwise) but instead was rotated $actualQuarterTurns quarter turns.';
 
-  /// Checks that the transform matrix (Matrix4) mirrors across the x-axis by
-  /// confirming the following to be the transformation matrix:
-  /// [[-1.0,  0.0,  0.0,  0.0],
-  ///  [ 0.0,  1.0,  0.0,  0.0],
-  ///  [ 0.0,  0.0,  1.0,  0.0],
-  ///  [ 0.0,  0.0,  0.0,  1.0]]
-  void checkXAxisIsMirrored(Matrix4 transformationMatrix) {
-    final mirrorAcrossXMatrix = Matrix4(
-      -1.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      1.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      1.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      1.0,
-    );
-
-    expect(MatrixUtils.matrixEquals(mirrorAcrossXMatrix, transformationMatrix), isTrue);
-  }
-
-  /// Checks that the transform matrix (Matrix4) mirrors across the y-axis by
-  /// confirming the following to be the transformation matrix:
-  /// [[1.0,  0.0,  0.0,  0.0],
-  ///  [ 0.0,  -1.0,  0.0,  0.0],
-  ///  [ 0.0,  0.0,  1.0,  0.0],
-  ///  [ 0.0,  0.0,  0.0,  1.0]]
-  void checkYAxisIsMirrored(Matrix4 transformationMatrix) {
-    final mirrorAcrossYMatrix = Matrix4(
-      1.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      -1.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      1.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      1.0,
-    );
-
-    expect(MatrixUtils.matrixEquals(mirrorAcrossYMatrix, transformationMatrix), isTrue);
-  }
-
-  group('when handlesCropAndRotation is true', () {
+  group('preview rotation', () {
     // Test that preview rotation responds to initial default display rotation:
     group('initial device orientation is landscapeRight,', () {
       final mockCameraSelector = MockCameraSelector();
@@ -339,12 +295,11 @@ void main() {
       testWidgets(
         'initial default display rotation is 0 degrees clockwise, then the preview Texture is rotation 270 degrees clockwise',
         (WidgetTester tester) async {
-          // Mock calls to CameraXProxy. Most importantly, tell camera that handlesCropAndRotation is true, set initial device
+          // Mock calls to CameraXProxy. Most importantly, set the initial device
           // orientation to landscape right, and set initial default display rotation to 0 degrees clockwise.
           setUpOverridesForCreatingTestCamera(
             mockProcessCameraProvider: mockProcessCameraProvider,
             createCameraSelector: fakeCreateCameraSelector,
-            handlesCropAndRotation: true,
             getUiOrientation: () async => _serializeDeviceOrientation(testInitialDeviceOrientation),
             getDefaultDisplayRotation: () => Future<int>.value(Surface.rotation0),
           );
@@ -388,12 +343,11 @@ void main() {
       testWidgets(
         'initial default display rotation is 90 degrees clockwise, then the preview Texture is rotation 180 degrees clockwise',
         (WidgetTester tester) async {
-          // Mock calls to CameraXProxy. Most importantly, tell camera that handlesCropAndRotation is true, set initial device
+          // Mock calls to CameraXProxy. Most importantly, set the initial device
           // orientation to landscape right, and set initial default display rotation to 90 degrees clockwise.
           setUpOverridesForCreatingTestCamera(
             mockProcessCameraProvider: mockProcessCameraProvider,
             createCameraSelector: fakeCreateCameraSelector,
-            handlesCropAndRotation: true,
             getUiOrientation: () async => _serializeDeviceOrientation(testInitialDeviceOrientation),
             getDefaultDisplayRotation: () => Future<int>.value(Surface.rotation90),
           );
@@ -435,12 +389,11 @@ void main() {
       testWidgets(
         'initial default display rotation is 180 degrees clockwise, then the preview Texture is rotation 90 degrees clockwise',
         (WidgetTester tester) async {
-          // Mock calls to CameraXProxy. Most importantly, tell camera that handlesCropAndRotation is true, set initial device
+          // Mock calls to CameraXProxy. Most importantly, set the initial device
           // orientation to landscape right, and set initial default display rotation to 180 degrees clockwise.
           setUpOverridesForCreatingTestCamera(
             mockProcessCameraProvider: mockProcessCameraProvider,
             createCameraSelector: fakeCreateCameraSelector,
-            handlesCropAndRotation: true,
             getUiOrientation: () async => _serializeDeviceOrientation(testInitialDeviceOrientation),
             getDefaultDisplayRotation: () => Future<int>.value(Surface.rotation180),
           );
@@ -482,12 +435,11 @@ void main() {
       testWidgets(
         'initial default display rotation is 270 degrees clockwise, then the preview Texture is rotation 0 degrees clockwise',
         (WidgetTester tester) async {
-          // Mock calls to CameraXProxy. Most importantly, tell camera that handlesCropAndRotation is true, set initial device
+          // Mock calls to CameraXProxy. Most importantly, set the initial device
           // orientation to landscape right, and set initial default display rotation to 270 degrees clockwise.
           setUpOverridesForCreatingTestCamera(
             mockProcessCameraProvider: mockProcessCameraProvider,
             createCameraSelector: fakeCreateCameraSelector,
-            handlesCropAndRotation: true,
             getUiOrientation: () async => _serializeDeviceOrientation(testInitialDeviceOrientation),
             getDefaultDisplayRotation: () => Future<int>.value(Surface.rotation270),
           );
@@ -562,12 +514,11 @@ void main() {
       testWidgets(
         'initial device orientation is portraitUp, then the preview Texture is rotation 270 degrees clockwise',
         (WidgetTester tester) async {
-          // Mock calls to CameraXProxy. Most importantly, tell camera that handlesCropAndRotation is true, set initial device
+          // Mock calls to CameraXProxy. Most importantly, set the initial device
           // orientation to portrait up, and set initial default display rotation to 90 degrees clockwise.
           setUpOverridesForCreatingTestCamera(
             mockProcessCameraProvider: mockProcessCameraProvider,
             createCameraSelector: fakeCreateCameraSelector,
-            handlesCropAndRotation: true,
             getUiOrientation: () async => _serializeDeviceOrientation(DeviceOrientation.portraitUp),
             getDefaultDisplayRotation: () => Future<int>.value(testInitialDefaultDisplayRotation),
           );
@@ -609,12 +560,11 @@ void main() {
       testWidgets(
         'initial device orientation is landscapeLeft, then the preview Texture is rotation 0 degrees clockwise',
         (WidgetTester tester) async {
-          // Mock calls to CameraXProxy. Most importantly, tell camera that handlesCropAndRotation is true, set initial device
+          // Mock calls to CameraXProxy. Most importantly, set the initial device
           // orientation to landscape left, and set initial default display rotation to 90 degrees clockwise.
           setUpOverridesForCreatingTestCamera(
             mockProcessCameraProvider: mockProcessCameraProvider,
             createCameraSelector: fakeCreateCameraSelector,
-            handlesCropAndRotation: true,
             getUiOrientation: () async =>
                 _serializeDeviceOrientation(DeviceOrientation.landscapeLeft),
             getDefaultDisplayRotation: () => Future<int>.value(testInitialDefaultDisplayRotation),
@@ -657,12 +607,11 @@ void main() {
       testWidgets(
         'initial device orientation is portraitDown, then the preview Texture is rotation 90 degrees clockwise',
         (WidgetTester tester) async {
-          // Mock calls to CameraXProxy. Most importantly, tell camera that handlesCropAndRotation is true, set initial device
+          // Mock calls to CameraXProxy. Most importantly, set the initial device
           // orientation to portrait down, and set initial default display rotation to 90 degrees clockwise.
           setUpOverridesForCreatingTestCamera(
             mockProcessCameraProvider: mockProcessCameraProvider,
             createCameraSelector: fakeCreateCameraSelector,
-            handlesCropAndRotation: true,
             getUiOrientation: () async =>
                 _serializeDeviceOrientation(DeviceOrientation.portraitDown),
             getDefaultDisplayRotation: () => Future<int>.value(testInitialDefaultDisplayRotation),
@@ -705,12 +654,11 @@ void main() {
       testWidgets(
         'initial device orientation is landscapeRight, then the preview Texture is rotation 180 degrees clockwise',
         (WidgetTester tester) async {
-          // Mock calls to CameraXProxy. Most importantly, tell camera that handlesCropAndRotation is true, set initial device
+          // Mock calls to CameraXProxy. Most importantly, set the initial device
           // orientation to landscape right, and set initial default display rotation to 90 degrees clockwise.
           setUpOverridesForCreatingTestCamera(
             mockProcessCameraProvider: mockProcessCameraProvider,
             createCameraSelector: fakeCreateCameraSelector,
-            handlesCropAndRotation: true,
             getUiOrientation: () async =>
                 _serializeDeviceOrientation(DeviceOrientation.landscapeRight),
             getDefaultDisplayRotation: () => Future<int>.value(testInitialDefaultDisplayRotation),
@@ -778,7 +726,7 @@ void main() {
             );
         const testMediaSettings = MediaSettings();
 
-        // Tell camera that handlesCropAndRotation is true, set camera initial device orientation
+        // Set the camera's initial device orientation
         // to portrait down, set initial default display rotation to 0 degrees clockwise.
         final mockDeviceOrientationManager = MockDeviceOrientationManager();
         when(mockDeviceOrientationManager.getUiOrientation()).thenAnswer(
@@ -792,7 +740,6 @@ void main() {
           mockDeviceOrientationManager,
           mockProcessCameraProvider: mockProcessCameraProviderForFrontCamera,
           createCameraSelector: proxyCreateCameraSelectorForFrontCamera,
-          handlesCropAndRotation: true,
         );
 
         // Get and create test front camera.
@@ -874,12 +821,11 @@ void main() {
             );
         const testMediaSettings = MediaSettings();
 
-        // Tell camera that handlesCropAndRotation is true, set camera initial device orientation
+        // Set the camera's initial device orientation
         // to portrait up, set initial default display rotation to 270 degrees clockwise.
         setUpOverridesForCreatingTestCamera(
           mockProcessCameraProvider: mockProcessCameraProviderForFrontCamera,
           createCameraSelector: proxyCreateCameraSelectorForFrontCamera,
-          handlesCropAndRotation: true,
           getUiOrientation: /* initial device orientation is irrelevant */ () async =>
               _serializeDeviceOrientation(DeviceOrientation.portraitUp),
           getDefaultDisplayRotation: () => Future<int>.value(testInitialDefaultDisplayRotation),
@@ -933,1058 +879,78 @@ void main() {
         }
       },
     );
-  });
-
-  group('when handlesCropAndRotation is false,', () {
-    // Test that preview rotation responds to initial device orientation:
-    group(
-      'sensor orientation degrees is 270, camera is front facing, initial default display rotation is 0 degrees clockwise',
-      () {
-        late AndroidCameraCameraX camera;
-        late int cameraId;
-        late MockCameraSelector mockFrontCameraSelector;
-        late MockCameraSelector Function({
-          LensFacing? requireLensFacing,
-          dynamic cameraInfoForFilter,
-        })
-        proxyCreateCameraSelectorForFrontCamera;
-        late MockProcessCameraProvider mockProcessCameraProviderForFrontCamera;
-        late Future<int> Function() proxyGetDefaultDisplayRotation;
-        late MediaSettings testMediaSettings;
-
-        setUp(() {
-          camera = AndroidCameraCameraX();
-          cameraId = 27;
-
-          // Create and set up mock CameraSelector and mock ProcessCameraProvider for test front camera
-          // with sensor orientation degrees 270. Also, set up function to mock initial default display
-          // of 0.
-          mockFrontCameraSelector = MockCameraSelector();
-          proxyCreateCameraSelectorForFrontCamera = createCameraSelectorForFrontCamera(
-            mockFrontCameraSelector,
-          );
-          mockProcessCameraProviderForFrontCamera =
-              setUpMockCameraSelectorAndMockProcessCameraProviderForSelectingTestCamera(
-                mockCameraSelector: mockFrontCameraSelector,
-                sensorRotationDegrees: 270,
-                isCameraFrontFacing: true,
-              );
-          proxyGetDefaultDisplayRotation = () => Future<int>.value(Surface.rotation0);
-
-          // Media settings to create camera; irrelevant for test.
-          testMediaSettings = const MediaSettings();
-        });
-
-        testWidgets(
-          'initial device orientation fixed to DeviceOrientation.portraitUp, then the preview Texture is rotated 270 degrees clockwise',
-          (WidgetTester tester) async {
-            // Set up test to use front camera, tell camera that handlesCropAndRotation is false,
-            // set camera initial device orientation to portrait up.
-            setUpOverridesForCreatingTestCamera(
-              mockProcessCameraProvider: mockProcessCameraProviderForFrontCamera,
-              createCameraSelector: proxyCreateCameraSelectorForFrontCamera,
-              getDefaultDisplayRotation: proxyGetDefaultDisplayRotation,
-              handlesCropAndRotation: false,
-              getUiOrientation: () async =>
-                  _serializeDeviceOrientation(DeviceOrientation.portraitUp),
-            );
-
-            // Get and create test front camera.
-            final List<CameraDescription> availableCameras = await camera.availableCameras();
-            expect(availableCameras.length, 1);
-            final int flutterSurfaceTextureId = await camera.createCameraWithSettings(
-              availableCameras.first,
-              testMediaSettings,
-            );
-            await camera.initializeCamera(flutterSurfaceTextureId);
-
-            // Put camera preview in widget tree and pump one frame so that Future to retrieve
-            // the initial default display rotation completes.
-            await tester.pumpWidget(camera.buildPreview(cameraId));
-            await tester.pump();
-
-            // Verify Texture is rotated by ((270 - 0 * 1 + 360) % 360) - 0 = 270 degrees.
-            const int expectedQuarterTurns = _270DegreesClockwise;
-            final RotatedBox rotatedBox = tester.widget<RotatedBox>(find.byType(RotatedBox));
-
-            // We expect a Transform widget to wrap the RotatedBox with the camera
-            // preview to mirror the preview, since the front camera is being
-            // used.
-            expect(rotatedBox.child, isA<Transform>());
-
-            final transformedPreview = rotatedBox.child! as Transform;
-            final Matrix4 transformedPreviewMatrix = transformedPreview.transform;
-
-            // Since the front camera is in portrait mode, we expect the camera
-            // preview to be mirrored across the y-axis.
-            checkYAxisIsMirrored(transformedPreviewMatrix);
-            expect((transformedPreview.child! as Texture).textureId, cameraId);
-            expect(
-              rotatedBox.quarterTurns,
-              expectedQuarterTurns,
-              reason: getExpectedRotationTestFailureReason(
-                expectedQuarterTurns,
-                rotatedBox.quarterTurns,
-              ),
-            );
-          },
-        );
-
-        testWidgets(
-          'initial device orientation fixed to DeviceOrientation.landscapeRight, then the preview Texture is rotated 180 degrees clockwise',
-          (WidgetTester tester) async {
-            // Set up test to use front camera, tell camera that handlesCropAndRotation is false,
-            // set camera initial device orientation to landscape right.
-            setUpOverridesForCreatingTestCamera(
-              mockProcessCameraProvider: mockProcessCameraProviderForFrontCamera,
-              createCameraSelector: proxyCreateCameraSelectorForFrontCamera,
-              getDefaultDisplayRotation: proxyGetDefaultDisplayRotation,
-              handlesCropAndRotation: false,
-              getUiOrientation: () async =>
-                  _serializeDeviceOrientation(DeviceOrientation.landscapeRight),
-            );
-
-            // Get and create test front camera.
-            final List<CameraDescription> availableCameras = await camera.availableCameras();
-            expect(availableCameras.length, 1);
-            final int flutterSurfaceTextureId = await camera.createCameraWithSettings(
-              availableCameras.first,
-              testMediaSettings,
-            );
-            await camera.initializeCamera(flutterSurfaceTextureId);
-
-            // Put camera preview in widget tree and pump one frame so that Future to retrieve
-            // the initial default display rotation completes.
-            await tester.pumpWidget(camera.buildPreview(cameraId));
-            await tester.pump();
-
-            // Verify Texture is rotated by ((270 - 0 * 1 + 360) % 360) - 90 = 180 degrees.
-            const int expectedQuarterTurns = _180DegreesClockwise;
-            final RotatedBox rotatedBox = tester.widget<RotatedBox>(find.byType(RotatedBox));
-
-            // We expect a Transform widget to wrap the RotatedBox with the camera
-            // preview to mirror the preview, since the front camera is being
-            // used.
-            expect(rotatedBox.child, isA<Transform>());
-
-            final transformedPreview = rotatedBox.child! as Transform;
-            final Matrix4 transformedPreviewMatrix = transformedPreview.transform;
-
-            // Since the front camera is in landscape mode, we expect the camera
-            // preview to be mirrored across the x-axis.
-            checkXAxisIsMirrored(transformedPreviewMatrix);
-            expect((transformedPreview.child! as Texture).textureId, cameraId);
-            expect(
-              rotatedBox.quarterTurns,
-              expectedQuarterTurns,
-              reason: getExpectedRotationTestFailureReason(
-                expectedQuarterTurns,
-                rotatedBox.quarterTurns,
-              ),
-            );
-          },
-        );
-
-        testWidgets(
-          'initial device orientation fixed to DeviceOrientation.portraitDown, then the preview Texture is rotated 90 degrees clockwise',
-          (WidgetTester tester) async {
-            // Set up test to use front camera, tell camera that handlesCropAndRotation is false,
-            // set camera initial device orientation to portrait down.
-            setUpOverridesForCreatingTestCamera(
-              mockProcessCameraProvider: mockProcessCameraProviderForFrontCamera,
-              createCameraSelector: proxyCreateCameraSelectorForFrontCamera,
-              getDefaultDisplayRotation: proxyGetDefaultDisplayRotation,
-              handlesCropAndRotation: false,
-              getUiOrientation: () async =>
-                  _serializeDeviceOrientation(DeviceOrientation.portraitDown),
-            );
-
-            // Get and create test front camera.
-            final List<CameraDescription> availableCameras = await camera.availableCameras();
-            expect(availableCameras.length, 1);
-            final int flutterSurfaceTextureId = await camera.createCameraWithSettings(
-              availableCameras.first,
-              testMediaSettings,
-            );
-            await camera.initializeCamera(flutterSurfaceTextureId);
-
-            // Put camera preview in widget tree and pump one frame so that Future to retrieve
-            // the initial default display rotation completes.
-            await tester.pumpWidget(camera.buildPreview(cameraId));
-            await tester.pump();
-
-            // Verify Texture is rotated by ((270 - 0 * 1 + 360) % 360) - 180 = 90 degrees clockwise.
-            const int expectedQuarterTurns = _90DegreesClockwise;
-            final RotatedBox rotatedBox = tester.widget<RotatedBox>(find.byType(RotatedBox));
-
-            // We expect a Transform widget to wrap the RotatedBox with the camera
-            // preview to mirror the preview, since the front camera is being
-            // used.
-            expect(rotatedBox.child, isA<Transform>());
-
-            final transformedPreview = rotatedBox.child! as Transform;
-            final Matrix4 transformedPreviewMatrix = transformedPreview.transform;
-
-            // Since the front camera is in portrait mode, we expect the camera
-            // preview to be mirrored across the y-axis.
-            checkYAxisIsMirrored(transformedPreviewMatrix);
-            expect((transformedPreview.child! as Texture).textureId, cameraId);
-            expect(
-              rotatedBox.quarterTurns,
-              expectedQuarterTurns,
-              reason: getExpectedRotationTestFailureReason(
-                expectedQuarterTurns,
-                rotatedBox.quarterTurns,
-              ),
-            );
-          },
-        );
-
-        testWidgets(
-          'initial device orientation fixed to DeviceOrientation.landscapeLeft, then the preview Texture is rotated 0 degrees clockwise',
-          (WidgetTester tester) async {
-            // Set up test to use front camera, tell camera that handlesCropAndRotation is false,
-            // set camera initial device orientation to landscape left.
-            setUpOverridesForCreatingTestCamera(
-              mockProcessCameraProvider: mockProcessCameraProviderForFrontCamera,
-              createCameraSelector: proxyCreateCameraSelectorForFrontCamera,
-              getDefaultDisplayRotation: proxyGetDefaultDisplayRotation,
-              handlesCropAndRotation: false,
-              getUiOrientation: () async =>
-                  _serializeDeviceOrientation(DeviceOrientation.landscapeLeft),
-            );
-
-            // Get and create test front camera.
-            final List<CameraDescription> availableCameras = await camera.availableCameras();
-            expect(availableCameras.length, 1);
-            final int flutterSurfaceTextureId = await camera.createCameraWithSettings(
-              availableCameras.first,
-              testMediaSettings,
-            );
-            await camera.initializeCamera(flutterSurfaceTextureId);
-
-            // Put camera preview in widget tree and pump one frame so that Future to retrieve
-            // the initial default display rotation completes.
-            await tester.pumpWidget(camera.buildPreview(cameraId));
-            await tester.pump();
-
-            // Verify Texture is rotated by ((270 - 0 * 1 + 360) % 360) - 270 = 0 degrees clockwise.
-            const int expectedQuarterTurns = _0DegreesClockwise;
-            final RotatedBox rotatedBox = tester.widget<RotatedBox>(find.byType(RotatedBox));
-
-            // We expect a Transform widget to wrap the RotatedBox with the camera
-            // preview to mirror the preview, since the front camera is being
-            // used.
-            expect(rotatedBox.child, isA<Transform>());
-
-            final transformedPreview = rotatedBox.child! as Transform;
-            final Matrix4 transformedPreviewMatrix = transformedPreview.transform;
-
-            // Since the front camera is in landscape mode, we expect the camera
-            // preview to be mirrored across the x-axis.
-            checkXAxisIsMirrored(transformedPreviewMatrix);
-            expect((transformedPreview.child! as Texture).textureId, cameraId);
-            expect(
-              rotatedBox.quarterTurns,
-              expectedQuarterTurns,
-              reason: getExpectedRotationTestFailureReason(
-                expectedQuarterTurns,
-                rotatedBox.quarterTurns,
-              ),
-            );
-          },
-        );
-      },
-    );
-
-    // Test that preview rotation responds to initial default display rotation:
-    group(
-      'initial device orientation fixed to DeviceOrientation.landscapeLeft, sensor orientation degrees is 270, camera is front facing,',
-      () {
-        late AndroidCameraCameraX camera;
-        late int cameraId;
-        late MockCameraSelector mockFrontCameraSelector;
-        late MockProcessCameraProvider mockProcessCameraProviderForFrontCamera;
-        late MockCameraSelector Function({
-          LensFacing? requireLensFacing,
-          dynamic cameraInfoForFilter,
-        })
-        proxyCreateCameraSelectorForFrontCamera;
-        late Future<String> Function() proxyGetUiOrientation;
-        late MediaSettings testMediaSettings;
-
-        setUp(() {
-          camera = AndroidCameraCameraX();
-          cameraId = 48;
-
-          // Create and set up mock CameraSelector and mock ProcessCameraProvider for test front camera
-          // with sensor orientation degrees 270. Also, set up function to mock initial default display
-          // of 0.
-          mockFrontCameraSelector = MockCameraSelector();
-          proxyCreateCameraSelectorForFrontCamera = createCameraSelectorForFrontCamera(
-            mockFrontCameraSelector,
-          );
-          mockProcessCameraProviderForFrontCamera =
-              setUpMockCameraSelectorAndMockProcessCameraProviderForSelectingTestCamera(
-                mockCameraSelector: mockFrontCameraSelector,
-                sensorRotationDegrees: 270,
-                isCameraFrontFacing: true,
-              );
-          proxyGetUiOrientation = () async =>
-              _serializeDeviceOrientation(DeviceOrientation.landscapeLeft);
-
-          // Media settings to create camera; irrelevant for test.
-          testMediaSettings = const MediaSettings();
-        });
-
-        testWidgets(
-          'initial default display rotation is 0 degrees, then the preview Texture is rotated 0 degrees clockwise',
-          (WidgetTester tester) async {
-            // Set up test to use front camera, tell camera that handlesCropAndRotation is false,
-            // set camera initial default display rotation to 0 degrees.
-            setUpOverridesForCreatingTestCamera(
-              mockProcessCameraProvider: mockProcessCameraProviderForFrontCamera,
-              createCameraSelector: proxyCreateCameraSelectorForFrontCamera,
-              getDefaultDisplayRotation: () => Future<int>.value(Surface.rotation0),
-              handlesCropAndRotation: false,
-              getUiOrientation: proxyGetUiOrientation,
-            );
-
-            // Get and create test front camera.
-            final List<CameraDescription> availableCameras = await camera.availableCameras();
-            expect(availableCameras.length, 1);
-            final int flutterSurfaceTextureId = await camera.createCameraWithSettings(
-              availableCameras.first,
-              testMediaSettings,
-            );
-            await camera.initializeCamera(flutterSurfaceTextureId);
-
-            // Put camera preview in widget tree and pump one frame so that Future to retrieve
-            // the initial default display rotation completes.
-            await tester.pumpWidget(camera.buildPreview(cameraId));
-            await tester.pump();
-
-            // Verify Texture is rotated by ((270 - 0 * 1 + 360) % 360) - 270 = 0 degrees.
-            const int expectedQuarterTurns = _0DegreesClockwise;
-            final RotatedBox rotatedBox = tester.widget<RotatedBox>(find.byType(RotatedBox));
-
-            // We expect a Transform widget to wrap the RotatedBox with the camera
-            // preview to mirror the preview, since the front camera is being
-            // used.
-            expect(rotatedBox.child, isA<Transform>());
-
-            final transformedPreview = rotatedBox.child! as Transform;
-            final Matrix4 transformedPreviewMatrix = transformedPreview.transform;
-
-            // Since the front camera is in landscape mode, we expect the camera
-            // preview to be mirrored across the x-axis.
-            checkXAxisIsMirrored(transformedPreviewMatrix);
-            expect((transformedPreview.child! as Texture).textureId, cameraId);
-            expect(
-              rotatedBox.quarterTurns,
-              expectedQuarterTurns,
-              reason: getExpectedRotationTestFailureReason(
-                expectedQuarterTurns,
-                rotatedBox.quarterTurns,
-              ),
-            );
-          },
-        );
-
-        testWidgets(
-          'initial default display rotation is 90 degrees, then the preview Texture is rotated 90 degrees clockwise',
-          (WidgetTester tester) async {
-            // Set up test to use front camera, tell camera that handlesCropAndRotation is false,
-            // set camera initial default display rotation to 0 degrees.
-            setUpOverridesForCreatingTestCamera(
-              mockProcessCameraProvider: mockProcessCameraProviderForFrontCamera,
-              createCameraSelector: proxyCreateCameraSelectorForFrontCamera,
-              getDefaultDisplayRotation: () => Future<int>.value(Surface.rotation90),
-              handlesCropAndRotation: false,
-              getUiOrientation: proxyGetUiOrientation,
-            );
-
-            // Get and create test front camera.
-            final List<CameraDescription> availableCameras = await camera.availableCameras();
-            expect(availableCameras.length, 1);
-            final int flutterSurfaceTextureId = await camera.createCameraWithSettings(
-              availableCameras.first,
-              testMediaSettings,
-            );
-            await camera.initializeCamera(flutterSurfaceTextureId);
-
-            // Put camera preview in widget tree and pump one frame so that Future to retrieve
-            // the initial default display rotation completes.
-            await tester.pumpWidget(camera.buildPreview(cameraId));
-            await tester.pump();
-
-            // Verify Texture is rotated by ((270 - 270 * 1 + 360) % 360) - 270 = -270 degrees clockwise = 90 degrees clockwise.
-            // 270 is used in this calculation for the device orientation because it is the counter-clockwise degrees of the
-            // default display rotation.
-            const int expectedQuarterTurns = _90DegreesClockwise;
-            final RotatedBox rotatedBox = tester.widget<RotatedBox>(find.byType(RotatedBox));
-
-            // We expect a Transform widget to wrap the RotatedBox with the camera
-            // preview to mirror the preview, since the front camera is being
-            // used.
-            expect(rotatedBox.child, isA<Transform>());
-
-            final transformedPreview = rotatedBox.child! as Transform;
-            final Matrix4 transformedPreviewMatrix = transformedPreview.transform;
-
-            // Since the front camera is in landscape mode, we expect the camera
-            // preview to be mirrored across the x-axis.
-            checkXAxisIsMirrored(transformedPreviewMatrix);
-            expect((transformedPreview.child! as Texture).textureId, cameraId);
-
-            final int clockwiseQuarterTurns = rotatedBox.quarterTurns + 4;
-            expect(
-              clockwiseQuarterTurns,
-              expectedQuarterTurns,
-              reason: getExpectedRotationTestFailureReason(
-                expectedQuarterTurns,
-                rotatedBox.quarterTurns,
-              ),
-            );
-          },
-        );
-
-        testWidgets(
-          'initial default display rotation is 180 degrees, then the preview Texture is rotated 180 degrees clockwise',
-          (WidgetTester tester) async {
-            // Set up test to use front camera, tell camera that handlesCropAndRotation is false,
-            // set camera initial default display rotation to 0 degrees.
-            setUpOverridesForCreatingTestCamera(
-              mockProcessCameraProvider: mockProcessCameraProviderForFrontCamera,
-              createCameraSelector: proxyCreateCameraSelectorForFrontCamera,
-              getDefaultDisplayRotation: () => Future<int>.value(Surface.rotation180),
-              handlesCropAndRotation: false,
-              getUiOrientation: proxyGetUiOrientation,
-            );
-
-            // Get and create test front camera.
-            final List<CameraDescription> availableCameras = await camera.availableCameras();
-            expect(availableCameras.length, 1);
-            final int flutterSurfaceTextureId = await camera.createCameraWithSettings(
-              availableCameras.first,
-              testMediaSettings,
-            );
-            await camera.initializeCamera(flutterSurfaceTextureId);
-
-            // Put camera preview in widget tree and pump one frame so that Future to retrieve
-            // the initial default display rotation completes.
-            await tester.pumpWidget(camera.buildPreview(cameraId));
-            await tester.pump();
-
-            // Verify Texture is rotated by ((270 - 180 * 1 + 360) % 360) - 270 = -180 degrees clockwise = 180 degrees clockwise.
-            const int expectedQuarterTurns = _180DegreesClockwise;
-            final RotatedBox rotatedBox = tester.widget<RotatedBox>(find.byType(RotatedBox));
-
-            // We expect a Transform widget to wrap the RotatedBox with the camera
-            // preview to mirror the preview, since the front camera is being
-            // used.
-            expect(rotatedBox.child, isA<Transform>());
-
-            final transformedPreview = rotatedBox.child! as Transform;
-            final Matrix4 transformedPreviewMatrix = transformedPreview.transform;
-
-            // Since the front camera is in landscape mode, we expect the camera
-            // preview to be mirrored across the x-axis.
-            checkXAxisIsMirrored(transformedPreviewMatrix);
-            expect((transformedPreview.child! as Texture).textureId, cameraId);
-
-            final int clockwiseQuarterTurns = rotatedBox.quarterTurns + 4;
-            expect(
-              clockwiseQuarterTurns,
-              expectedQuarterTurns,
-              reason: getExpectedRotationTestFailureReason(
-                expectedQuarterTurns,
-                rotatedBox.quarterTurns,
-              ),
-            );
-          },
-        );
-
-        testWidgets(
-          'initial default display rotation is 270 degrees, then the preview Texture is rotated 270 degrees clockwise',
-          (WidgetTester tester) async {
-            // Set up test to use front camera, tell camera that handlesCropAndRotation is false,
-            // set camera initial default display rotation to 0 degrees.
-            setUpOverridesForCreatingTestCamera(
-              mockProcessCameraProvider: mockProcessCameraProviderForFrontCamera,
-              createCameraSelector: proxyCreateCameraSelectorForFrontCamera,
-              getDefaultDisplayRotation: () => Future<int>.value(Surface.rotation270),
-              handlesCropAndRotation: false,
-              getUiOrientation: proxyGetUiOrientation,
-            );
-
-            // Get and create test front camera.
-            final List<CameraDescription> availableCameras = await camera.availableCameras();
-            expect(availableCameras.length, 1);
-            final int flutterSurfaceTextureId = await camera.createCameraWithSettings(
-              availableCameras.first,
-              testMediaSettings,
-            );
-            await camera.initializeCamera(flutterSurfaceTextureId);
-
-            // Put camera preview in widget tree and pump one frame so that Future to retrieve
-            // the initial default display rotation completes.
-            await tester.pumpWidget(camera.buildPreview(cameraId));
-            await tester.pump();
-
-            // Verify Texture is rotated by ((270 - 90 * 1 + 360) % 360) - 270 = -90 degrees clockwise = 270 degrees clockwise.
-            // 90 is used in this calculation for the device orientation because it is the counter-clockwise degrees of the
-            // default display rotation.
-            const int expectedQuarterTurns = _270DegreesClockwise;
-            final RotatedBox rotatedBox = tester.widget<RotatedBox>(find.byType(RotatedBox));
-
-            // We expect a Transform widget to wrap the RotatedBox with the camera
-            // preview to mirror the preview, since the front camera is being
-            // used.
-            expect(rotatedBox.child, isA<Transform>());
-
-            final transformedPreview = rotatedBox.child! as Transform;
-            final Matrix4 transformedPreviewMatrix = transformedPreview.transform;
-
-            // Since the front camera is in landscape mode, we expect the camera
-            // preview to be mirrored across the x-axis.
-            checkXAxisIsMirrored(transformedPreviewMatrix);
-            expect((transformedPreview.child! as Texture).textureId, cameraId);
-
-            final int clockwiseQuarterTurns = rotatedBox.quarterTurns + 4;
-            expect(
-              clockwiseQuarterTurns,
-              expectedQuarterTurns,
-              reason: getExpectedRotationTestFailureReason(
-                expectedQuarterTurns,
-                rotatedBox.quarterTurns,
-              ),
-            );
-          },
-        );
-      },
-    );
-
-    // Test that preview widgets responds as expected to the default display rotation changing:
-    testWidgets(
-      'device orientation is landscapeRight, sensor orientation degrees is 270, camera is front facing, then the preview Texture rotates correctly as the default display rotation changes',
-      (WidgetTester tester) async {
+    // The render path owns sensor orientation and front-camera mirroring: the
+    // shader writes an upright, already-mirrored frame because
+    // `_previewTargetRotation` asks CameraX for the display's natural
+    // orientation. So the preview correction is the display rotation and
+    // nothing else, and must come out the same for every camera whatever its
+    // lens direction and however its sensor is mounted. Previously the front
+    // camera took a different formula here and came out 180 degrees off.
+    group('is the same for every camera,', () {
+      const DeviceOrientation testInitialDeviceOrientation = DeviceOrientation.portraitUp;
+      const int expectedQuarterTurns = _90DegreesClockwise;
+
+      Future<int> buildPreviewQuarterTurns(
+        WidgetTester tester, {
+        required bool isFrontFacing,
+        required int sensorRotationDegrees,
+      }) async {
         final camera = AndroidCameraCameraX();
-        const cameraId = 11;
-        const DeviceOrientation testDeviceOrientation = DeviceOrientation.landscapeRight;
-
-        // Create and set up mock front camera CameraSelector, mock ProcessCameraProvider, 270 degree sensor orientation,
-        // media settings for test front camera.
-        final mockFrontCameraSelector = MockCameraSelector();
-        final MockCameraSelector Function({
-          LensFacing? requireLensFacing,
-          dynamic cameraInfoForFilter,
-        })
-        proxyCreateCameraSelectorForFrontCamera = createCameraSelectorForFrontCamera(
-          mockFrontCameraSelector,
-        );
-        final MockProcessCameraProvider mockProcessCameraProviderForFrontCamera =
+        const cameraId = 7;
+        final mockCameraSelector = MockCameraSelector();
+        final MockProcessCameraProvider mockProcessCameraProvider =
             setUpMockCameraSelectorAndMockProcessCameraProviderForSelectingTestCamera(
-              mockCameraSelector: mockFrontCameraSelector,
-              sensorRotationDegrees: 270,
-              isCameraFrontFacing: true,
-            );
-        const testMediaSettings = MediaSettings();
-
-        // Tell camera that handlesCropAndRotation is true, set camera initial device orientation
-        // to portrait down, set initial default display rotation to 0 degrees clockwise.
-        final mockDeviceOrientationManager = MockDeviceOrientationManager();
-        when(mockDeviceOrientationManager.getUiOrientation()).thenAnswer(
-          (_) => Future<String>.value(_serializeDeviceOrientation(testDeviceOrientation)),
-        );
-        when(
-          mockDeviceOrientationManager.getDefaultDisplayRotation(),
-        ).thenAnswer((_) => Future<int>.value(Surface.rotation0));
-        setUpOverridesForCreatingTestCameraWithDeviceOrientationManager(
-          mockDeviceOrientationManager,
-          mockProcessCameraProvider: mockProcessCameraProviderForFrontCamera,
-          createCameraSelector: proxyCreateCameraSelectorForFrontCamera,
-          handlesCropAndRotation: false,
-        );
-
-        // Get and create test front camera.
-        final List<CameraDescription> availableCameras = await camera.availableCameras();
-        expect(availableCameras.length, 1);
-        final int flutterSurfaceTextureId = await camera.createCameraWithSettings(
-          availableCameras.first,
-          testMediaSettings,
-        );
-        await camera.initializeCamera(flutterSurfaceTextureId);
-
-        // Calculated according to: ((270 - counterClockwiseDefaultDisplayRotation * 1 + 360) % 360) - 90.
-        // 90 is used in this calculation for the CameraPreview pre-applied rotation because it is the
-        // rotation that the CameraPreview widget aapplies based on the landscape right device orientation.
-        final expectedRotationPerDefaultDisplayRotation = <int, int>{
-          Surface.rotation0: _180DegreesClockwise,
-          Surface.rotation90: _270DegreesClockwise,
-          Surface.rotation180: _0DegreesClockwise,
-          Surface.rotation270: _90DegreesClockwise,
-        };
-
-        // Put camera preview in widget tree.
-        await tester.pumpWidget(camera.buildPreview(cameraId));
-
-        for (final int currentDefaultDisplayRotation
-            in expectedRotationPerDefaultDisplayRotation.keys) {
-          // Modify CameraXProxy to return the default display rotation we want to test.
-          when(
-            mockDeviceOrientationManager.getDefaultDisplayRotation(),
-          ).thenAnswer((_) async => currentDefaultDisplayRotation);
-
-          const testEvent = DeviceOrientationChangedEvent(testDeviceOrientation);
-          AndroidCameraCameraX.deviceOrientationChangedStreamController.add(testEvent);
-
-          await tester.pumpAndSettle();
-
-          // Verify Texture is rotated by expected clockwise degrees.
-          final int expectedQuarterTurns =
-              expectedRotationPerDefaultDisplayRotation[currentDefaultDisplayRotation]!;
-          final RotatedBox rotatedBox = tester.widget<RotatedBox>(find.byType(RotatedBox));
-
-          // We expect a Transform widget to wrap the RotatedBox with the camera
-          // preview to mirror the preview, since the front camera is being
-          // used.
-          expect(rotatedBox.child, isA<Transform>());
-
-          final transformedPreview = rotatedBox.child! as Transform;
-          final Matrix4 transformedPreviewMatrix = transformedPreview.transform;
-
-          // Since the front camera is in landscape mode, we expect the camera
-          // preview to be mirrored across the x-axis.
-          checkXAxisIsMirrored(transformedPreviewMatrix);
-          expect((transformedPreview.child! as Texture).textureId, cameraId);
-
-          final int clockwiseQuarterTurns = rotatedBox.quarterTurns < 0
-              ? rotatedBox.quarterTurns + 4
-              : rotatedBox.quarterTurns;
-          expect(
-            clockwiseQuarterTurns,
-            expectedQuarterTurns,
-            reason:
-                'When the default display rotation is $currentDefaultDisplayRotation, expected the preview to be rotated by $expectedQuarterTurns quarter turns (which is ${expectedQuarterTurns * 90} degrees clockwise) but instead was rotated ${rotatedBox.quarterTurns} quarter turns.',
-          );
-        }
-      },
-    );
-
-    // Test that preview widgets responds as expected to the device orientation changing:
-    testWidgets(
-      'default display rotation is 90, sensor orientation degrees is 90, camera is front facing, then the preview Texture rotates correctly as the device orientation rotates',
-      (WidgetTester tester) async {
-        final camera = AndroidCameraCameraX();
-        const cameraId = 3372;
-
-        // Create and set up mock CameraSelector and mock ProcessCameraProvider for test front camera
-        // with sensor orientation degrees 90.
-        final mockFrontCameraSelector = MockCameraSelector();
-        final MockCameraSelector Function({
-          LensFacing? requireLensFacing,
-          dynamic cameraInfoForFilter,
-        })
-        proxyCreateCameraSelectorForFrontCamera = createCameraSelectorForFrontCamera(
-          mockFrontCameraSelector,
-        );
-        final MockProcessCameraProvider mockProcessCameraProviderForFrontCamera =
-            setUpMockCameraSelectorAndMockProcessCameraProviderForSelectingTestCamera(
-              mockCameraSelector: mockFrontCameraSelector,
-              sensorRotationDegrees: 90,
-              isCameraFrontFacing: true,
+              mockCameraSelector: mockCameraSelector,
+              sensorRotationDegrees: sensorRotationDegrees,
+              isCameraFrontFacing: isFrontFacing,
             );
 
-        // Media settings to create camera; irrelevant for test.
-        const testMediaSettings = MediaSettings();
-
-        // Set up test to use front camera and tell camera that handlesCropAndRotation is false,
-        // set camera initial device orientation to landscape left, set initial default display
-        // rotation to 90 degrees clockwise.
         setUpOverridesForCreatingTestCamera(
-          mockProcessCameraProvider: mockProcessCameraProviderForFrontCamera,
-          createCameraSelector: proxyCreateCameraSelectorForFrontCamera,
-          handlesCropAndRotation: false,
-          getUiOrientation: /* initial device orientation irrelevant for test */ () async =>
-              _serializeDeviceOrientation(DeviceOrientation.landscapeLeft),
-          getDefaultDisplayRotation: () => Future<int>.value(Surface.rotation90),
+          mockProcessCameraProvider: mockProcessCameraProvider,
+          createCameraSelector: isFrontFacing
+              ? createCameraSelectorForFrontCamera(mockCameraSelector)
+              : createCameraSelectorForBackCamera(mockCameraSelector),
+          getUiOrientation: () async => _serializeDeviceOrientation(testInitialDeviceOrientation),
+          getDefaultDisplayRotation: () => Future<int>.value(Surface.rotation270),
         );
 
-        // Get and create test front camera.
         final List<CameraDescription> availableCameras = await camera.availableCameras();
-        expect(availableCameras.length, 1);
         final int flutterSurfaceTextureId = await camera.createCameraWithSettings(
           availableCameras.first,
-          testMediaSettings,
+          const MediaSettings(),
         );
         await camera.initializeCamera(flutterSurfaceTextureId);
 
-        // Calculated according to: ((90 - 270 * 1 + 360) % 360) - cameraPreviewPreAppliedRotation.
-        // 270 is used in this calculation for the device orientation because it is the
-        // counter-clockwise degrees of the default display rotation.
-        final expectedRotationPerDeviceOrientation = <DeviceOrientation, int>{
-          DeviceOrientation.portraitUp: _180DegreesClockwise,
-          DeviceOrientation.landscapeRight: _90DegreesClockwise,
-          DeviceOrientation.portraitDown: _0DegreesClockwise,
-          DeviceOrientation.landscapeLeft: _270DegreesClockwise,
-        };
-
-        // Put camera preview in widget tree.
         await tester.pumpWidget(camera.buildPreview(cameraId));
+        await tester.pump();
 
-        for (final DeviceOrientation currentDeviceOrientation
-            in expectedRotationPerDeviceOrientation.keys) {
-          final testEvent = DeviceOrientationChangedEvent(currentDeviceOrientation);
-          AndroidCameraCameraX.deviceOrientationChangedStreamController.add(testEvent);
+        final RotatedBox rotatedBox = tester.widget<RotatedBox>(find.byType(RotatedBox));
+        // No mirroring wrapper either: CameraX has already mirrored a
+        // front-facing frame, so mirroring again here would undo it.
+        expect((rotatedBox.child! as Texture).textureId, cameraId);
+        return rotatedBox.quarterTurns < 0 ? rotatedBox.quarterTurns + 4 : rotatedBox.quarterTurns;
+      }
 
-          await tester.pumpAndSettle();
-
-          // Verify Texture is rotated by expected clockwise degrees.
-          final int expectedQuarterTurns =
-              expectedRotationPerDeviceOrientation[currentDeviceOrientation]!;
-          final RotatedBox rotatedBox = tester.widget<RotatedBox>(find.byType(RotatedBox));
-
-          // We expect a Transform widget to wrap the RotatedBox with the camera
-          // preview to mirror the preview, since the front camera is being
-          // used.
-          expect(rotatedBox.child, isA<Transform>());
-
-          final transformedPreview = rotatedBox.child! as Transform;
-          final Matrix4 transformedPreviewMatrix = transformedPreview.transform;
-
-          // When the front camera is in landscape mode, we expect the camera
-          // preview to be mirrored across the x-axis. When the front camera
-          // is in portrait mode, we expect the camera preview to be mirrored
-          // across the y-axis.
-          if (currentDeviceOrientation == DeviceOrientation.landscapeLeft ||
-              currentDeviceOrientation == DeviceOrientation.landscapeRight) {
-            checkXAxisIsMirrored(transformedPreviewMatrix);
-          } else {
-            checkYAxisIsMirrored(transformedPreviewMatrix);
-          }
-          expect((transformedPreview.child! as Texture).textureId, cameraId);
-          final int clockwiseQuarterTurns = rotatedBox.quarterTurns < 0
-              ? rotatedBox.quarterTurns + 4
-              : rotatedBox.quarterTurns;
-          expect(
-            clockwiseQuarterTurns,
-            expectedQuarterTurns,
-            reason:
-                'When the device orientation is $currentDeviceOrientation, expected the preview to be rotated by $expectedQuarterTurns quarter turns (which is ${expectedQuarterTurns * 90} degrees clockwise) but instead was rotated ${rotatedBox.quarterTurns} quarter turns.',
-          );
-        }
-      },
-    );
-
-    // Test the preview rotation responds to the two most common sensor orientations for Android phone cameras; see
-    // https://developer.android.com/media/camera/camera2/camera-preview#camera_orientation.
-    group(
-      'initial device orientation is DeviceOrientation.landscapeLeft, initial default display rotation is 90, camera is back facing,',
-      () {
-        late AndroidCameraCameraX camera;
-        late int cameraId;
-        late MockCameraSelector mockBackCameraSelector;
-        late MockCameraSelector Function({
-          LensFacing? requireLensFacing,
-          dynamic cameraInfoForFilter,
-        })
-        proxyCreateCameraSelectorForBackCamera;
-        late Future<int> Function() proxyGetDefaultDisplayRotation;
-        late MediaSettings testMediaSettings;
-        late DeviceOrientation testInitialDeviceOrientation;
-
-        setUp(() {
-          camera = AndroidCameraCameraX();
-          cameraId = 347;
-
-          // Set test camera initial device orientation for test.
-          testInitialDeviceOrientation = DeviceOrientation.landscapeLeft;
-
-          // Create and set up mock CameraSelector and mock ProcessCameraProvider for test back camera
-          // with sensor orientation degrees 270.
-          mockBackCameraSelector = MockCameraSelector();
-          proxyCreateCameraSelectorForBackCamera = createCameraSelectorForBackCamera(
-            mockBackCameraSelector,
-          );
-          proxyGetDefaultDisplayRotation = () => Future<int>.value(Surface.rotation270);
-
-          testMediaSettings = const MediaSettings();
-        });
-
-        testWidgets(
-          'sensor orientation degrees is 90, then the preview Texture is rotated 270 degrees clockwise',
-          (WidgetTester tester) async {
-            // Create mock ProcessCameraProvider that will acknowledge that the test back camera with sensor orientation degrees
-            // 90 is available.
-            final MockProcessCameraProvider mockProcessCameraProviderForBackCamera =
-                setUpMockCameraSelectorAndMockProcessCameraProviderForSelectingTestCamera(
-                  mockCameraSelector: mockBackCameraSelector,
-                  sensorRotationDegrees: 90,
-                  isCameraFrontFacing: false,
-                );
-
-            // Set up test to use back camera, tell camera that handlesCropAndRotation is false,
-            // set camera initial device orientation to landscape left.
-            setUpOverridesForCreatingTestCamera(
-              mockProcessCameraProvider: mockProcessCameraProviderForBackCamera,
-              createCameraSelector: proxyCreateCameraSelectorForBackCamera,
-              getDefaultDisplayRotation: proxyGetDefaultDisplayRotation,
-              handlesCropAndRotation: false,
-              getUiOrientation: () async =>
-                  _serializeDeviceOrientation(testInitialDeviceOrientation),
-            );
-
-            // Get and create test back camera.
-            final List<CameraDescription> availableCameras = await camera.availableCameras();
-            expect(availableCameras.length, 1);
-            final int flutterSurfaceTextureId = await camera.createCameraWithSettings(
-              availableCameras.first,
-              testMediaSettings,
-            );
-            await camera.initializeCamera(flutterSurfaceTextureId);
-
-            // Put camera preview in widget tree and pump one frame so that Future to retrieve
-            // the initial default display rotation completes.
-            await tester.pumpWidget(camera.buildPreview(cameraId));
-            await tester.pump();
-
-            // Verify Texture is rotated by ((90 - 90 * -1 + 360) % 360) - 270 = -90 degrees clockwise = 270 degrees clockwise.
-            // 90 is used in this calculation for the device orientation because it is the counter-clockwise degrees of the
-            // default display rotation.
-            const int expectedQuarterTurns = _270DegreesClockwise;
-            final RotatedBox rotatedBox = tester.widget<RotatedBox>(find.byType(RotatedBox));
-            final int clockwiseQuarterTurns = rotatedBox.quarterTurns + 4;
-            expect(rotatedBox.child, isA<Texture>());
-            expect((rotatedBox.child! as Texture).textureId, cameraId);
-            expect(
-              clockwiseQuarterTurns,
-              expectedQuarterTurns,
-              reason: getExpectedRotationTestFailureReason(
-                expectedQuarterTurns,
-                rotatedBox.quarterTurns,
-              ),
-            );
-          },
+      testWidgets('back facing, sensor mounted at 90 degrees', (WidgetTester tester) async {
+        expect(
+          await buildPreviewQuarterTurns(tester, isFrontFacing: false, sensorRotationDegrees: 90),
+          expectedQuarterTurns,
         );
+      });
 
-        testWidgets(
-          'sensor orientation degrees is 270, then the preview Texture is rotated 90 degrees clockwise',
-          (WidgetTester tester) async {
-            // Create mock ProcessCameraProvider that will acknowledge that the test back camera with sensor orientation degrees
-            // 270 is available.
-            final MockProcessCameraProvider mockProcessCameraProviderForBackCamera =
-                setUpMockCameraSelectorAndMockProcessCameraProviderForSelectingTestCamera(
-                  mockCameraSelector: mockBackCameraSelector,
-                  sensorRotationDegrees: 270,
-                  isCameraFrontFacing: false,
-                );
-
-            // Set up test to use back camera, tell camera that handlesCropAndRotation is false,
-            // set camera initial device orientation to landscape left.
-            setUpOverridesForCreatingTestCamera(
-              mockProcessCameraProvider: mockProcessCameraProviderForBackCamera,
-              createCameraSelector: proxyCreateCameraSelectorForBackCamera,
-              getDefaultDisplayRotation: proxyGetDefaultDisplayRotation,
-              handlesCropAndRotation: false,
-              getUiOrientation: () async =>
-                  _serializeDeviceOrientation(testInitialDeviceOrientation),
-            );
-
-            // Get and create test back camera.
-            final List<CameraDescription> availableCameras = await camera.availableCameras();
-            expect(availableCameras.length, 1);
-            final int flutterSurfaceTextureId = await camera.createCameraWithSettings(
-              availableCameras.first,
-              testMediaSettings,
-            );
-            await camera.initializeCamera(flutterSurfaceTextureId);
-
-            // Put camera preview in widget tree and pump one frame so that Future to retrieve
-            // the initial default display rotation completes.
-            await tester.pumpWidget(camera.buildPreview(cameraId));
-            await tester.pump();
-
-            // Verify Texture is rotated by ((270 - 90 * -1 + 360) % 360) - 270 = -270 degrees clockwise = 90 degrees clockwise.
-            // 90 is used in this calculation for the device orientation because it is the counter-clockwise degrees of the
-            // default display rotation.
-            const int expectedQuarterTurns = _90DegreesClockwise;
-            final RotatedBox rotatedBox = tester.widget<RotatedBox>(find.byType(RotatedBox));
-            final int clockwiseQuarterTurns = rotatedBox.quarterTurns + 4;
-            expect(rotatedBox.child, isA<Texture>());
-            expect((rotatedBox.child! as Texture).textureId, cameraId);
-            expect(
-              clockwiseQuarterTurns,
-              expectedQuarterTurns,
-              reason: getExpectedRotationTestFailureReason(
-                expectedQuarterTurns,
-                rotatedBox.quarterTurns,
-              ),
-            );
-          },
+      testWidgets('front facing, sensor mounted at 270 degrees', (WidgetTester tester) async {
+        expect(
+          await buildPreviewQuarterTurns(tester, isFrontFacing: true, sensorRotationDegrees: 270),
+          expectedQuarterTurns,
         );
-      },
-    );
+      });
 
-    // Test the preview rotation responds to the camera being front or back facing:
-    group(
-      'initial device orientation is DeviceOrientation.landscapeRight, initial default displauy rotation is 0 degrees, sensor orientation degrees is 90,',
-      () {
-        late AndroidCameraCameraX camera;
-        late int cameraId;
-        late DeviceOrientation testInitialDeviceOrientation;
-        late int testSensorOrientation;
-        late Future<int> Function() proxyGetDefaultDisplayRotation;
-        late MediaSettings testMediaSettings;
-
-        setUp(() {
-          camera = AndroidCameraCameraX();
-          cameraId = 317;
-
-          // Set test camera initial device orientation and sensor orientation for test.
-          testInitialDeviceOrientation = DeviceOrientation.landscapeRight;
-          testSensorOrientation = 90;
-
-          // Create mock for seting initial default display rotation to 180 degrees.
-          proxyGetDefaultDisplayRotation = () => Future<int>.value(Surface.rotation90);
-
-          // Media settings to create camera; irrelevant for test.
-          testMediaSettings = const MediaSettings();
-        });
-
-        testWidgets(
-          'camera is front facing, then the preview Texture is rotated 90 degrees clockwise',
-          (WidgetTester tester) async {
-            // Set up test front camera with sensor orientation degrees 90.
-            final mockFrontCameraSelector = MockCameraSelector();
-            final MockProcessCameraProvider mockProcessCameraProvider =
-                setUpMockCameraSelectorAndMockProcessCameraProviderForSelectingTestCamera(
-                  mockCameraSelector: mockFrontCameraSelector,
-                  sensorRotationDegrees: testSensorOrientation,
-                  isCameraFrontFacing: true,
-                );
-            // Set up front camera selection and initial device orientation as landscape right.
-            final MockCameraSelector Function({
-              LensFacing? requireLensFacing,
-              dynamic cameraInfoForFilter,
-            })
-            proxyCreateCameraSelectorForFrontCamera = createCameraSelectorForFrontCamera(
-              mockFrontCameraSelector,
-            );
-            setUpOverridesForCreatingTestCamera(
-              mockProcessCameraProvider: mockProcessCameraProvider,
-              createCameraSelector: proxyCreateCameraSelectorForFrontCamera,
-              getDefaultDisplayRotation: proxyGetDefaultDisplayRotation,
-              handlesCropAndRotation: false,
-              getUiOrientation: () async =>
-                  _serializeDeviceOrientation(testInitialDeviceOrientation),
-            );
-
-            // Get and create test camera.
-            final List<CameraDescription> availableCameras = await camera.availableCameras();
-            expect(availableCameras.length, 1);
-            final int flutterSurfaceTextureId = await camera.createCameraWithSettings(
-              availableCameras.first,
-              testMediaSettings,
-            );
-            await camera.initializeCamera(flutterSurfaceTextureId);
-
-            // Put camera preview in widget tree and pump one frame so that Future to retrieve
-            // the initial default display rotation completes.
-            await tester.pumpWidget(camera.buildPreview(cameraId));
-            await tester.pump();
-
-            // Verify Texture is rotated by ((90 - 270 * 1 + 360) % 360) - 90 = 90 degrees clockwise.
-            // 270 is used in this calculation for the device orientation because it is the counter-clockwise degrees of the
-            // default display rotation.
-            const int expectedQuarterTurns = _90DegreesClockwise;
-            final RotatedBox rotatedBox = tester.widget<RotatedBox>(find.byType(RotatedBox));
-
-            // We expect a Transform widget to wrap the RotatedBox with the camera
-            // preview to mirror the preview, since the front camera is being
-            // used.
-            expect(rotatedBox.child, isA<Transform>());
-
-            final transformedPreview = rotatedBox.child! as Transform;
-            final Matrix4 transformedPreviewMatrix = transformedPreview.transform;
-
-            // Since the front camera is in landscape mode, we expect the camera
-            // preview to be mirrored across the x-axis.
-            checkXAxisIsMirrored(transformedPreviewMatrix);
-            expect((transformedPreview.child! as Texture).textureId, cameraId);
-            expect(
-              rotatedBox.quarterTurns,
-              expectedQuarterTurns,
-              reason: getExpectedRotationTestFailureReason(
-                expectedQuarterTurns,
-                rotatedBox.quarterTurns,
-              ),
-            );
-          },
+      testWidgets('front facing, sensor mounted at 90 degrees', (WidgetTester tester) async {
+        expect(
+          await buildPreviewQuarterTurns(tester, isFrontFacing: true, sensorRotationDegrees: 90),
+          expectedQuarterTurns,
         );
-
-        testWidgets(
-          'camera is back facing, then the preview Texture is rotated 270 degrees clockwise',
-          (WidgetTester tester) async {
-            // Set up test front camera with sensor orientation degrees 90.
-            final mockBackCameraSelector = MockCameraSelector();
-            final MockProcessCameraProvider mockProcessCameraProvider =
-                setUpMockCameraSelectorAndMockProcessCameraProviderForSelectingTestCamera(
-                  mockCameraSelector: mockBackCameraSelector,
-                  sensorRotationDegrees: testSensorOrientation,
-                  isCameraFrontFacing: false,
-                );
-
-            // Set up front camera selection and initial device orientation as landscape right.
-            final MockCameraSelector Function({
-              LensFacing? requireLensFacing,
-              dynamic cameraInfoForFilter,
-            })
-            proxyCreateCameraSelectorForFrontCamera = createCameraSelectorForBackCamera(
-              mockBackCameraSelector,
-            );
-            setUpOverridesForCreatingTestCamera(
-              mockProcessCameraProvider: mockProcessCameraProvider,
-              createCameraSelector: proxyCreateCameraSelectorForFrontCamera,
-              getDefaultDisplayRotation: proxyGetDefaultDisplayRotation,
-              handlesCropAndRotation: false,
-              getUiOrientation: () async =>
-                  _serializeDeviceOrientation(testInitialDeviceOrientation),
-            );
-
-            // Get and create test camera.
-            final List<CameraDescription> availableCameras = await camera.availableCameras();
-            expect(availableCameras.length, 1);
-            final int flutterSurfaceTextureId = await camera.createCameraWithSettings(
-              availableCameras.first,
-              testMediaSettings,
-            );
-            await camera.initializeCamera(flutterSurfaceTextureId);
-
-            // Put camera preview in widget tree and pump one frame so that Future to retrieve
-            // the initial default display rotation completes.
-            await tester.pumpWidget(camera.buildPreview(cameraId));
-            await tester.pump();
-
-            // Verify Texture is rotated by ((90 - 270 * -1 + 360) % 360) - 90 = -90 degrees clockwise = 270 degrees clockwise.
-            // 270 is used in this calculation for the device orientation because it is the counter-clockwise degrees of the
-            // default display rotation.
-            const int expectedQuarterTurns = _270DegreesClockwise;
-            final RotatedBox rotatedBox = tester.widget<RotatedBox>(find.byType(RotatedBox));
-            final int clockwiseQuarterTurns = rotatedBox.quarterTurns + 4;
-            expect(rotatedBox.child, isA<Texture>());
-            expect((rotatedBox.child! as Texture).textureId, cameraId);
-            expect(
-              clockwiseQuarterTurns,
-              expectedQuarterTurns,
-              reason: getExpectedRotationTestFailureReason(
-                expectedQuarterTurns,
-                rotatedBox.quarterTurns,
-              ),
-            );
-          },
-        );
-      },
-    );
+      });
+    });
   });
 }

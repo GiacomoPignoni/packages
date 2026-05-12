@@ -25,6 +25,9 @@ final class MockCaptureSession: NSObject, CaptureSession {
   var automaticallyConfiguresApplicationAudioSession = false
   var isRunning = true
 
+  var multitaskingCameraAccessSupported = false
+  var multitaskingCameraAccessEnabled = false
+
   var sessionPreset: AVCaptureSession.Preset {
     get {
       return _sessionPreset

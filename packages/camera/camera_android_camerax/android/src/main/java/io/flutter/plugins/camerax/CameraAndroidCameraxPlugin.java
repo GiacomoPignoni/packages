@@ -40,6 +40,10 @@ public final class CameraAndroidCameraxPlugin implements FlutterPlugin, Activity
     if (proxyApiRegistrar != null) {
       proxyApiRegistrar.setIgnoreCallsToDart(true);
       proxyApiRegistrar.tearDown();
+      proxyApiRegistrar.releaseExecutors();
+      // A camera's `dispose` only detaches the effects pipeline's outputs, since the next camera
+      // reuses it. Detaching from the engine is where it is genuinely finished with.
+      CameraEffectsManager.releaseAll();
       proxyApiRegistrar.getInstanceManager().stopFinalizationListener();
       proxyApiRegistrar = null;
     }

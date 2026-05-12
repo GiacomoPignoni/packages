@@ -70,4 +70,10 @@ final class CameraPropertiesTests: XCTestCase {
       PlatformDeviceOrientation.portraitUp,
       getPigeonDeviceOrientation(for: .unknown))
   }
+
+  func testGetPlatformFlashMode() {
+    XCTAssertEqual(PlatformFlashMode.off, getPlatformFlashMode(for: .off))
+    XCTAssertEqual(PlatformFlashMode.auto, getPlatformFlashMode(for: .auto))
+    XCTAssertEqual(PlatformFlashMode.always, getPlatformFlashMode(for: .on))
+  }
 }

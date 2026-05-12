@@ -12,9 +12,20 @@ import 'camerax_library.dart' show DeviceOrientationManager;
 import 'rotated_preview_utils.dart';
 
 /// Widget that rotates the camera preview to be upright according to the
-/// current user interface orientation when the preview is backed by a
-/// native Android `SurfaceTexture`, which does handle the crop and rotation
-/// of the camera preview automatically.
+/// current user interface orientation.
+///
+/// Sensor orientation and front-camera mirroring are not this widget's
+/// business. Every frame reaches Flutter through the shader pipeline, which
+/// samples the camera texture through the transform CameraX composes in
+/// `SurfaceOutput.updateTransformMatrix`; because
+/// `AndroidCameraCameraX._previewTargetRotation` asks for the display's natural
+/// orientation, that transform carries the whole sensor rotation and, for a
+/// front-facing preview, the mirroring as well. What arrives is therefore
+/// already upright in the display's natural orientation and already a selfie
+/// view where it should be.
+///
+/// The one thing the render path cannot know is how far the display has since
+/// been turned, which is what is left here.
 @internal
 final class SurfaceTextureRotatedPreview extends StatefulWidget {
   /// Creates [SurfaceTextureRotatedPreview] that will rotate camera preview

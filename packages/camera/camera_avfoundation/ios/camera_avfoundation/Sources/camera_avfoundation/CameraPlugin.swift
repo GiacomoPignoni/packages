@@ -143,16 +143,27 @@ extension CameraPlugin: CameraApi {
       for device in devices {
         let lensFacing = strongSelf.platformLensDirection(for: device)
         let lensType = strongSelf.platformLensType(for: device)
+        let focalLength = strongSelf.equivalentFocalLengthFromDiagonalFOV(for: device)
         let cameraDescription = PlatformCameraDescription(
           name: device.uniqueID,
           lensDirection: lensFacing,
-          lensType: lensType
+          lensType: lensType,
+          equivalentFocalLength: focalLength
         )
         reply.append(cameraDescription)
       }
 
       completion(.success(reply))
     }
+  }
+
+  /// `AVCaptureDeviceFormat.videoFieldOfView` is documented as the *diagonal*
+  /// angle of view, so the 35mm-equivalent calculation must use the matching
+  /// diagonal of a 35mm frame (sqrt(36² + 24²) ≈ 43.2666 mm), not its width.
+  private func equivalentFocalLengthFromDiagonalFOV(for device: CaptureDevice) -> Double {
+    let diagonalFOV = device.avDevice.activeFormat.videoFieldOfView
+    let radians = Double(diagonalFOV) * .pi / 180.0
+    return 43.2666 / (2.0 * tan(radians / 2.0))
   }
 
   private func platformLensDirection(for device: CaptureDevice) -> PlatformCameraLensDirection {
@@ -232,7 +243,8 @@ extension CameraPlugin: CameraApi {
     completion: @escaping (Result<Int64, any Error>) -> Void
   ) {
     captureSessionQueue.async { [weak self] in
-      self?.sessionQueueCreateCamera(name: withName, settings: settings, completion: completion)
+      self?.sessionQueueCreateCamera(
+        name: withName, settings: settings, completion: completion)
     }
   }
 
@@ -253,7 +265,8 @@ extension CameraPlugin: CameraApi {
       captureSessionFactory: captureSessionFactory,
       captureSessionQueue: captureSessionQueue,
       captureDeviceInputFactory: captureDeviceInputFactory,
-      initialCameraName: name
+      initialCameraName: name,
+      aspectRatio: settings.aspectRatio
     )
 
     do {
@@ -371,6 +384,25 @@ extension CameraPlugin: CameraApi {
     }
   }
 
+  func takePictureWithOriginal(
+    completion: @escaping (Result<PlatformCapturedPicturePaths, any Error>) -> Void
+  ) {
+    captureSessionQueue.async { [weak self] in
+      self?.camera?.captureToFilesWithOriginal { result in
+        switch result {
+        case .success(let paths):
+          completion(
+            .success(
+              PlatformCapturedPicturePaths(
+                originalPath: paths.originalPath,
+                processedPath: paths.processedPath)))
+        case .failure(let error):
+          completion(.failure(error))
+        }
+      }
+    }
+  }
+
   func prepareForVideoRecording(completion: @escaping (Result<Void, any Error>) -> Void) {
     captureSessionQueue.async { [weak self] in
       self?.camera?.setUpCaptureSessionForAudioIfNeeded()
@@ -414,6 +446,14 @@ extension CameraPlugin: CameraApi {
   ) {
     captureSessionQueue.async { [weak self] in
       self?.camera?.setFlashMode(mode, withCompletion: completion)
+    }
+  }
+
+  func getSupportedFlashModes(
+    completion: @escaping (Result<[PlatformFlashMode], any Error>) -> Void
+  ) {
+    captureSessionQueue.async { [weak self] in
+      completion(.success(self?.camera?.supportedFlashModes ?? []))
     }
   }
 
@@ -474,6 +514,25 @@ extension CameraPlugin: CameraApi {
   {
     captureSessionQueue.async { [weak self] in
       self?.camera?.setFocusPoint(point, completion: completion)
+    }
+  }
+
+  func setWhiteBalance(
+    values: PlatformWhiteBalanceValues?,
+    completion: @escaping (Result<Void, any Error>) -> Void
+  ) {
+    captureSessionQueue.async { [weak self] in
+      self?.camera?.setWhiteBalance(values, withCompletion: completion)
+    }
+  }
+
+  func isWhiteBalanceSupported(completion: @escaping (Result<Bool, any Error>) -> Void) {
+    captureSessionQueue.async { [weak self] in
+      if let camera = self?.camera {
+        completion(.success(camera.isWhiteBalanceSupported()))
+      } else {
+        completion(.success(false))
+      }
     }
   }
 
@@ -552,6 +611,42 @@ extension CameraPlugin: CameraApi {
   ) {
     captureSessionQueue.async { [weak self] in
       self?.camera?.setImageFileFormat(format)
+      completion(.success(()))
+    }
+  }
+
+  func setEffectsValues(
+    values: PlatformEffectsValues, completion: @escaping (Result<Void, any Error>) -> Void
+  ) {
+    captureSessionQueue.async { [weak self] in
+      self?.camera?.setEffectsValues(values)
+      completion(.success(()))
+    }
+  }
+
+  func setAspectRatio(
+    aspectRatio: Double?, completion: @escaping (Result<Void, any Error>) -> Void
+  ) {
+    captureSessionQueue.async { [weak self] in
+      self?.camera?.setAspectRatio(aspectRatio)
+      completion(.success(()))
+    }
+  }
+
+  func setCaptureScale(
+    scale: Double, completion: @escaping (Result<Void, any Error>) -> Void
+  ) {
+    captureSessionQueue.async { [weak self] in
+      self?.camera?.setCaptureScale(scale)
+      completion(.success(()))
+    }
+  }
+
+  func setCaptureCornerRadius(
+    radius: Double, completion: @escaping (Result<Void, any Error>) -> Void
+  ) {
+    captureSessionQueue.async { [weak self] in
+      self?.camera?.setCaptureCornerRadius(radius)
       completion(.success(()))
     }
   }

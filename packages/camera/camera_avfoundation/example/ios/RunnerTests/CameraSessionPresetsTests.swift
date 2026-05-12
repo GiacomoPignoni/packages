@@ -94,4 +94,64 @@ final class CameraSessionPresetsTests: XCTestCase {
 
     waitForExpectations(timeout: 30, handler: nil)
   }
+
+  func testResolutionPresetPhoto_mustUseAVCaptureSessionPresetPhoto() {
+    let expectedPreset = AVCaptureSession.Preset.photo
+    let expectation = self.expectation(description: "Expected .photo preset set")
+
+    let videoSessionMock = MockCaptureSession()
+    videoSessionMock.canSetSessionPresetStub = { _ in true }
+    videoSessionMock.setSessionPresetStub = { preset in
+      if preset == expectedPreset {
+        expectation.fulfill()
+      }
+    }
+
+    let configuration = CameraTestUtils.createTestCameraConfiguration()
+    configuration.videoCaptureSession = videoSessionMock
+    configuration.mediaSettings = CameraTestUtils.createDefaultMediaSettings(
+      resolutionPreset: PlatformResolutionPreset.photo)
+
+    let _ = CameraTestUtils.createTestCamera(configuration)
+
+    waitForExpectations(timeout: 30, handler: nil)
+  }
+
+  func testResolutionPresetPhoto_whenUnsupported_fallsBackToBestDeviceFormat() {
+    // When .photo is not supported by the session, the path should fall
+    // through to the .max case which uses inputPriority + a hand-picked
+    // device format. This ensures the user never silently gets a lower-
+    // resolution preset than `.max` would have given.
+    let expectedPreset = AVCaptureSession.Preset.inputPriority
+    let presetExpectation = expectation(description: "Expected inputPriority preset set")
+
+    let videoSessionMock = MockCaptureSession()
+    videoSessionMock.canSetSessionPresetStub = { preset in
+      return preset != AVCaptureSession.Preset.photo
+    }
+    videoSessionMock.setSessionPresetStub = { preset in
+      if preset == expectedPreset {
+        presetExpectation.fulfill()
+      }
+    }
+
+    let captureFormatMock = MockCaptureDeviceFormat()
+    let captureDeviceMock = MockCaptureDevice()
+    captureDeviceMock.flutterFormats = [captureFormatMock]
+    captureDeviceMock.activeFormatStub = { captureFormatMock }
+    captureDeviceMock.lockForConfigurationStub = {}
+
+    let configuration = CameraTestUtils.createTestCameraConfiguration()
+    configuration.videoCaptureDeviceFactory = { _ in captureDeviceMock }
+    configuration.videoDimensionsConverter = { _ in
+      return CMVideoDimensions(width: 4, height: 3)
+    }
+    configuration.videoCaptureSession = videoSessionMock
+    configuration.mediaSettings = CameraTestUtils.createDefaultMediaSettings(
+      resolutionPreset: PlatformResolutionPreset.photo)
+
+    let _ = CameraTestUtils.createTestCamera(configuration)
+
+    waitForExpectations(timeout: 30, handler: nil)
+  }
 }

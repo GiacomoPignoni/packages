@@ -5,6 +5,7 @@
 package io.flutter.plugins.camerax;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
@@ -18,6 +19,7 @@ import androidx.annotation.NonNull;
 import androidx.camera.core.ImageCapture;
 import androidx.camera.core.ImageCaptureException;
 import androidx.camera.core.resolutionselector.ResolutionSelector;
+import com.google.common.util.concurrent.MoreExecutors;
 import java.io.File;
 import java.io.IOException;
 import java.util.concurrent.Executor;
@@ -26,6 +28,7 @@ import kotlin.Unit;
 import kotlin.jvm.functions.Function1;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.MockedStatic;
 import org.robolectric.RobolectricTestRunner;
 
@@ -76,6 +79,10 @@ public class ImageCaptureTest {
     final File mockOutputDir = mock(File.class);
     when(mockContext.getCacheDir()).thenReturn(mockOutputDir);
     when(mockApiRegistrar.getContext()).thenReturn(mockContext);
+    // The shared capture executor is a field on the real registrar, so a mock has to be
+    // told about it. Direct, so anything handed to it runs inline in the test.
+    when(mockApiRegistrar.getCaptureExecutor())
+        .thenReturn(MoreExecutors.newDirectExecutorService());
 
     final String filename = "myFile.jpg";
     final ImageCaptureProxyApi api =
@@ -139,6 +146,10 @@ public class ImageCaptureTest {
     final File mockOutputDir = mock(File.class);
     when(mockContext.getCacheDir()).thenReturn(mockOutputDir);
     when(mockApiRegistrar.getContext()).thenReturn(mockContext);
+    // The shared capture executor is a field on the real registrar, so a mock has to be
+    // told about it. Direct, so anything handed to it runs inline in the test.
+    when(mockApiRegistrar.getCaptureExecutor())
+        .thenReturn(MoreExecutors.newDirectExecutorService());
 
     final PigeonApiImageCapture api = new ImageCaptureProxyApi(mockApiRegistrar);
 
@@ -178,6 +189,10 @@ public class ImageCaptureTest {
     final SystemServicesManager mockSystemServicesManager = mock(SystemServicesManager.class);
     when(mockContext.getCacheDir()).thenReturn(mockOutputDir);
     when(mockApiRegistrar.getContext()).thenReturn(mockContext);
+    // The shared capture executor is a field on the real registrar, so a mock has to be
+    // told about it. Direct, so anything handed to it runs inline in the test.
+    when(mockApiRegistrar.getCaptureExecutor())
+        .thenReturn(MoreExecutors.newDirectExecutorService());
 
     final ImageCaptureException captureException = mock(ImageCaptureException.class);
     when(captureException.getImageCaptureError()).thenReturn(ImageCapture.ERROR_CAPTURE_FAILED);
@@ -233,6 +248,58 @@ public class ImageCaptureTest {
           .onCameraError("The camera framework failed to fulfill the image capture request.");
       assertEquals(result[0], captureException);
     }
+  }
+
+  @Test
+  public void takePictureWithEffects_answersDartOnTheMainThread() {
+    // The reply hands Dart a CapturedPicturePaths proxy, and registering one sends a message over
+    // the binary messenger, which Flutter accepts only from the main thread. The capture callbacks
+    // run on the executor takePicture was handed, so the reply has to be posted rather than made
+    // inline.
+    final ProxyApiRegistrar mockApiRegistrar = mock(ProxyApiRegistrar.class);
+    final Context mockContext = mock(Context.class);
+    when(mockContext.getCacheDir()).thenReturn(mock(File.class));
+    when(mockApiRegistrar.getContext()).thenReturn(mockContext);
+    // The shared capture executor is a field on the real registrar, so a mock has to be
+    // told about it. Direct, so anything handed to it runs inline in the test.
+    when(mockApiRegistrar.getCaptureExecutor())
+        .thenReturn(MoreExecutors.newDirectExecutorService());
+
+    final ImageCaptureProxyApi api = new ImageCaptureProxyApi(mockApiRegistrar);
+    final ImageCapture instance = mock(ImageCapture.class);
+    final SystemServicesManager mockSystemServicesManager = mock(SystemServicesManager.class);
+
+    final Throwable[] result = {null};
+    api.takePictureWithEffects(
+        instance,
+        mockSystemServicesManager,
+        mock(CameraEffectsManager.class),
+        false,
+        ResultCompat.asCompatCallback(
+            reply -> {
+              result[0] = reply.exceptionOrNull();
+              return null;
+            }));
+
+    final ArgumentCaptor<ImageCapture.OnImageCapturedCallback> capturedCallback =
+        ArgumentCaptor.forClass(ImageCapture.OnImageCapturedCallback.class);
+    verify(instance).takePicture(any(Executor.class), capturedCallback.capture());
+
+    final ImageCaptureException captureException = mock(ImageCaptureException.class);
+    when(captureException.getImageCaptureError()).thenReturn(ImageCapture.ERROR_CAPTURE_FAILED);
+    capturedCallback.getValue().onError(captureException);
+
+    // Nothing has answered Dart yet: the mocked registrar swallows the runnable.
+    assertNull(result[0]);
+
+    final ArgumentCaptor<ProxyApiRegistrar.FlutterMethodRunnable> postedReply =
+        ArgumentCaptor.forClass(ProxyApiRegistrar.FlutterMethodRunnable.class);
+    verify(mockApiRegistrar).runOnMainThread(postedReply.capture());
+    postedReply.getValue().run();
+
+    verify(mockSystemServicesManager)
+        .onCameraError("The camera framework failed to fulfill the image capture request.");
+    assertEquals(captureException, result[0]);
   }
 
   @Test

@@ -29,6 +29,9 @@ protocol Camera: FlutterTexture, AVCaptureVideoDataOutputSampleBufferDelegate,
   var minimumExposureOffset: CGFloat { get }
   var maximumExposureOffset: CGFloat { get }
 
+  /// The flash modes supported by the current capture device.
+  var supportedFlashModes: [PlatformFlashMode] { get }
+
   func setUpCaptureSessionForAudioIfNeeded()
 
   /// Informs the Dart side of the plugin of the current camera state and capabilities.
@@ -58,10 +61,39 @@ protocol Camera: FlutterTexture, AVCaptureVideoDataOutputSampleBufferDelegate,
 
   func captureToFile(completion: @escaping (Result<String, any Error>) -> Void)
 
+  /// Captures one shutter event and writes two files: the un-effected
+  /// original (with the configured `captureScale` crop preserved) and the
+  /// shader-processed photo.
+  func captureToFilesWithOriginal(
+    completion: @escaping (
+      Result<(originalPath: String, processedPath: String), any Error>
+    ) -> Void
+  )
+
   func lockCaptureOrientation(_ orientation: PlatformDeviceOrientation)
   func unlockCaptureOrientation()
 
   func setImageFileFormat(_ fileFormat: PlatformImageFileFormat)
+
+  /// Applies visual effect parameters to the active Metal shader pipeline.
+  /// No-op when no shader pipeline is active.
+  func setEffectsValues(_ values: PlatformEffectsValues)
+
+  /// Sets the center-crop aspect ratio (width/height) applied to preview,
+  /// photo, and video. Pass `nil` to disable cropping. No-op when no shader
+  /// pipeline is active.
+  func setAspectRatio(_ aspectRatio: Double?)
+
+  /// Sets the capture scale (0.1–1.0) applied inside the aspect-ratio crop.
+  /// No-op when no shader pipeline is active.
+  func setCaptureScale(_ scale: Double)
+
+  /// Sets the corner radius of the captureScale rectangle in the preview.
+  /// The radius is in the range [0.0, 1.0], where 0.0 means square corners
+  /// and positive values round the corners of the darkened border. Only
+  /// affects the preview; saved photos and videos are unaffected.
+  /// No-op when no shader pipeline is active.
+  func setCaptureCornerRadius(_ radius: Double)
 
   func setExposureMode(_ mode: PlatformExposureMode)
   func setExposureOffset(_ offset: Double)
@@ -94,6 +126,20 @@ protocol Camera: FlutterTexture, AVCaptureVideoDataOutputSampleBufferDelegate,
     _ point: PlatformPoint?,
     completion: @escaping (Result<Void, any Error>) -> Void
   )
+
+  /// Sets the white balance for the current AVCaptureDevice.
+  ///
+  /// If `values` is `nil`, switches to continuous auto white balance.
+  /// Otherwise, locks the white balance to the given temperature and tint.
+  /// Calls completion with an error if the required mode is not supported.
+  func setWhiteBalance(
+    _ values: PlatformWhiteBalanceValues?,
+    withCompletion: @escaping (Result<Void, any Error>) -> Void
+  )
+
+  /// Whether the current AVCaptureDevice can have its white balance locked to a
+  /// given temperature and tint.
+  func isWhiteBalanceSupported() -> Bool
 
   func setZoomLevel(_ zoom: CGFloat, withCompletion: @escaping (Result<Void, any Error>) -> Void)
 

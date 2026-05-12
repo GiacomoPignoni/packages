@@ -20,6 +20,8 @@ import 'android_camera_camerax_test.mocks.dart';
   MockSpec<Analyzer>(),
   MockSpec<AspectRatioStrategy>(),
   MockSpec<Camera>(),
+  MockSpec<CameraEffect>(),
+  MockSpec<CameraEffectsManager>(),
   MockSpec<CameraInfo>(),
   MockSpec<CameraCharacteristicsKey>(),
   MockSpec<CameraControl>(),
@@ -40,6 +42,7 @@ import 'android_camera_camerax_test.mocks.dart';
   MockSpec<ImageProxy>(),
   MockSpec<Observer<CameraState>>(),
   MockSpec<PendingRecording>(),
+  MockSpec<PlatformEffectsValues>(),
   MockSpec<PlaneProxy>(),
   MockSpec<Preview>(),
   MockSpec<ProcessCameraProvider>(),
@@ -51,6 +54,7 @@ import 'android_camera_camerax_test.mocks.dart';
   MockSpec<Recording>(),
   MockSpec<SystemServicesManager>(),
   MockSpec<VideoCapture>(),
+  MockSpec<WhiteBalanceManager>(),
   MockSpec<ZoomState>(),
 ])
 @GenerateMocks(
@@ -63,9 +67,45 @@ import 'android_camera_camerax_test.mocks.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  /// The effect every `bindToLifecycle` call is expected to carry.
+  ///
+  /// `createCameraWithSettings` always builds a [CameraEffectsManager], and the
+  /// effect it owns has to be passed on every bind — see the doc on
+  /// `ProcessCameraProvider.bindToLifecycle`.
+  final mockCameraEffect = MockCameraEffect();
+
+  /// The manager `createCameraWithSettings` is made to build.
+  ///
+  /// Tests that skip `createCamera` and assign the plugin's fields directly
+  /// have to set `camera.effectsManager` and `camera.cameraEffect` themselves.
+  late MockCameraEffectsManager mockEffectsManager;
+
   setUp(() {
     PigeonOverrides.pigeon_reset();
     GenericsPigeonOverrides.reset();
+
+    mockEffectsManager = MockCameraEffectsManager();
+    when(mockEffectsManager.getCameraEffect()).thenAnswer((_) async => mockCameraEffect);
+    PigeonOverrides.cameraEffectsManager_new =
+        ({
+          required void Function(CameraEffectsManager, int, int) onPreviewSizeChanged,
+          required void Function(CameraEffectsManager) onPreviewOutputLost,
+          double? aspectRatio,
+        }) => mockEffectsManager;
+    // `createCameraWithSettings` always builds one to hand to the `Preview`, so
+    // without an override every test would reach for the platform channel.
+    PigeonOverrides.viewPort_new =
+        ({required int aspectRatioWidth, required int aspectRatioHeight, required int rotation}) =>
+            ViewPort.pigeon_detached();
+    PigeonOverrides.whiteBalanceManager_new =
+        ({required void Function(WhiteBalanceManager, double, double) onAutoWhiteBalanceChanged}) =>
+            MockWhiteBalanceManager();
+    // Every rebind hands the white balance manager the new camera, so any test that binds a use
+    // case reaches these. Tests that care about the values override them again.
+    PigeonOverrides.camera2CameraControl_from = ({required CameraControl cameraControl}) =>
+        Camera2CameraControl.pigeon_detached();
+    PigeonOverrides.camera2CameraInfo_from = ({required dynamic cameraInfo}) =>
+        Camera2CameraInfo.pigeon_detached();
   });
 
   /// Helper method for testing sending/receiving CameraErrorEvents.
@@ -116,6 +156,7 @@ void main() {
       int? targetRotation,
       CameraIntegerRange? targetFpsRange,
       ResolutionSelector? resolutionSelector,
+      WhiteBalanceManager? whiteBalanceManager,
     })?
     newPreview,
     VideoCapture Function({required VideoOutput videoOutput, CameraIntegerRange? targetFpsRange})?
@@ -156,6 +197,7 @@ void main() {
           int? targetRotation,
           CameraIntegerRange? targetFpsRange,
           ResolutionSelector? resolutionSelector,
+          WhiteBalanceManager? whiteBalanceManager,
         }) {
           final mockPreview = MockPreview();
           final testResolutionInfo = ResolutionInfo.pigeon_detached(resolution: MockCameraSize());
@@ -519,6 +561,7 @@ void main() {
             int? targetRotation,
             CameraIntegerRange? targetFpsRange,
             ResolutionSelector? resolutionSelector,
+            WhiteBalanceManager? whiteBalanceManager,
           }) {
             return mockPreview;
           };
@@ -616,17 +659,22 @@ void main() {
           };
 
       camera.processCameraProvider = mockProcessCameraProvider;
+
+      camera.effectsManager = mockEffectsManager;
+
+      camera.cameraEffect = mockCameraEffect;
       PigeonOverrides.cameraIntegerRange_new = CameraIntegerRange.pigeon_detached;
 
       when(
         mockPreview.setSurfaceProvider(mockSystemServicesManager),
       ).thenAnswer((_) async => testSurfaceTextureId);
       when(
-        mockProcessCameraProvider.bindToLifecycle(mockBackCameraSelector, <UseCase>[
-          mockPreview,
-          mockImageCapture,
-          mockImageAnalysis,
-        ]),
+        mockProcessCameraProvider.bindToLifecycle(
+          mockBackCameraSelector,
+          <UseCase>[mockPreview, mockImageCapture, mockImageAnalysis],
+          <CameraEffect>[mockCameraEffect],
+          null,
+        ),
       ).thenAnswer((_) async => mockCamera);
       when(mockCamera.getCameraInfo()).thenAnswer((_) async => mockCameraInfo);
       when(mockCameraInfo.getCameraState()).thenAnswer((_) async => mockLiveCameraState);
@@ -668,6 +716,69 @@ void main() {
     },
   );
 
+  test('initializeCamera rebuilds the ImageCapture and rebinds when a bind is refused', () async {
+    final camera = AndroidCameraCameraX();
+    const testCameraDescription = CameraDescription(
+      name: 'cameraName',
+      lensDirection: CameraLensDirection.back,
+      sensorOrientation: 90,
+    );
+    final mockCamera = MockCamera();
+    final mockProcessCameraProvider = MockProcessCameraProvider();
+    final mockCameraInfo = MockCameraInfo();
+    final imageCaptures = <ImageCapture>[];
+
+    when(mockCamera.getCameraInfo()).thenAnswer((_) async => mockCameraInfo);
+    when(mockCameraInfo.getCameraState()).thenAnswer((_) async => MockLiveCameraState());
+    camera.processCameraProvider = mockProcessCameraProvider;
+    camera.effectsManager = mockEffectsManager;
+    camera.cameraEffect = mockCameraEffect;
+
+    setUpOverridesForTestingUseCaseConfiguration(mockProcessCameraProvider);
+    PigeonOverrides.imageCapture_new =
+        ({
+          int? targetRotation,
+          CameraXFlashMode? flashMode,
+          ResolutionSelector? resolutionSelector,
+        }) {
+          final mockImageCapture = MockImageCapture();
+          imageCaptures.add(mockImageCapture);
+          return mockImageCapture;
+        };
+
+    // The first bind is the one the device refuses; the second is the one made
+    // with the still capture use case rebuilt after that refusal.
+    var bindAttempts = 0;
+    when(mockProcessCameraProvider.bindToLifecycle(any, any, any, any)).thenAnswer((_) async {
+      bindAttempts++;
+      if (bindAttempts == 1) {
+        throw PlatformException(
+          code: 'IllegalArgumentException',
+          message: 'No supported surface combination is found for camera device - Id : 0.',
+        );
+      }
+      return mockCamera;
+    });
+
+    final int cameraId = await camera.createCamera(
+      testCameraDescription,
+      ResolutionPreset.veryHigh,
+    );
+    await camera.initializeCamera(cameraId);
+
+    expect(bindAttempts, equals(2));
+    expect(imageCaptures.length, equals(2));
+    expect(camera.imageCapture, equals(imageCaptures.last));
+    verify(mockProcessCameraProvider.unbind(<UseCase>[imageCaptures.first]));
+
+    final boundUseCases =
+        verify(mockProcessCameraProvider.bindToLifecycle(any, captureAny, any, any)).captured.last
+            as List<UseCase>;
+    expect(boundUseCases, contains(imageCaptures.last));
+    expect(boundUseCases, isNot(contains(imageCaptures.first)));
+    expect(boundUseCases, containsAll(<UseCase>[camera.preview!, camera.imageAnalysis!]));
+  });
+
   test(
     'createCamera and initializeCamera properly set preset resolution selection strategy for non-video capture use cases',
     () async {
@@ -687,10 +798,14 @@ void main() {
       final mockProcessCameraProvider = MockProcessCameraProvider();
       final mockCameraInfo = MockCameraInfo();
 
-      when(mockProcessCameraProvider.bindToLifecycle(any, any)).thenAnswer((_) async => mockCamera);
+      when(
+        mockProcessCameraProvider.bindToLifecycle(any, any, any, any),
+      ).thenAnswer((_) async => mockCamera);
       when(mockCamera.getCameraInfo()).thenAnswer((_) async => mockCameraInfo);
       when(mockCameraInfo.getCameraState()).thenAnswer((_) async => MockLiveCameraState());
       camera.processCameraProvider = mockProcessCameraProvider;
+      camera.effectsManager = mockEffectsManager;
+      camera.cameraEffect = mockCameraEffect;
 
       // Tell plugin to create mock/detached objects for testing createCamera
       // as needed.
@@ -719,6 +834,7 @@ void main() {
           case ResolutionPreset.ultraHigh:
             expectedBoundSize = CameraSize.pigeon_detached(width: 3840, height: 2160);
           case ResolutionPreset.max:
+          case ResolutionPreset.photo:
             continue;
         }
 
@@ -746,13 +862,19 @@ void main() {
           ResolutionStrategyFallbackRule.closestLowerThenHigher,
         );
 
+        // Image analysis is capped below the preset: see
+        // `_imageAnalysisMaxBoundSize`.
+        final CameraSize expectedAnalysisSize =
+            expectedBoundSize.width * expectedBoundSize.height > 1280 * 720
+            ? CameraSize.pigeon_detached(width: 1280, height: 720)
+            : expectedBoundSize;
         final CameraSize? imageAnalysisSize = await camera
             .imageAnalysis!
             .resolutionSelector!
             .resolutionStrategy!
             .getBoundSize();
-        expect(imageAnalysisSize?.width, equals(expectedBoundSize.width));
-        expect(imageAnalysisSize?.height, equals(expectedBoundSize.height));
+        expect(imageAnalysisSize?.width, equals(expectedAnalysisSize.width));
+        expect(imageAnalysisSize?.height, equals(expectedAnalysisSize.height));
         expect(
           await camera.imageAnalysis!.resolutionSelector!.resolutionStrategy!.getFallbackRule(),
           ResolutionStrategyFallbackRule.closestLowerThenHigher,
@@ -770,10 +892,15 @@ void main() {
         camera.imageCapture!.resolutionSelector!.resolutionStrategy,
         equals(ResolutionStrategy.highestAvailableStrategy),
       );
-      expect(
-        camera.imageAnalysis!.resolutionSelector!.resolutionStrategy,
-        equals(ResolutionStrategy.highestAvailableStrategy),
-      );
+      // Image analysis cannot follow "highest available" anywhere, so it is
+      // pinned to its cap instead.
+      final CameraSize? maxAnalysisSize = await camera
+          .imageAnalysis!
+          .resolutionSelector!
+          .resolutionStrategy!
+          .getBoundSize();
+      expect(maxAnalysisSize?.width, equals(1280));
+      expect(maxAnalysisSize?.height, equals(720));
 
       // Test null case.
       final int flutterSurfaceTextureId = await camera.createCamera(testCameraDescription, null);
@@ -786,7 +913,7 @@ void main() {
   );
 
   test(
-    'createCamera and initializeCamera properly set filter for resolution preset for non-video capture use cases',
+    'createCamera and initializeCamera set no resolution filter, so the preset stays a preference',
     () async {
       final camera = AndroidCameraCameraX();
       const CameraLensDirection testLensDirection = CameraLensDirection.front;
@@ -815,10 +942,14 @@ void main() {
         },
       );
 
-      when(mockProcessCameraProvider.bindToLifecycle(any, any)).thenAnswer((_) async => mockCamera);
+      when(
+        mockProcessCameraProvider.bindToLifecycle(any, any, any, any),
+      ).thenAnswer((_) async => mockCamera);
       when(mockCamera.getCameraInfo()).thenAnswer((_) async => mockCameraInfo);
       when(mockCameraInfo.getCameraState()).thenAnswer((_) async => MockLiveCameraState());
       camera.processCameraProvider = mockProcessCameraProvider;
+      camera.effectsManager = mockEffectsManager;
+      camera.cameraEffect = mockCameraEffect;
 
       // Test non-null resolution presets.
       for (final ResolutionPreset resolutionPreset in ResolutionPreset.values) {
@@ -829,48 +960,15 @@ void main() {
         );
         await camera.initializeCamera(flutterSurfaceTextureId);
 
-        CameraSize? expectedPreferredResolution;
-
-        switch (resolutionPreset) {
-          case ResolutionPreset.low:
-            expectedPreferredResolution = CameraSize.pigeon_detached(width: 320, height: 240);
-          case ResolutionPreset.medium:
-            expectedPreferredResolution = CameraSize.pigeon_detached(width: 720, height: 480);
-          case ResolutionPreset.high:
-            expectedPreferredResolution = CameraSize.pigeon_detached(width: 1280, height: 720);
-          case ResolutionPreset.veryHigh:
-            expectedPreferredResolution = CameraSize.pigeon_detached(width: 1920, height: 1080);
-          case ResolutionPreset.ultraHigh:
-            expectedPreferredResolution = CameraSize.pigeon_detached(width: 3840, height: 2160);
-          case ResolutionPreset.max:
-            expectedPreferredResolution = null;
-        }
-
-        if (expectedPreferredResolution == null) {
-          expect(camera.preview!.resolutionSelector!.resolutionFilter, isNull);
-          expect(camera.imageCapture!.resolutionSelector!.resolutionFilter, isNull);
-          expect(camera.imageAnalysis!.resolutionSelector!.resolutionFilter, isNull);
-          continue;
-        }
-
-        expect(lastSetPreferredSize?.width, equals(expectedPreferredResolution.width));
-        expect(lastSetPreferredSize?.height, equals(expectedPreferredResolution.height));
-
-        final CameraSize? imageCaptureSize = await camera
-            .imageCapture!
-            .resolutionSelector!
-            .resolutionStrategy!
-            .getBoundSize();
-        expect(imageCaptureSize?.width, equals(expectedPreferredResolution.width));
-        expect(imageCaptureSize?.height, equals(expectedPreferredResolution.height));
-
-        final CameraSize? imageAnalysisSize = await camera
-            .imageAnalysis!
-            .resolutionSelector!
-            .resolutionStrategy!
-            .getBoundSize();
-        expect(imageAnalysisSize?.width, equals(expectedPreferredResolution.width));
-        expect(imageAnalysisSize?.height, equals(expectedPreferredResolution.height));
+        // A `ResolutionFilter` built from the bound size pins the choice to
+        // exactly that size, which overrides the strategy's fallback rule and
+        // leaves CameraX no room to pick a size the rest of the configuration —
+        // the other streams, the effect's surface, the requested frame rate —
+        // can live with. The preference belongs in the strategy alone.
+        expect(camera.preview!.resolutionSelector!.resolutionFilter, isNull);
+        expect(camera.imageCapture!.resolutionSelector!.resolutionFilter, isNull);
+        expect(camera.imageAnalysis!.resolutionSelector!.resolutionFilter, isNull);
+        expect(lastSetPreferredSize, isNull);
       }
 
       // Test null case.
@@ -906,10 +1004,14 @@ void main() {
       // Tell plugin to create mock/detached objects for testing createCamera
       // as needed.
       setUpOverridesForTestingUseCaseConfiguration(mockProcessCameraProvider);
-      when(mockProcessCameraProvider.bindToLifecycle(any, any)).thenAnswer((_) async => mockCamera);
+      when(
+        mockProcessCameraProvider.bindToLifecycle(any, any, any, any),
+      ).thenAnswer((_) async => mockCamera);
       when(mockCamera.getCameraInfo()).thenAnswer((_) async => mockCameraInfo);
       when(mockCameraInfo.getCameraState()).thenAnswer((_) async => MockLiveCameraState());
       camera.processCameraProvider = mockProcessCameraProvider;
+      camera.effectsManager = mockEffectsManager;
+      camera.cameraEffect = mockCameraEffect;
 
       // Test non-null resolution presets.
       for (final ResolutionPreset resolutionPreset in ResolutionPreset.values) {
@@ -935,6 +1037,7 @@ void main() {
           // Medium resolution preset uses aspect ratio 3:2 which is unsupported
           // by CameraX.
           case ResolutionPreset.max:
+          case ResolutionPreset.photo:
         }
 
         if (expectedAspectRatio == null) {
@@ -1037,6 +1140,7 @@ void main() {
             int? targetRotation,
             CameraIntegerRange? targetFpsRange,
             ResolutionSelector? resolutionSelector,
+            WhiteBalanceManager? whiteBalanceManager,
           }) {
             final testResolutionInfo = ResolutionInfo.pigeon_detached(resolution: MockCameraSize());
             when(mockPreview.getResolutionInfo()).thenAnswer((_) async => testResolutionInfo);
@@ -1126,17 +1230,22 @@ void main() {
           };
 
       when(
-        mockProcessCameraProvider.bindToLifecycle(mockBackCameraSelector, <UseCase>[
-          mockPreview,
-          mockImageCapture,
-          mockImageAnalysis,
-        ]),
+        mockProcessCameraProvider.bindToLifecycle(
+          mockBackCameraSelector,
+          <UseCase>[mockPreview, mockImageCapture, mockImageAnalysis],
+          <CameraEffect>[mockCameraEffect],
+          null,
+        ),
       ).thenAnswer((_) async => mockCamera);
       when(mockCamera.getCameraInfo()).thenAnswer((_) async => mockCameraInfo);
       when(mockCameraInfo.getCameraState()).thenAnswer((_) async => MockLiveCameraState());
       when(mockCamera.cameraControl).thenAnswer((_) => mockCameraControl);
 
       camera.processCameraProvider = mockProcessCameraProvider;
+
+      camera.effectsManager = mockEffectsManager;
+
+      camera.cameraEffect = mockCameraEffect;
       PigeonOverrides.cameraIntegerRange_new = CameraIntegerRange.pigeon_detached;
 
       final int flutterSurfaceTextureId = await camera.createCameraWithSettings(
@@ -1153,11 +1262,12 @@ void main() {
 
       // Verify expected UseCases were bound.
       verify(
-        camera.processCameraProvider!.bindToLifecycle(camera.cameraSelector!, <UseCase>[
-          mockPreview,
-          mockImageCapture,
-          mockImageAnalysis,
-        ]),
+        camera.processCameraProvider!.bindToLifecycle(
+          camera.cameraSelector!,
+          <UseCase>[mockPreview, mockImageCapture, mockImageAnalysis],
+          <CameraEffect>[mockCameraEffect],
+          null,
+        ),
       );
 
       // Verify the camera's CameraInfo instance got updated.
@@ -1209,7 +1319,9 @@ void main() {
       },
     );
 
-    when(mockProcessCameraProvider.bindToLifecycle(any, any)).thenAnswer((_) async => mockCamera);
+    when(
+      mockProcessCameraProvider.bindToLifecycle(any, any, any, any),
+    ).thenAnswer((_) async => mockCamera);
     when(mockCamera.getCameraInfo()).thenAnswer((_) async => mockCameraInfo);
     when(mockCameraInfo.getCameraState()).thenAnswer((_) async => MockLiveCameraState());
 
@@ -1230,6 +1342,7 @@ void main() {
         case ResolutionPreset.ultraHigh:
           expectedVideoQuality = VideoQuality.UHD;
         case ResolutionPreset.max:
+        case ResolutionPreset.photo:
           expectedVideoQuality = VideoQuality.highest;
       }
 
@@ -1276,6 +1389,7 @@ void main() {
             int? targetRotation,
             CameraIntegerRange? targetFpsRange,
             ResolutionSelector? resolutionSelector,
+            WhiteBalanceManager? whiteBalanceManager,
           }) {
             final mockPreview = MockPreview();
             when(
@@ -1286,7 +1400,9 @@ void main() {
           },
     );
 
-    when(mockProcessCameraProvider.bindToLifecycle(any, any)).thenAnswer((_) async => mockCamera);
+    when(
+      mockProcessCameraProvider.bindToLifecycle(any, any, any, any),
+    ).thenAnswer((_) async => mockCamera);
     when(mockCamera.getCameraInfo()).thenAnswer((_) async => mockCameraInfo);
     when(mockCameraInfo.getCameraState()).thenAnswer((_) async => MockLiveCameraState());
 
@@ -1298,6 +1414,87 @@ void main() {
 
     expect(camera.sensorOrientationDegrees, testSensorOrientation);
     expect(camera.enableRecordingAudio, isTrue);
+  });
+
+  group('createCamera sets the preview target rotation', () {
+    // Binding a CameraEffect moves the preview behind a SurfaceProcessorNode,
+    // which orients its output for the use case's target rotation instead of
+    // passing the sensor-oriented stream through. Asking for the display's
+    // natural orientation is what makes that node fold the whole sensor
+    // orientation - and, for a front-facing preview, the mirroring - into the
+    // transform the shader samples through, which leaves the preview widget
+    // with nothing to correct but the display rotation.
+    //
+    // `Preview.surfaceProducerHandlesCropAndRotation` is deliberately not
+    // stubbed: the plugin no longer asks. The shader writes real pixels into
+    // Flutter's surface, so there is no buffer transform left for either kind
+    // of producer to apply, and the answer cannot change the target rotation.
+    Future<int> targetRotationFor({
+      required CameraLensDirection lensDirection,
+      required int sensorOrientation,
+    }) async {
+      final camera = AndroidCameraCameraX();
+      final mockPreview = MockPreview();
+      when(
+        mockPreview.getResolutionInfo(),
+      ).thenAnswer((_) async => ResolutionInfo.pigeon_detached(resolution: MockCameraSize()));
+
+      final mockProcessCameraProvider = MockProcessCameraProvider();
+      final mockCamera = MockCamera();
+      final mockCameraInfo = MockCameraInfo();
+      when(
+        mockProcessCameraProvider.bindToLifecycle(any, any, any, any),
+      ).thenAnswer((_) async => mockCamera);
+      when(mockCamera.getCameraInfo()).thenAnswer((_) async => mockCameraInfo);
+      when(mockCameraInfo.getCameraState()).thenAnswer((_) async => MockLiveCameraState());
+
+      setUpOverridesForTestingUseCaseConfiguration(
+        mockProcessCameraProvider,
+        newPreview:
+            ({
+              int? targetRotation,
+              CameraIntegerRange? targetFpsRange,
+              ResolutionSelector? resolutionSelector,
+              WhiteBalanceManager? whiteBalanceManager,
+            }) => mockPreview,
+      );
+
+      await camera.createCamera(
+        CameraDescription(
+          name: 'cameraName',
+          lensDirection: lensDirection,
+          sensorOrientation: sensorOrientation,
+        ),
+        ResolutionPreset.low,
+      );
+
+      return verify(mockPreview.setTargetRotation(captureAny)).captured.single as int;
+    }
+
+    test('to the natural orientation, whichever camera is opened', () async {
+      // Exhaustively, because "the render path owns orientation" only holds if
+      // the target rotation stops depending on the camera at all. A value that
+      // varied with lens direction is what left the front preview 180 degrees
+      // off once CameraX started supplying the mirroring.
+      for (final lensDirection in <CameraLensDirection>[
+        CameraLensDirection.back,
+        CameraLensDirection.front,
+        CameraLensDirection.external,
+      ]) {
+        for (final sensorOrientation in <int>[0, 90, 180, 270]) {
+          expect(
+            await targetRotationFor(
+              lensDirection: lensDirection,
+              sensorOrientation: sensorOrientation,
+            ),
+            Surface.rotation0,
+            reason:
+                'Expected the natural orientation for a $lensDirection camera whose sensor is '
+                'mounted at $sensorOrientation degrees.',
+          );
+        }
+      }
+    });
   });
 
   test('createCamera and initializeCamera sets targetFps as expected', () async {
@@ -1318,11 +1515,23 @@ void main() {
     final mockProcessCameraProvider = MockProcessCameraProvider();
     final mockCameraInfo = MockCameraInfo();
 
-    when(mockProcessCameraProvider.bindToLifecycle(any, any)).thenAnswer((_) async => mockCamera);
+    when(
+      mockProcessCameraProvider.bindToLifecycle(any, any, any, any),
+    ).thenAnswer((_) async => mockCamera);
     when(mockCamera.getCameraInfo()).thenAnswer((_) async => mockCameraInfo);
     when(mockCameraInfo.getCameraState()).thenAnswer((_) async => MockLiveCameraState());
     camera.processCameraProvider = mockProcessCameraProvider;
+    camera.effectsManager = mockEffectsManager;
+    camera.cameraEffect = mockCameraEffect;
     PigeonOverrides.cameraIntegerRange_new = CameraIntegerRange.pigeon_detached;
+    // The camera can hold the requested rate with the configuration that is
+    // about to be bound, so it is applied as asked for.
+    when(mockProcessCameraProvider.getSupportedFrameRateRanges(any, any, any, any)).thenAnswer(
+      (_) async => <CameraIntegerRange>[
+        CameraIntegerRange.pigeon_detached(lower: 30, upper: 30),
+        CameraIntegerRange.pigeon_detached(lower: fastTargetFps, upper: fastTargetFps),
+      ],
+    );
 
     CameraIntegerRange? targetPreviewFpsRange;
     CameraIntegerRange? targetVideoCaptureFpsRange;
@@ -1335,6 +1544,7 @@ void main() {
             ResolutionSelector? resolutionSelector,
             CameraIntegerRange? targetFpsRange,
             int? targetRotation,
+            WhiteBalanceManager? whiteBalanceManager,
           }) {
             targetPreviewFpsRange = targetFpsRange;
             final mockPreview = MockPreview();
@@ -1371,6 +1581,109 @@ void main() {
     expect(targetVideoCaptureFpsRange?.upper, fastTargetFps);
     expect(targetImageAnalysisFpsRange?.lower, fastTargetFps);
     expect(targetImageAnalysisFpsRange?.upper, fastTargetFps);
+  });
+
+  /// Builds a camera whose use cases record the target FPS range they are given,
+  /// and whose provider reports [supportedFrameRateRanges] for the configuration
+  /// about to be bound.
+  ///
+  /// Returns the range the preview was built with after asking for
+  /// [requestedFps] — the same one every other use case gets.
+  Future<CameraIntegerRange?> createCameraWithFps(
+    int requestedFps,
+    List<({int lower, int upper})> supportedFrameRateRanges,
+  ) async {
+    final camera = AndroidCameraCameraX();
+    const testCameraDescription = CameraDescription(
+      name: 'cameraName',
+      lensDirection: CameraLensDirection.back,
+      sensorOrientation: 90,
+    );
+    final mockCamera = MockCamera();
+    final mockProcessCameraProvider = MockProcessCameraProvider();
+    final mockCameraInfo = MockCameraInfo();
+
+    when(
+      mockProcessCameraProvider.bindToLifecycle(any, any, any, any),
+    ).thenAnswer((_) async => mockCamera);
+    when(mockCamera.getCameraInfo()).thenAnswer((_) async => mockCameraInfo);
+    when(mockCameraInfo.getCameraState()).thenAnswer((_) async => MockLiveCameraState());
+    when(mockProcessCameraProvider.getSupportedFrameRateRanges(any, any, any, any)).thenAnswer(
+      (_) async => <CameraIntegerRange>[
+        for (final ({int lower, int upper}) range in supportedFrameRateRanges)
+          CameraIntegerRange.pigeon_detached(lower: range.lower, upper: range.upper),
+      ],
+    );
+    camera.processCameraProvider = mockProcessCameraProvider;
+    camera.effectsManager = mockEffectsManager;
+    camera.cameraEffect = mockCameraEffect;
+    PigeonOverrides.cameraIntegerRange_new = CameraIntegerRange.pigeon_detached;
+
+    CameraIntegerRange? targetPreviewFpsRange;
+    setUpOverridesForTestingUseCaseConfiguration(
+      mockProcessCameraProvider,
+      newPreview:
+          ({
+            ResolutionSelector? resolutionSelector,
+            CameraIntegerRange? targetFpsRange,
+            int? targetRotation,
+            WhiteBalanceManager? whiteBalanceManager,
+          }) {
+            // Only the real preview gets a white balance manager; the probe
+            // `_resolveTargetFpsRange` builds to ask the camera about the
+            // configuration does not.
+            if (whiteBalanceManager != null) {
+              targetPreviewFpsRange = targetFpsRange;
+            }
+            final mockPreview = MockPreview();
+            final testResolutionInfo = ResolutionInfo.pigeon_detached(resolution: MockCameraSize());
+            when(mockPreview.getResolutionInfo()).thenAnswer((_) async => testResolutionInfo);
+            return mockPreview;
+          },
+    );
+
+    await camera.createCameraWithSettings(testCameraDescription, MediaSettings(fps: requestedFps));
+    return targetPreviewFpsRange;
+  }
+
+  test('createCamera downgrades a target FPS the configuration cannot hold', () async {
+    // What a 1080p configuration reports on a camera that only reaches 60 with
+    // smaller streams. Forcing [60, 60] here is what leaves the session
+    // configured, active, and delivering nothing.
+    final CameraIntegerRange? range = await createCameraWithFps(60, <({int lower, int upper})>[
+      (lower: 30, upper: 30),
+      (lower: 15, upper: 30),
+      (lower: 7, upper: 15),
+    ]);
+
+    expect(range?.lower, 30);
+    expect(range?.upper, 30);
+  });
+
+  test('createCamera prefers a fixed supported range over one free to drop', () async {
+    final CameraIntegerRange? range = await createCameraWithFps(60, <({int lower, int upper})>[
+      (lower: 15, upper: 30),
+      (lower: 30, upper: 30),
+    ]);
+
+    expect(range?.lower, 30);
+    expect(range?.upper, 30);
+  });
+
+  test('createCamera applies no target FPS when the camera reports no ranges', () async {
+    // Leaving the rate to CameraX is the safe answer: an unchecked range is
+    // exactly what this is here to avoid.
+    expect(await createCameraWithFps(60, <({int lower, int upper})>[]), isNull);
+  });
+
+  test('createCamera takes the slowest range when every one overshoots', () async {
+    final CameraIntegerRange? range = await createCameraWithFps(24, <({int lower, int upper})>[
+      (lower: 60, upper: 60),
+      (lower: 30, upper: 30),
+    ]);
+
+    expect(range?.lower, 30);
+    expect(range?.upper, 30);
   });
 
   test('createCamera properly selects specific back camera by specifying a CameraInfo', () async {
@@ -1444,6 +1757,7 @@ void main() {
           int? targetRotation,
           CameraIntegerRange? targetFpsRange,
           ResolutionSelector? resolutionSelector,
+          WhiteBalanceManager? whiteBalanceManager,
         }) {
           return mockPreview;
         };
@@ -1578,17 +1892,22 @@ void main() {
     }
 
     when(
-      mockProcessCameraProvider.bindToLifecycle(mockChosenCameraInfoCameraSelector, <UseCase>[
-        mockPreview,
-        mockImageCapture,
-        mockImageAnalysis,
-      ]),
+      mockProcessCameraProvider.bindToLifecycle(
+        mockChosenCameraInfoCameraSelector,
+        <UseCase>[mockPreview, mockImageCapture, mockImageAnalysis],
+        <CameraEffect>[mockCameraEffect],
+        null,
+      ),
     ).thenAnswer((_) async => mockCamera);
     when(mockCamera.getCameraInfo()).thenAnswer((_) async => mockCameraInfo);
     when(mockCameraInfo.getCameraState()).thenAnswer((_) async => MockLiveCameraState());
     when(mockCamera.cameraControl).thenAnswer((_) => mockCameraControl);
 
     camera.processCameraProvider = mockProcessCameraProvider;
+
+    camera.effectsManager = mockEffectsManager;
+
+    camera.cameraEffect = mockCameraEffect;
 
     // Verify the camera name used to create camera is associated with mockBackCameraInfoOne.
     expect(cameraNameToInfos[cameraDescriptions[0].name], mockBackCameraInfoOne);
@@ -1641,12 +1960,16 @@ void main() {
     final mockPreview = MockPreview();
     final testResolutionInfo = ResolutionInfo.pigeon_detached(resolution: MockCameraSize());
 
-    when(mockProcessCameraProvider.bindToLifecycle(any, any)).thenAnswer((_) async => mockCamera);
+    when(
+      mockProcessCameraProvider.bindToLifecycle(any, any, any, any),
+    ).thenAnswer((_) async => mockCamera);
     when(mockCamera.getCameraInfo()).thenAnswer((_) async => mockCameraInfo);
     when(mockCameraInfo.getCameraState()).thenAnswer((_) async => mockLiveCameraState);
     when(mockPreview.getResolutionInfo()).thenAnswer((_) async => testResolutionInfo);
     when(mockPreview.setSurfaceProvider(any)).thenAnswer((_) async => testSurfaceTextureId);
     camera.processCameraProvider = mockProcessCameraProvider;
+    camera.effectsManager = mockEffectsManager;
+    camera.cameraEffect = mockCameraEffect;
 
     // Tell plugin to create mock/detached objects for testing createCamera
     // as needed.
@@ -1657,6 +1980,7 @@ void main() {
             ResolutionSelector? resolutionSelector,
             int? targetRotation,
             CameraIntegerRange? targetFpsRange,
+            WhiteBalanceManager? whiteBalanceManager,
           }) => mockPreview,
     );
 
@@ -1701,12 +2025,16 @@ void main() {
     final mockImageAnalysis = MockImageAnalysis();
 
     // Configure mocks for camera initialization.
-    when(mockProcessCameraProvider.bindToLifecycle(any, any)).thenAnswer((_) async => mockCamera);
+    when(
+      mockProcessCameraProvider.bindToLifecycle(any, any, any, any),
+    ).thenAnswer((_) async => mockCamera);
     when(mockCamera.getCameraInfo()).thenAnswer((_) async => mockCameraInfo);
     when(mockCameraInfo.getCameraState()).thenAnswer((_) async => mockLiveCameraState);
     when(mockPreview.getResolutionInfo()).thenAnswer((_) async => testResolutionInfo);
     when(mockPreview.setSurfaceProvider(any)).thenAnswer((_) async => testSurfaceTextureId);
     camera.processCameraProvider = mockProcessCameraProvider;
+    camera.effectsManager = mockEffectsManager;
+    camera.cameraEffect = mockCameraEffect;
 
     for (final ImageFormatGroup imageFormatGroup in ImageFormatGroup.values) {
       // Get CameraX image format constant for imageFormatGroup.
@@ -1735,6 +2063,7 @@ void main() {
               ResolutionSelector? resolutionSelector,
               int? targetRotation,
               CameraIntegerRange? targetFpsRange,
+              WhiteBalanceManager? whiteBalanceManager,
             }) => mockPreview,
       );
 
@@ -1796,6 +2125,7 @@ void main() {
           int? targetRotation,
           CameraIntegerRange? targetFpsRange,
           ResolutionSelector? resolutionSelector,
+          WhiteBalanceManager? whiteBalanceManager,
         }) => mockPreview;
     PigeonOverrides.imageCapture_new =
         ({
@@ -1877,11 +2207,12 @@ void main() {
     when(mockPreview.setSurfaceProvider(any)).thenAnswer((_) async => cameraId);
 
     when(
-      mockProcessCameraProvider.bindToLifecycle(mockBackCameraSelector, <UseCase>[
-        mockPreview,
-        mockImageCapture,
-        mockImageAnalysis,
-      ]),
+      mockProcessCameraProvider.bindToLifecycle(
+        mockBackCameraSelector,
+        <UseCase>[mockPreview, mockImageCapture, mockImageAnalysis],
+        <CameraEffect>[mockCameraEffect],
+        null,
+      ),
     ).thenAnswer((_) async => mockCamera);
     when(mockCamera.getCameraInfo()).thenAnswer((_) async => mockCameraInfo);
     when(mockCameraInfo.getCameraState()).thenAnswer((_) async => MockLiveCameraState());
@@ -1928,16 +2259,35 @@ void main() {
 
       camera.preview = MockPreview();
       camera.processCameraProvider = MockProcessCameraProvider();
+      camera.effectsManager = mockEffectsManager;
+      camera.cameraEffect = mockCameraEffect;
       camera.liveCameraState = MockLiveCameraState();
       camera.imageAnalysis = MockImageAnalysis();
 
       await camera.dispose(3);
 
-      verify(camera.preview!.releaseSurfaceProvider());
-      verify(camera.liveCameraState!.removeObservers());
-      verify(camera.processCameraProvider!.unbindAll());
-      verify(camera.imageAnalysis!.clearAnalyzer());
+      // In this order, and the order is the point. Releasing the surface
+      // provider closes the `ImageReader` behind Flutter's texture; anything
+      // still rendering into that surface afterwards leaves the engine's raster
+      // thread reading closed images, which it answers with a failed CHECK that
+      // aborts the process rather than an exception anything here could catch.
+      // Both producers have to stop first — the camera, via its use cases, and
+      // the shader pipeline, which holds an EGL window surface made from that
+      // same `Surface` and swaps into it every frame.
+      verifyInOrder(<Object?>[
+        camera.liveCameraState!.removeObservers(),
+        camera.processCameraProvider!.unbindAll(),
+        camera.imageAnalysis!.clearAnalyzer(),
+        mockEffectsManager.detachOutputs(),
+        camera.preview!.releaseSurfaceProvider(),
+      ]);
       expect(stoppedListeningForDeviceOrientationChange, isTrue);
+      // Detached, never released: the pipeline outlives the camera so that
+      // CameraX's cached per-camera adapters are never left holding an effect
+      // whose GL context has gone.
+      verifyNever(mockEffectsManager.release());
+      expect(camera.effectsManager, same(mockEffectsManager));
+      expect(camera.cameraEffect, same(mockCameraEffect));
     },
   );
 
@@ -2046,6 +2396,8 @@ void main() {
 
       // Set directly for test versus calling createCamera.
       camera.processCameraProvider = MockProcessCameraProvider();
+      camera.effectsManager = mockEffectsManager;
+      camera.cameraEffect = mockCameraEffect;
       camera.preview = MockPreview();
 
       when(camera.processCameraProvider!.isBound(camera.preview!)).thenAnswer((_) async => true);
@@ -2063,6 +2415,8 @@ void main() {
 
       // Set directly for test versus calling createCamera.
       camera.processCameraProvider = MockProcessCameraProvider();
+      camera.effectsManager = mockEffectsManager;
+      camera.cameraEffect = mockCameraEffect;
       camera.preview = MockPreview();
 
       await camera.pausePreview(632);
@@ -2082,15 +2436,20 @@ void main() {
 
       // Set directly for test versus calling createCamera.
       camera.processCameraProvider = mockProcessCameraProvider;
+      camera.effectsManager = mockEffectsManager;
+      camera.cameraEffect = mockCameraEffect;
       camera.cameraSelector = MockCameraSelector();
       camera.preview = MockPreview();
 
       when(camera.processCameraProvider!.isBound(camera.preview!)).thenAnswer((_) async => true);
 
       when(
-        mockProcessCameraProvider.bindToLifecycle(camera.cameraSelector, <UseCase>[
-          camera.preview!,
-        ]),
+        mockProcessCameraProvider.bindToLifecycle(
+          camera.cameraSelector,
+          <UseCase>[camera.preview!],
+          <CameraEffect>[mockCameraEffect],
+          null,
+        ),
       ).thenAnswer((_) async => mockCamera);
       when(mockCamera.getCameraInfo()).thenAnswer((_) async => mockCameraInfo);
       when(mockCameraInfo.getCameraState()).thenAnswer((_) async => mockLiveCameraState);
@@ -2098,9 +2457,12 @@ void main() {
       await camera.resumePreview(78);
 
       verifyNever(
-        camera.processCameraProvider!.bindToLifecycle(camera.cameraSelector!, <UseCase>[
-          camera.preview!,
-        ]),
+        camera.processCameraProvider!.bindToLifecycle(
+          camera.cameraSelector!,
+          <UseCase>[camera.preview!],
+          <CameraEffect>[mockCameraEffect],
+          null,
+        ),
       );
       verifyNever(mockLiveCameraState.observe(any));
       expect(camera.cameraInfo, isNot(mockCameraInfo));
@@ -2119,6 +2481,8 @@ void main() {
 
       // Set directly for test versus calling createCamera.
       camera.processCameraProvider = mockProcessCameraProvider;
+      camera.effectsManager = mockEffectsManager;
+      camera.cameraEffect = mockCameraEffect;
       camera.cameraSelector = MockCameraSelector();
       camera.preview = MockPreview();
 
@@ -2131,9 +2495,12 @@ void main() {
           };
 
       when(
-        mockProcessCameraProvider.bindToLifecycle(camera.cameraSelector, <UseCase>[
-          camera.preview!,
-        ]),
+        mockProcessCameraProvider.bindToLifecycle(
+          camera.cameraSelector,
+          <UseCase>[camera.preview!],
+          <CameraEffect>[mockCameraEffect],
+          null,
+        ),
       ).thenAnswer((_) async => mockCamera);
       when(mockCamera.getCameraInfo()).thenAnswer((_) async => mockCameraInfo);
       when(mockCameraInfo.getCameraState()).thenAnswer((_) async => mockLiveCameraState);
@@ -2142,9 +2509,12 @@ void main() {
       await camera.resumePreview(78);
 
       verify(
-        camera.processCameraProvider!.bindToLifecycle(camera.cameraSelector!, <UseCase>[
-          camera.preview!,
-        ]),
+        camera.processCameraProvider!.bindToLifecycle(
+          camera.cameraSelector!,
+          <UseCase>[camera.preview!],
+          <CameraEffect>[mockCameraEffect],
+          null,
+        ),
       );
       expect(
         await testCameraClosingObserver(
@@ -2192,6 +2562,8 @@ void main() {
 
         // Set directly for test versus calling createCamera.
         camera.processCameraProvider = MockProcessCameraProvider();
+        camera.effectsManager = mockEffectsManager;
+        camera.cameraEffect = mockCameraEffect;
         camera.camera = mockCamera;
         camera.recorder = MockRecorder();
         camera.videoCapture = MockVideoCapture();
@@ -2244,9 +2616,12 @@ void main() {
           camera.processCameraProvider!.isBound(camera.videoCapture!),
         ).thenAnswer((_) async => false);
         when(
-          camera.processCameraProvider!.bindToLifecycle(camera.cameraSelector!, <UseCase>[
-            camera.videoCapture!,
-          ]),
+          camera.processCameraProvider!.bindToLifecycle(
+            camera.cameraSelector!,
+            <UseCase>[camera.videoCapture!],
+            <CameraEffect>[mockCameraEffect],
+            null,
+          ),
         ).thenAnswer((_) async => newMockCamera);
         when(newMockCamera.getCameraInfo()).thenAnswer((_) async => mockCameraInfo);
         when(newMockCamera.cameraControl).thenReturn(mockCameraControl);
@@ -2265,9 +2640,12 @@ void main() {
         // Verify VideoCapture UseCase is bound and camera & its properties
         // are updated.
         verify(
-          camera.processCameraProvider!.bindToLifecycle(camera.cameraSelector!, <UseCase>[
-            camera.videoCapture!,
-          ]),
+          camera.processCameraProvider!.bindToLifecycle(
+            camera.cameraSelector!,
+            <UseCase>[camera.videoCapture!],
+            <CameraEffect>[mockCameraEffect],
+            null,
+          ),
         );
         expect(camera.camera, equals(newMockCamera));
         expect(camera.cameraInfo, equals(mockCameraInfo));
@@ -2300,6 +2678,8 @@ void main() {
 
       // Set directly for test versus calling createCamera.
       camera.processCameraProvider = MockProcessCameraProvider();
+      camera.effectsManager = mockEffectsManager;
+      camera.cameraEffect = mockCameraEffect;
       camera.recorder = MockRecorder();
       camera.videoCapture = MockVideoCapture();
       camera.cameraSelector = MockCameraSelector();
@@ -2350,9 +2730,12 @@ void main() {
         camera.processCameraProvider!.isBound(camera.videoCapture!),
       ).thenAnswer((_) async => false);
       when(
-        camera.processCameraProvider!.bindToLifecycle(camera.cameraSelector!, <UseCase>[
-          camera.videoCapture!,
-        ]),
+        camera.processCameraProvider!.bindToLifecycle(
+          camera.cameraSelector!,
+          <UseCase>[camera.videoCapture!],
+          <CameraEffect>[mockCameraEffect],
+          null,
+        ),
       ).thenAnswer((_) async => mockCamera);
       when(mockCamera.getCameraInfo()).thenAnswer((_) => Future<CameraInfo>.value(mockCameraInfo));
       when(mockCameraInfo.getCameraState()).thenAnswer((_) async => MockLiveCameraState());
@@ -2368,9 +2751,12 @@ void main() {
       await camera.startVideoCapturing(const VideoCaptureOptions(cameraId));
 
       verify(
-        camera.processCameraProvider!.bindToLifecycle(camera.cameraSelector!, <UseCase>[
-          camera.videoCapture!,
-        ]),
+        camera.processCameraProvider!.bindToLifecycle(
+          camera.cameraSelector!,
+          <UseCase>[camera.videoCapture!],
+          <CameraEffect>[mockCameraEffect],
+          null,
+        ),
       );
       expect(camera.pendingRecording, equals(mockPendingRecording));
       expect(camera.recording, mockRecording);
@@ -2399,6 +2785,10 @@ void main() {
       // Set directly for test versus calling createCamera.
 
       camera.processCameraProvider = mockProcessCameraProvider;
+
+      camera.effectsManager = mockEffectsManager;
+
+      camera.cameraEffect = mockCameraEffect;
       camera.cameraSelector = MockCameraSelector();
       camera.videoCapture = MockVideoCapture();
       camera.imageAnalysis = MockImageAnalysis();
@@ -2461,7 +2851,7 @@ void main() {
         mockPendingRecording.asPersistentRecording(),
       ).thenAnswer((_) async => mockPendingRecording);
       when(
-        mockProcessCameraProvider.bindToLifecycle(any, any),
+        mockProcessCameraProvider.bindToLifecycle(any, any, any, any),
       ).thenAnswer((_) => Future<Camera>.value(camera.camera));
       when(
         camera.camera!.getCameraInfo(),
@@ -2498,6 +2888,8 @@ void main() {
 
         // Set directly for test versus calling createCamera.
         camera.processCameraProvider = MockProcessCameraProvider();
+        camera.effectsManager = mockEffectsManager;
+        camera.cameraEffect = mockCameraEffect;
         camera.camera = MockCamera();
         camera.recorder = MockRecorder();
         camera.videoCapture = mockVideoCapture;
@@ -2646,6 +3038,8 @@ void main() {
 
       // Set directly for test versus calling createCamera and startVideoCapturing.
       camera.processCameraProvider = processCameraProvider;
+      camera.effectsManager = mockEffectsManager;
+      camera.cameraEffect = mockCameraEffect;
       camera.recording = recording;
       camera.videoCapture = videoCapture;
       camera.videoOutputPath = videoOutputPath;
@@ -2664,6 +3058,64 @@ void main() {
       // Verify that recording stops.
       verify(recording.close());
       verifyNoMoreInteractions(recording);
+    });
+
+    test('stopVideoRecording re-binds the preview so the view port survives', () async {
+      // Unbinding the encoder takes `StreamSharing` apart, and the preview
+      // pipeline CameraX builds to replace it comes back uncropped. A view port
+      // reaches a use case only through a bind, so one has to happen here.
+      final camera = AndroidCameraCameraX();
+      const testCameraDescription = CameraDescription(
+        name: 'cameraName',
+        lensDirection: CameraLensDirection.back,
+        sensorOrientation: 90,
+      );
+      final processCameraProvider = MockProcessCameraProvider();
+      final mockCamera = MockCamera();
+      final mockCameraInfo = MockCameraInfo();
+
+      when(
+        processCameraProvider.bindToLifecycle(any, any, any, any),
+      ).thenAnswer((_) async => mockCamera);
+      when(mockCamera.getCameraInfo()).thenAnswer((_) async => mockCameraInfo);
+      when(mockCameraInfo.getCameraState()).thenAnswer((_) async => MockLiveCameraState());
+      setUpOverridesForTestingUseCaseConfiguration(processCameraProvider);
+
+      final viewPortsBuilt = <ViewPort>[];
+      PigeonOverrides.viewPort_new =
+          ({required int aspectRatioWidth, required int aspectRatioHeight, required int rotation}) {
+            final viewPort = ViewPort.pigeon_detached();
+            viewPortsBuilt.add(viewPort);
+            return viewPort;
+          };
+
+      // The 1:1 crop the recording runs with, established the way a caller
+      // would, so the view port is the one the plugin actually holds.
+      final int cameraId = await camera.createCameraWithSettings(
+        testCameraDescription,
+        const MediaSettings(aspectRatio: 1.0),
+      );
+      await camera.initializeCamera(cameraId);
+      expect(viewPortsBuilt, hasLength(1));
+
+      camera.videoOutputPath = '/test/output/path';
+      camera.recording = MockRecording();
+      when(processCameraProvider.isBound(camera.videoCapture)).thenAnswer((_) async => true);
+      when(processCameraProvider.isBound(camera.preview)).thenAnswer((_) async => true);
+      clearInteractions(processCameraProvider);
+
+      AndroidCameraCameraX.videoRecordingEventStreamController.add(
+        VideoRecordEventFinalize.pigeon_detached(),
+      );
+      await camera.stopVideoRecording(cameraId);
+
+      verify(processCameraProvider.unbind(<UseCase>[camera.preview!]));
+      final List<Object?> bound = verify(
+        processCameraProvider.bindToLifecycle(any, captureAny, any, captureAny),
+      ).captured;
+      expect(bound[0], <UseCase>[camera.preview!]);
+      // The crop set before the recording, not a null view port.
+      expect(bound[1], same(viewPortsBuilt.single));
     });
 
     test('stopVideoRecording throws a camera exception if '
@@ -2688,6 +3140,8 @@ void main() {
 
       // Set directly for test versus calling startVideoCapturing.
       camera.processCameraProvider = MockProcessCameraProvider();
+      camera.effectsManager = mockEffectsManager;
+      camera.cameraEffect = mockCameraEffect;
       camera.recording = mockRecording;
       camera.videoOutputPath = null;
       camera.videoCapture = mockVideoCapture;
@@ -2715,6 +3169,8 @@ void main() {
 
       // Set directly for test versus calling createCamera and startVideoCapturing.
       camera.processCameraProvider = processCameraProvider;
+      camera.effectsManager = mockEffectsManager;
+      camera.cameraEffect = mockCameraEffect;
       camera.recording = recording;
       camera.videoCapture = videoCapture;
       camera.videoOutputPath = videoOutputPath;
@@ -2741,6 +3197,8 @@ void main() {
 
       // Set directly for test versus calling createCamera and startVideoCapturing.
       camera.processCameraProvider = processCameraProvider;
+      camera.effectsManager = mockEffectsManager;
+      camera.cameraEffect = mockCameraEffect;
       camera.recording = recording;
       camera.videoCapture = videoCapture;
       camera.videoOutputPath = videoOutputPath;
@@ -2805,6 +3263,7 @@ void main() {
             ResolutionSelector? resolutionSelector,
             int? targetRotation,
             CameraIntegerRange? targetFpsRange,
+            WhiteBalanceManager? whiteBalanceManager,
           }) {
             when(mockPreview.setSurfaceProvider(any)).thenAnswer((_) async => 19);
             final testResolutionInfo = ResolutionInfo.pigeon_detached(resolution: MockCameraSize());
@@ -2896,9 +3355,15 @@ void main() {
       when(
         mockProcessCameraProvider.getAvailableCameraInfos(),
       ).thenAnswer((_) async => <MockCameraInfo>[mockBackCameraInfo, mockFrontCameraInfo]);
-      when(mockProcessCameraProvider.bindToLifecycle(any, any)).thenAnswer((_) async => mockCamera);
+      when(
+        mockProcessCameraProvider.bindToLifecycle(any, any, any, any),
+      ).thenAnswer((_) async => mockCamera);
 
       camera.processCameraProvider = mockProcessCameraProvider;
+
+      camera.effectsManager = mockEffectsManager;
+
+      camera.cameraEffect = mockCameraEffect;
       camera.liveCameraState = mockLiveCameraState;
       camera.enableRecordingAudio = false;
       when(
@@ -2913,12 +3378,12 @@ void main() {
       when(mockCamera.getCameraInfo()).thenAnswer((_) async => mockCameraInfo);
       when(mockCamera.cameraControl).thenAnswer((_) => mockCameraControl);
       when(
-        camera.processCameraProvider?.bindToLifecycle(mockFrontCameraSelector, <UseCase>[
-          mockVideoCapture,
-          mockPreview,
-          mockImageCapture,
-          mockImageAnalysis,
-        ]),
+        camera.processCameraProvider?.bindToLifecycle(
+          mockFrontCameraSelector,
+          <UseCase>[mockVideoCapture, mockPreview, mockImageCapture, mockImageAnalysis],
+          <CameraEffect>[mockCameraEffect],
+          null,
+        ),
       ).thenAnswer((_) async => newMockCamera);
       when(newMockCamera.getCameraInfo()).thenAnswer((_) async => mockCameraInfo);
       when(newMockCamera.cameraControl).thenReturn(mockCameraControl);
@@ -2943,12 +3408,12 @@ void main() {
       //verify front camera selected and camera properties updated
       verify(camera.processCameraProvider?.unbindAll()).called(2);
       verify(
-        camera.processCameraProvider?.bindToLifecycle(mockFrontCameraSelector, <UseCase>[
-          mockVideoCapture,
-          mockPreview,
-          mockImageCapture,
-          mockImageAnalysis,
-        ]),
+        camera.processCameraProvider?.bindToLifecycle(
+          mockFrontCameraSelector,
+          <UseCase>[mockVideoCapture, mockPreview, mockImageCapture, mockImageAnalysis],
+          <CameraEffect>[mockCameraEffect],
+          null,
+        ),
       ).called(1);
       expect(camera.camera, equals(newMockCamera));
       expect(camera.cameraInfo, equals(mockCameraInfo));
@@ -2968,12 +3433,12 @@ void main() {
       //verify back camera selected
       await camera.setDescriptionWhileRecording(testBackCameraDescription);
       verify(
-        camera.processCameraProvider?.bindToLifecycle(mockBackCameraSelector, <UseCase>[
-          mockVideoCapture,
-          mockPreview,
-          mockImageCapture,
-          mockImageAnalysis,
-        ]),
+        camera.processCameraProvider?.bindToLifecycle(
+          mockBackCameraSelector,
+          <UseCase>[mockVideoCapture, mockPreview, mockImageCapture, mockImageAnalysis],
+          <CameraEffect>[mockCameraEffect],
+          null,
+        ),
       ).called(1);
     });
 
@@ -3018,6 +3483,7 @@ void main() {
             ResolutionSelector? resolutionSelector,
             int? targetRotation,
             CameraIntegerRange? targetFpsRange,
+            WhiteBalanceManager? whiteBalanceManager,
           }) {
             when(mockPreview.setSurfaceProvider(any)).thenAnswer((_) async => 19);
             final testResolutionInfo = ResolutionInfo.pigeon_detached(resolution: MockCameraSize());
@@ -3109,9 +3575,15 @@ void main() {
       when(
         mockProcessCameraProvider.getAvailableCameraInfos(),
       ).thenAnswer((_) async => <MockCameraInfo>[mockBackCameraInfo, mockFrontCameraInfo]);
-      when(mockProcessCameraProvider.bindToLifecycle(any, any)).thenAnswer((_) async => mockCamera);
+      when(
+        mockProcessCameraProvider.bindToLifecycle(any, any, any, any),
+      ).thenAnswer((_) async => mockCamera);
 
       camera.processCameraProvider = mockProcessCameraProvider;
+
+      camera.effectsManager = mockEffectsManager;
+
+      camera.cameraEffect = mockCameraEffect;
       camera.enableRecordingAudio = false;
       when(
         mockPendingRecording.withAudioEnabled(any),
@@ -3150,11 +3622,12 @@ void main() {
       // verify preview not bound to lifecycle
       verify(camera.processCameraProvider?.unbindAll()).called(2);
       verify(
-        camera.processCameraProvider?.bindToLifecycle(mockFrontCameraSelector, <UseCase>[
-          mockVideoCapture,
-          mockImageCapture,
-          mockImageAnalysis,
-        ]),
+        camera.processCameraProvider?.bindToLifecycle(
+          mockFrontCameraSelector,
+          <UseCase>[mockVideoCapture, mockImageCapture, mockImageAnalysis],
+          <CameraEffect>[mockCameraEffect],
+          null,
+        ),
       ).called(1);
     });
   });
@@ -3170,6 +3643,8 @@ void main() {
     // Set directly for test versus calling createCamera.
     camera.imageCapture = mockImageCapture;
     camera.processCameraProvider = mockProcessCameraProvider;
+    camera.effectsManager = mockEffectsManager;
+    camera.cameraEffect = mockCameraEffect;
     camera.cameraSelector = MockCameraSelector();
 
     // Ignore setting target rotation for this test; tested seprately.
@@ -3186,15 +3661,22 @@ void main() {
 
     when(mockProcessCameraProvider.isBound(camera.imageCapture)).thenAnswer((_) async => false);
     when(
-      mockProcessCameraProvider.bindToLifecycle(camera.cameraSelector, <UseCase>[
-        camera.imageCapture!,
-      ]),
+      mockProcessCameraProvider.bindToLifecycle(
+        camera.cameraSelector,
+        <UseCase>[camera.imageCapture!],
+        <CameraEffect>[mockCameraEffect],
+        null,
+      ),
     ).thenAnswer((_) async => mockCamera);
     when(mockCamera.getCameraInfo()).thenAnswer((_) async => mockCameraInfo);
     when(mockCameraInfo.getCameraState()).thenAnswer((_) async => MockLiveCameraState());
     when(
-      mockImageCapture.takePicture(argThat(isA<SystemServicesManager>())),
-    ).thenAnswer((_) async => testPicturePath);
+      mockImageCapture.takePictureWithEffects(
+        argThat(isA<SystemServicesManager>()),
+        mockEffectsManager,
+        false,
+      ),
+    ).thenAnswer((_) async => CapturedPicturePaths.pigeon_detached(processedPath: testPicturePath));
 
     final XFile imageFile = await camera.takePicture(3);
 
@@ -3214,6 +3696,8 @@ void main() {
       // Set directly for test versus calling createCamera.
       camera.imageCapture = mockImageCapture;
       camera.processCameraProvider = mockProcessCameraProvider;
+      camera.effectsManager = mockEffectsManager;
+      camera.cameraEffect = mockCameraEffect;
 
       // Tell plugin to mock call to get current photo orientation and systemServicesManager.
       PigeonOverrides.deviceOrientationManager_new =
@@ -3231,8 +3715,15 @@ void main() {
 
       when(mockProcessCameraProvider.isBound(camera.imageCapture)).thenAnswer((_) async => true);
       when(
-        mockImageCapture.takePicture(argThat(isA<SystemServicesManager>())),
-      ).thenAnswer((_) async => 'test/absolute/path/to/picture');
+        mockImageCapture.takePictureWithEffects(
+          argThat(isA<SystemServicesManager>()),
+          mockEffectsManager,
+          false,
+        ),
+      ).thenAnswer(
+        (_) async =>
+            CapturedPicturePaths.pigeon_detached(processedPath: 'test/absolute/path/to/picture'),
+      );
 
       // Orientation is unlocked and plugin does not need to set default target
       // rotation manually.
@@ -3264,12 +3755,15 @@ void main() {
   test('takePicture turns non-torch flash mode off when torch mode enabled', () async {
     final camera = AndroidCameraCameraX();
     final mockProcessCameraProvider = MockProcessCameraProvider();
+    final mockImageCapture = MockImageCapture();
     const cameraId = 77;
 
     // Set directly for test versus calling createCamera.
-    camera.imageCapture = MockImageCapture();
+    camera.imageCapture = mockImageCapture;
     camera.cameraControl = MockCameraControl();
     camera.processCameraProvider = mockProcessCameraProvider;
+    camera.effectsManager = mockEffectsManager;
+    camera.cameraEffect = mockCameraEffect;
 
     // Ignore setting target rotation for this test; tested seprately.
     camera.captureOrientationLocked = true;
@@ -3281,6 +3775,14 @@ void main() {
         };
 
     when(mockProcessCameraProvider.isBound(camera.imageCapture)).thenAnswer((_) async => true);
+    // The capture itself is irrelevant here; it just has to resolve.
+    when(
+      mockImageCapture.takePictureWithEffects(
+        argThat(isA<SystemServicesManager>()),
+        mockEffectsManager,
+        false,
+      ),
+    ).thenAnswer((_) async => CapturedPicturePaths.pigeon_detached(processedPath: 'ignored'));
 
     await camera.setFlashMode(cameraId, FlashMode.torch);
     await camera.takePicture(cameraId);
@@ -3292,14 +3794,17 @@ void main() {
     const cameraId = 22;
     final mockCameraControl = MockCameraControl();
     final mockProcessCameraProvider = MockProcessCameraProvider();
+    final mockImageCapture = MockImageCapture();
 
     // Set directly for test versus calling createCamera.
-    camera.imageCapture = MockImageCapture();
+    camera.imageCapture = mockImageCapture;
     camera.cameraControl = mockCameraControl;
 
     // Ignore setting target rotation for this test; tested seprately.
     camera.captureOrientationLocked = true;
     camera.processCameraProvider = mockProcessCameraProvider;
+    camera.effectsManager = mockEffectsManager;
+    camera.cameraEffect = mockCameraEffect;
 
     // Tell plugin to mock call to get current photo orientation and systemServicesManager.
     PigeonOverrides.systemServicesManager_new =
@@ -3328,6 +3833,16 @@ void main() {
         // Torch mode enabled and won't be used for configuring image capture.
         continue;
       }
+
+      // This test drives takePicture only to observe the flash mode it sets,
+      // so the capture itself just has to resolve.
+      when(
+        mockImageCapture.takePictureWithEffects(
+          argThat(isA<SystemServicesManager>()),
+          mockEffectsManager,
+          false,
+        ),
+      ).thenAnswer((_) async => CapturedPicturePaths.pigeon_detached(processedPath: 'ignored'));
 
       verifyNever(mockCameraControl.enableTorch(true));
       expect(camera.torchEnabled, isFalse);
@@ -3727,6 +4242,8 @@ void main() {
 
       // Set directly for test versus calling createCamera.
       camera.processCameraProvider = mockProcessCameraProvider;
+      camera.effectsManager = mockEffectsManager;
+      camera.cameraEffect = mockCameraEffect;
       camera.cameraSelector = MockCameraSelector();
       camera.imageAnalysis = MockImageAnalysis();
 
@@ -3734,7 +4251,7 @@ void main() {
       camera.captureOrientationLocked = true;
 
       when(
-        mockProcessCameraProvider.bindToLifecycle(any, any),
+        mockProcessCameraProvider.bindToLifecycle(any, any, any, any),
       ).thenAnswer((_) => Future<Camera>.value(mockCamera));
       when(mockProcessCameraProvider.isBound(camera.imageAnalysis)).thenAnswer((_) async => true);
       when(mockCamera.getCameraInfo()).thenAnswer((_) => Future<CameraInfo>.value(mockCameraInfo));
@@ -3765,6 +4282,8 @@ void main() {
 
       // Set directly for test versus calling createCamera.
       camera.processCameraProvider = mockProcessCameraProvider;
+      camera.effectsManager = mockEffectsManager;
+      camera.cameraEffect = mockCameraEffect;
       camera.cameraSelector = MockCameraSelector();
       camera.imageAnalysis = MockImageAnalysis();
 
@@ -3825,6 +4344,8 @@ void main() {
 
       // Set directly for test versus calling createCamera.
       camera.processCameraProvider = mockProcessCameraProvider;
+      camera.effectsManager = mockEffectsManager;
+      camera.cameraEffect = mockCameraEffect;
       camera.cameraSelector = mockCameraSelector;
       camera.imageAnalysis = mockImageAnalysis;
 
@@ -3833,7 +4354,12 @@ void main() {
 
       when(mockProcessCameraProvider.isBound(mockImageAnalysis)).thenAnswer((_) async => false);
       when(
-        mockProcessCameraProvider.bindToLifecycle(mockCameraSelector, <UseCase>[mockImageAnalysis]),
+        mockProcessCameraProvider.bindToLifecycle(
+          mockCameraSelector,
+          <UseCase>[mockImageAnalysis],
+          <CameraEffect>[mockCameraEffect],
+          null,
+        ),
       ).thenAnswer((_) async => mockCamera);
       when(mockCamera.getCameraInfo()).thenAnswer((_) async => mockCameraInfo);
       when(mockCameraInfo.getCameraState()).thenAnswer((_) async => MockLiveCameraState());
@@ -3890,7 +4416,9 @@ void main() {
       final testNv21Buffer = Uint8List(10);
 
       // Mock use case bindings and related Camera objects.
-      when(mockProcessCameraProvider.bindToLifecycle(any, any)).thenAnswer((_) async => mockCamera);
+      when(
+        mockProcessCameraProvider.bindToLifecycle(any, any, any, any),
+      ).thenAnswer((_) async => mockCamera);
       when(mockCamera.getCameraInfo()).thenAnswer((_) async => mockCameraInfo);
       when(mockCameraInfo.getCameraState()).thenAnswer((_) async => MockLiveCameraState());
 
@@ -3961,6 +4489,8 @@ void main() {
       // Set directly for test versus calling createCamera.
       camera.imageAnalysis = mockImageAnalysis;
       camera.processCameraProvider = mockProcessCameraProvider;
+      camera.effectsManager = mockEffectsManager;
+      camera.cameraEffect = mockCameraEffect;
 
       // Ignore setting target rotation for this test; tested separately.
       camera.captureOrientationLocked = true;
@@ -3993,6 +4523,8 @@ void main() {
       // Set directly for test versus calling createCamera.
       camera.imageAnalysis = mockImageAnalysis;
       camera.processCameraProvider = mockProcessCameraProvider;
+      camera.effectsManager = mockEffectsManager;
+      camera.cameraEffect = mockCameraEffect;
 
       // Tell plugin to create a detached analyzer for testing purposes and mock
       // call to get current photo orientation.
@@ -4501,19 +5033,50 @@ void main() {
       camera.cameraControl = mockCameraControl;
 
       when(mockCameraInfo.exposureState).thenReturn(exposureState);
+      // CameraX answers with the compensation index it settled on, counted in
+      // steps of `exposureCompensationStep`.
       when(
         mockCameraControl.setExposureCompensationIndex(expectedExposureCompensationIndex),
-      ).thenAnswer(
-        (_) async => Future<int>.value(
-          (expectedExposureCompensationIndex * exposureState.exposureCompensationStep).round(),
-        ),
-      );
+      ).thenAnswer((_) async => Future<int>.value(expectedExposureCompensationIndex));
 
       // Exposure index * exposure offset step size = exposure offset, i.e.
-      // 15 * 0.2 = 3.
+      // 15 * 0.2 = 3. The platform interface deals in offsets, so the index has
+      // to be converted back before it is returned — `AVFoundationCamera`
+      // likewise answers in EV.
       expect(await camera.setExposureOffset(cameraId, offset), equals(3));
     },
   );
+
+  test('setExposureOffset returns the requested offset when a newer call supersedes it', () async {
+    // Dragging an exposure slider submits a call per frame, and CameraX cancels
+    // each pending index as the next arrives. Those cancellations are not
+    // failures the caller can act on, so they must not surface as exceptions.
+    final camera = AndroidCameraCameraX();
+    const cameraId = 11;
+    final mockCameraInfo = MockCameraInfo();
+    final CameraControl mockCameraControl = MockCameraControl();
+    final exposureState = ExposureState.pigeon_detached(
+      exposureCompensationRange: CameraIntegerRange.pigeon_detached(lower: -10, upper: 10),
+      exposureCompensationStep: 0.2,
+    );
+
+    camera.cameraInfo = mockCameraInfo;
+    camera.cameraControl = mockCameraControl;
+    when(mockCameraInfo.exposureState).thenReturn(exposureState);
+
+    // The first call never completes until the second one has been issued, which
+    // is the ordering CameraX cancels on.
+    final superseded = Completer<int?>();
+    when(mockCameraControl.setExposureCompensationIndex(5)).thenAnswer((_) => superseded.future);
+    when(mockCameraControl.setExposureCompensationIndex(10)).thenAnswer((_) async => 10);
+
+    final Future<double> first = camera.setExposureOffset(cameraId, 1.0);
+    final double second = await camera.setExposureOffset(cameraId, 2.0);
+    superseded.complete(null);
+
+    expect(await first, closeTo(1.0, 1e-9));
+    expect(second, closeTo(2.0, 1e-9));
+  });
 
   test('setFocusPoint clears current auto-exposure metering point as expected', () async {
     final camera = AndroidCameraCameraX();
@@ -5396,6 +5959,8 @@ void main() {
     // Set directly for test versus calling createCamera.
     camera.imageAnalysis = mockImageAnalysis;
     camera.processCameraProvider = mockProcessCameraProvider;
+    camera.effectsManager = mockEffectsManager;
+    camera.cameraEffect = mockCameraEffect;
     camera.cameraSelector = MockCameraSelector();
 
     // Ignore setting target rotation for this test; tested seprately.
@@ -5410,7 +5975,12 @@ void main() {
 
     when(mockProcessCameraProvider.isBound(mockImageAnalysis)).thenAnswer((_) async => false);
     when(
-      mockProcessCameraProvider.bindToLifecycle(any, <UseCase>[mockImageAnalysis]),
+      mockProcessCameraProvider.bindToLifecycle(
+        any,
+        <UseCase>[mockImageAnalysis],
+        <CameraEffect>[mockCameraEffect],
+        null,
+      ),
     ).thenAnswer((_) async => mockCamera);
     when(mockCamera.getCameraInfo()).thenAnswer((_) async => mockCameraInfo);
     when(mockCameraInfo.getCameraState()).thenAnswer((_) async => MockLiveCameraState());
@@ -5421,9 +5991,12 @@ void main() {
 
     await untilCalled(mockImageAnalysis.setAnalyzer(any));
     verify(
-      mockProcessCameraProvider.bindToLifecycle(camera.cameraSelector, <UseCase>[
-        mockImageAnalysis,
-      ]),
+      mockProcessCameraProvider.bindToLifecycle(
+        camera.cameraSelector,
+        <UseCase>[mockImageAnalysis],
+        <CameraEffect>[mockCameraEffect],
+        null,
+      ),
     );
 
     await imageStreamSubscription.cancel();
@@ -5442,6 +6015,8 @@ void main() {
 
       // Set directly for test versus calling createCamera.
       camera.processCameraProvider = MockProcessCameraProvider();
+      camera.effectsManager = mockEffectsManager;
+      camera.cameraEffect = mockCameraEffect;
       camera.recorder = MockRecorder();
       camera.videoCapture = MockVideoCapture();
       camera.cameraSelector = MockCameraSelector();
@@ -5495,9 +6070,12 @@ void main() {
         camera.processCameraProvider!.isBound(camera.imageAnalysis!),
       ).thenAnswer((_) async => true);
       when(
-        camera.processCameraProvider!.bindToLifecycle(camera.cameraSelector!, <UseCase>[
-          camera.videoCapture!,
-        ]),
+        camera.processCameraProvider!.bindToLifecycle(
+          camera.cameraSelector!,
+          <UseCase>[camera.videoCapture!],
+          <CameraEffect>[mockCameraEffect],
+          null,
+        ),
       ).thenAnswer((_) async => mockCamera);
       when(mockCamera.getCameraInfo()).thenAnswer((_) => Future<CameraInfo>.value(mockCameraInfo));
       when(mockCameraInfo.getCameraState()).thenAnswer((_) async => MockLiveCameraState());
@@ -5523,6 +6101,8 @@ void main() {
 
       // Set directly for test versus calling createCamera.
       camera.processCameraProvider = MockProcessCameraProvider();
+      camera.effectsManager = mockEffectsManager;
+      camera.cameraEffect = mockCameraEffect;
       camera.recorder = MockRecorder();
       camera.videoCapture = MockVideoCapture();
       camera.camera = MockCamera();
@@ -5534,6 +6114,806 @@ void main() {
       verifyNoMoreInteractions(camera.camera);
     },
   );
+
+  test('takePictureWithOriginal returns both files from the same capture', () async {
+    final camera = AndroidCameraCameraX();
+    final mockProcessCameraProvider = MockProcessCameraProvider();
+    final mockImageCapture = MockImageCapture();
+    const testOriginalPath = 'test/absolute/path/to/original';
+    const testProcessedPath = 'test/absolute/path/to/processed';
+
+    // Set directly for test versus calling createCamera.
+    camera.imageCapture = mockImageCapture;
+    camera.processCameraProvider = mockProcessCameraProvider;
+    camera.effectsManager = mockEffectsManager;
+    camera.cameraEffect = mockCameraEffect;
+    camera.cameraSelector = MockCameraSelector();
+    camera.captureOrientationLocked = true;
+
+    PigeonOverrides.systemServicesManager_new =
+        ({required void Function(SystemServicesManager, String) onCameraError}) {
+          return MockSystemServicesManager();
+        };
+
+    when(mockProcessCameraProvider.isBound(camera.imageCapture)).thenAnswer((_) async => true);
+    when(
+      mockImageCapture.takePictureWithEffects(
+        argThat(isA<SystemServicesManager>()),
+        mockEffectsManager,
+        true,
+      ),
+    ).thenAnswer(
+      (_) async => CapturedPicturePaths.pigeon_detached(
+        originalPath: testOriginalPath,
+        processedPath: testProcessedPath,
+      ),
+    );
+
+    final (XFile original, XFile processed) = await camera.takePictureWithOriginal(3);
+
+    expect(original.path, equals(testOriginalPath));
+    expect(processed.path, equals(testProcessedPath));
+  });
+
+  test('getSupportedFlashModes reports every mode when the camera has a flash unit', () async {
+    final camera = AndroidCameraCameraX();
+    final mockCameraInfo = MockCameraInfo();
+    camera.cameraInfo = mockCameraInfo;
+    when(mockCameraInfo.hasFlashUnit()).thenAnswer((_) async => true);
+
+    expect(
+      await camera.getSupportedFlashModes(3),
+      containsAll(<FlashMode>[FlashMode.off, FlashMode.auto, FlashMode.always, FlashMode.torch]),
+    );
+  });
+
+  test('getSupportedFlashModes reports only off when there is no flash unit', () async {
+    final camera = AndroidCameraCameraX();
+    final mockCameraInfo = MockCameraInfo();
+    camera.cameraInfo = mockCameraInfo;
+    when(mockCameraInfo.hasFlashUnit()).thenAnswer((_) async => false);
+
+    expect(await camera.getSupportedFlashModes(3), equals(<FlashMode>[FlashMode.off]));
+  });
+
+  test('setWhiteBalance locks the white balance to the requested values', () async {
+    final camera = AndroidCameraCameraX();
+    final mockCameraInfo = MockCameraInfo();
+    final mockCamera2CameraControl = MockCamera2CameraControl();
+    final mockCamera2CameraInfo = MockCamera2CameraInfo();
+    final mockWhiteBalanceManager = MockWhiteBalanceManager();
+
+    camera.cameraInfo = mockCameraInfo;
+    camera.cameraControl = MockCameraControl();
+    PigeonOverrides.whiteBalanceManager_new =
+        ({required void Function(WhiteBalanceManager, double, double) onAutoWhiteBalanceChanged}) =>
+            mockWhiteBalanceManager;
+    PigeonOverrides.camera2CameraControl_from = ({required CameraControl cameraControl}) =>
+        mockCamera2CameraControl;
+    PigeonOverrides.camera2CameraInfo_from = ({required dynamic cameraInfo}) =>
+        mockCamera2CameraInfo;
+
+    await camera.setWhiteBalance(3, WhiteBalanceValues(temperature: 8000, tint: 10));
+
+    verify(
+      mockWhiteBalanceManager.setWhiteBalance(
+        mockCamera2CameraControl,
+        mockCamera2CameraInfo,
+        8000,
+        10,
+      ),
+    );
+  });
+
+  test('setWhiteBalance passes nulls through to restore auto white balance', () async {
+    final camera = AndroidCameraCameraX();
+    final mockCameraInfo = MockCameraInfo();
+    final mockCamera2CameraControl = MockCamera2CameraControl();
+    final mockCamera2CameraInfo = MockCamera2CameraInfo();
+    final mockWhiteBalanceManager = MockWhiteBalanceManager();
+
+    camera.cameraInfo = mockCameraInfo;
+    camera.cameraControl = MockCameraControl();
+    PigeonOverrides.whiteBalanceManager_new =
+        ({required void Function(WhiteBalanceManager, double, double) onAutoWhiteBalanceChanged}) =>
+            mockWhiteBalanceManager;
+    PigeonOverrides.camera2CameraControl_from = ({required CameraControl cameraControl}) =>
+        mockCamera2CameraControl;
+    PigeonOverrides.camera2CameraInfo_from = ({required dynamic cameraInfo}) =>
+        mockCamera2CameraInfo;
+
+    await camera.setWhiteBalance(3, null);
+
+    verify(
+      mockWhiteBalanceManager.setWhiteBalance(
+        mockCamera2CameraControl,
+        mockCamera2CameraInfo,
+        null,
+        null,
+      ),
+    );
+  });
+
+  test('rebinding the camera re-attaches the white balance manager', () async {
+    // Camera2 capture request options live on the `Camera` instance, so a white balance lock is
+    // dropped every time the use cases are rebound unless the manager is given the new camera.
+    final camera = AndroidCameraCameraX();
+    final mockProcessCameraProvider = MockProcessCameraProvider();
+    final mockCamera = MockCamera();
+    final mockCameraInfo = MockCameraInfo();
+    final mockCameraControl = MockCameraControl();
+    final mockCamera2CameraControl = MockCamera2CameraControl();
+    final mockCamera2CameraInfo = MockCamera2CameraInfo();
+    final mockWhiteBalanceManager = MockWhiteBalanceManager();
+
+    camera.processCameraProvider = mockProcessCameraProvider;
+    camera.effectsManager = mockEffectsManager;
+    camera.cameraEffect = mockCameraEffect;
+    camera.cameraSelector = MockCameraSelector();
+    camera.preview = MockPreview();
+
+    GenericsPigeonOverrides.observerNew = <T>({required void Function(Observer<T>, T) onChanged}) {
+      return Observer<T>.detached(onChanged: onChanged);
+    };
+    PigeonOverrides.whiteBalanceManager_new =
+        ({required void Function(WhiteBalanceManager, double, double) onAutoWhiteBalanceChanged}) =>
+            mockWhiteBalanceManager;
+    PigeonOverrides.camera2CameraControl_from = ({required CameraControl cameraControl}) =>
+        mockCamera2CameraControl;
+    PigeonOverrides.camera2CameraInfo_from = ({required dynamic cameraInfo}) =>
+        mockCamera2CameraInfo;
+
+    when(
+      mockProcessCameraProvider.bindToLifecycle(
+        camera.cameraSelector,
+        <UseCase>[camera.preview!],
+        <CameraEffect>[mockCameraEffect],
+        null,
+      ),
+    ).thenAnswer((_) async => mockCamera);
+    when(mockCamera.getCameraInfo()).thenAnswer((_) async => mockCameraInfo);
+    when(mockCameraInfo.getCameraState()).thenAnswer((_) async => MockLiveCameraState());
+    when(mockCamera.cameraControl).thenReturn(mockCameraControl);
+
+    await camera.resumePreview(78);
+
+    verify(mockWhiteBalanceManager.attachToCamera(mockCamera2CameraControl, mockCamera2CameraInfo));
+  });
+
+  test('setWhiteBalance throws when no camera has been created', () async {
+    final camera = AndroidCameraCameraX();
+
+    expect(
+      () => camera.setWhiteBalance(3, WhiteBalanceValues(temperature: 5000, tint: 0)),
+      throwsA(isA<CameraException>()),
+    );
+  });
+
+  test('supportsWhiteBalance reports what the camera in use advertises', () async {
+    final camera = AndroidCameraCameraX();
+    final mockCameraInfo = MockCameraInfo();
+    final mockCamera2CameraInfo = MockCamera2CameraInfo();
+    final mockWhiteBalanceManager = MockWhiteBalanceManager();
+
+    camera.cameraInfo = mockCameraInfo;
+    PigeonOverrides.whiteBalanceManager_new =
+        ({required void Function(WhiteBalanceManager, double, double) onAutoWhiteBalanceChanged}) =>
+            mockWhiteBalanceManager;
+    PigeonOverrides.camera2CameraInfo_from = ({required dynamic cameraInfo}) =>
+        mockCamera2CameraInfo;
+    when(
+      mockWhiteBalanceManager.isWhiteBalanceSupported(mockCamera2CameraInfo),
+    ).thenAnswer((_) async => false);
+
+    expect(await camera.supportsWhiteBalance(3), isFalse);
+
+    when(
+      mockWhiteBalanceManager.isWhiteBalanceSupported(mockCamera2CameraInfo),
+    ).thenAnswer((_) async => true);
+
+    expect(await camera.supportsWhiteBalance(3), isTrue);
+  });
+
+  test('supportsWhiteBalance throws when no camera has been created', () async {
+    // Reporting `false` would be indistinguishable from a camera that really cannot lock its white
+    // balance, and would have callers hide the control for the wrong reason.
+    final camera = AndroidCameraCameraX();
+
+    expect(() => camera.supportsWhiteBalance(3), throwsA(isA<CameraException>()));
+  });
+
+  test('setEffectsValues forwards every field to the effects manager', () async {
+    final camera = AndroidCameraCameraX();
+    camera.effectsManager = mockEffectsManager;
+    final mockPlatformEffectsValues = MockPlatformEffectsValues();
+    PlatformEffectsValues? captured;
+    PigeonOverrides.platformEffectsValues_new =
+        ({
+          required double vignetteIntensity,
+          required double grainOpacity,
+          required double grainSize,
+          required PlatformGrainBehavior grainBehavior,
+          required double lutIntensity,
+          required double resolution,
+          required double colorShift,
+          required double mist,
+          required double prism,
+          required bool cheapFisheye,
+          required double bloom,
+          required double diffusion,
+          String? grainNoisePath,
+          String? lutFilePath,
+        }) {
+          // Capture the pigeon values so the mapping can be asserted without a live channel.
+          expect(vignetteIntensity, 0.5);
+          expect(grainOpacity, 0.25);
+          expect(grainSize, 0.4);
+          expect(grainBehavior, PlatformGrainBehavior.darkOnly);
+          expect(grainNoisePath, 'grain.png');
+          expect(lutFilePath, 'lut.png');
+          expect(lutIntensity, 0.75);
+          expect(resolution, 0.1);
+          expect(colorShift, 0.2);
+          expect(mist, 0.3);
+          expect(prism, 0.6);
+          expect(cheapFisheye, isTrue);
+          expect(bloom, 0.7);
+          expect(diffusion, 0.8);
+          captured = mockPlatformEffectsValues;
+          return mockPlatformEffectsValues;
+        };
+
+    await camera.setEffectsValues(
+      3,
+      const EffectsValues(
+        vignetteIntensity: 0.5,
+        grainNoisePath: 'grain.png',
+        grainOpacity: 0.25,
+        grainSize: 0.4,
+        grainBehavior: GrainBehavior.darkOnly,
+        lutFilePath: 'lut.png',
+        lutIntensity: 0.75,
+        resolution: 0.1,
+        colorShift: 0.2,
+        mist: 0.3,
+        prism: 0.6,
+        cheapFisheye: true,
+        bloom: 0.7,
+        diffusion: 0.8,
+      ),
+    );
+
+    expect(captured, same(mockPlatformEffectsValues));
+    verify(mockEffectsManager.setEffectsValues(mockPlatformEffectsValues));
+  });
+
+  test('aspect ratio, capture scale and corner radius reach the effects manager', () async {
+    final camera = AndroidCameraCameraX();
+    camera.effectsManager = mockEffectsManager;
+
+    await camera.setAspectRatio(3, 1.5);
+    await camera.setCaptureScale(3, 0.6);
+    await camera.setCaptureCornerRadius(3, 0.25);
+
+    verify(mockEffectsManager.setAspectRatio(1.5));
+    verify(mockEffectsManager.setCaptureScale(0.6));
+    verify(mockEffectsManager.setCaptureCornerRadius(0.25));
+  });
+
+  test('initializeCamera re-reports the preview size after the initialized event', () async {
+    // CameraInitializedEvent carries `Preview.getResolutionInfo()`, the camera's uncropped
+    // resolution. The view port crop only shows in the surface the effect is handed, and the
+    // effects manager reports that on its own schedule, so it is asked again to guarantee it
+    // lands after the event that would otherwise overwrite it.
+    final camera = AndroidCameraCameraX();
+    const testCameraDescription = CameraDescription(
+      name: 'cameraName',
+      lensDirection: CameraLensDirection.back,
+      sensorOrientation: 90,
+    );
+    final mockProcessCameraProvider = MockProcessCameraProvider();
+    final mockCamera = MockCamera();
+    final mockCameraInfo = MockCameraInfo();
+    when(
+      mockProcessCameraProvider.bindToLifecycle(any, any, any, any),
+    ).thenAnswer((_) async => mockCamera);
+    when(mockCamera.getCameraInfo()).thenAnswer((_) async => mockCameraInfo);
+    when(mockCameraInfo.getCameraState()).thenAnswer((_) async => MockLiveCameraState());
+    setUpOverridesForTestingUseCaseConfiguration(mockProcessCameraProvider);
+
+    final int cameraId = await camera.createCameraWithSettings(
+      testCameraDescription,
+      const MediaSettings(aspectRatio: 0.75),
+    );
+    // `createCameraWithSettings` builds its own manager; swap in the spy before initializing.
+    camera.effectsManager = mockEffectsManager;
+    await camera.initializeCamera(cameraId);
+
+    verify(mockEffectsManager.notifyPreviewSize());
+  });
+
+  group('the aspect ratio is bound as a ViewPort', () {
+    // The view port is what makes CameraX size the preview surface *and* the video encoder's
+    // input surface to the crop. Cropping in the shader instead would leave the encoder's surface
+    // at whatever shape the Recorder picked and bake a stretch into the file.
+    const testCameraDescription = CameraDescription(
+      name: 'cameraName',
+      lensDirection: CameraLensDirection.back,
+      sensorOrientation: 90,
+    );
+
+    late MockProcessCameraProvider mockProcessCameraProvider;
+    late List<List<Object?>> viewPortsBuilt;
+
+    setUp(() {
+      mockProcessCameraProvider = MockProcessCameraProvider();
+      final mockCamera = MockCamera();
+      final mockCameraInfo = MockCameraInfo();
+      when(
+        mockProcessCameraProvider.bindToLifecycle(any, any, any, any),
+      ).thenAnswer((_) async => mockCamera);
+      when(mockCamera.getCameraInfo()).thenAnswer((_) async => mockCameraInfo);
+      when(mockCameraInfo.getCameraState()).thenAnswer((_) async => MockLiveCameraState());
+      setUpOverridesForTestingUseCaseConfiguration(mockProcessCameraProvider);
+
+      viewPortsBuilt = <List<Object?>>[];
+      PigeonOverrides.viewPort_new =
+          ({required int aspectRatioWidth, required int aspectRatioHeight, required int rotation}) {
+            viewPortsBuilt.add(<Object?>[aspectRatioWidth, aspectRatioHeight, rotation]);
+            return ViewPort.pigeon_detached();
+          };
+    });
+
+    test('built from the media settings ratio and passed to bindToLifecycle', () async {
+      final camera = AndroidCameraCameraX();
+      final int cameraId = await camera.createCameraWithSettings(
+        testCameraDescription,
+        const MediaSettings(aspectRatio: 0.75),
+      );
+      await camera.initializeCamera(cameraId);
+
+      expect(viewPortsBuilt, hasLength(1));
+      final List<Object?> viewPort = viewPortsBuilt.single;
+      // 3:4 stated against the display's natural orientation; CameraX inverts it into sensor
+      // space itself, which is the job `DefaultCamera.effectiveAspectRatio` does by hand on iOS.
+      expect((viewPort[0]! as int) / (viewPort[1]! as int), closeTo(0.75, 1e-9));
+      expect(viewPort[2], Surface.rotation0);
+      expect(
+        verify(mockProcessCameraProvider.bindToLifecycle(any, any, any, captureAny)).captured.last,
+        isNotNull,
+      );
+    });
+
+    test('omitted when no aspect ratio is set', () async {
+      final camera = AndroidCameraCameraX();
+      final int cameraId = await camera.createCameraWithSettings(
+        testCameraDescription,
+        const MediaSettings(),
+      );
+      await camera.initializeCamera(cameraId);
+
+      expect(viewPortsBuilt, isEmpty);
+      expect(
+        verify(mockProcessCameraProvider.bindToLifecycle(any, any, any, captureAny)).captured.last,
+        isNull,
+      );
+    });
+
+    test('re-bound when the ratio changes, since a ViewPort is fixed at bind time', () async {
+      final camera = AndroidCameraCameraX();
+      final int cameraId = await camera.createCameraWithSettings(
+        testCameraDescription,
+        const MediaSettings(),
+      );
+      await camera.initializeCamera(cameraId);
+      when(mockProcessCameraProvider.isBound(camera.preview)).thenAnswer((_) async => true);
+      clearInteractions(mockProcessCameraProvider);
+
+      await camera.setAspectRatio(cameraId, 1.0);
+
+      final List<Object?> bound = verify(
+        mockProcessCameraProvider.bindToLifecycle(any, captureAny, any, captureAny),
+      ).captured;
+      expect(bound[0], <UseCase>[camera.preview!]);
+      expect(bound[1], isNotNull);
+      expect(viewPortsBuilt, hasLength(1));
+    });
+
+    test('re-binding cycles only the preview, so the camera device stays open', () async {
+      // `unbindAll` would leave nothing attached, and CameraX closes the device when that
+      // happens — cancelling every in-flight `CameraControl` request. Callers change the aspect
+      // ratio alongside exposure and zoom calls, so those must survive the swap.
+      final camera = AndroidCameraCameraX();
+      final int cameraId = await camera.createCameraWithSettings(
+        testCameraDescription,
+        const MediaSettings(),
+      );
+      await camera.initializeCamera(cameraId);
+      when(mockProcessCameraProvider.isBound(camera.preview)).thenAnswer((_) async => true);
+      clearInteractions(mockProcessCameraProvider);
+
+      await camera.setAspectRatio(cameraId, 1.0);
+
+      verifyNever(mockProcessCameraProvider.unbindAll());
+      verify(mockProcessCameraProvider.unbind(<UseCase>[camera.preview!]));
+    });
+
+    test('not re-bound when the preview is not currently bound', () async {
+      // Nothing carries the old view port, so the next bind picks the new one up on its own.
+      final camera = AndroidCameraCameraX();
+      final int cameraId = await camera.createCameraWithSettings(
+        testCameraDescription,
+        const MediaSettings(),
+      );
+      await camera.initializeCamera(cameraId);
+      when(mockProcessCameraProvider.isBound(camera.preview)).thenAnswer((_) async => false);
+      clearInteractions(mockProcessCameraProvider);
+
+      await camera.setAspectRatio(cameraId, 1.0);
+
+      verifyNever(mockProcessCameraProvider.unbind(any));
+      verifyNever(mockProcessCameraProvider.bindToLifecycle(any, any, any, any));
+    });
+
+    test('not re-bound while a recording is in flight', () async {
+      // Re-binding tears down the encoder's input surface, which would abort the recording.
+      final camera = AndroidCameraCameraX();
+      final int cameraId = await camera.createCameraWithSettings(
+        testCameraDescription,
+        const MediaSettings(),
+      );
+      await camera.initializeCamera(cameraId);
+      camera.recording = MockRecording();
+      clearInteractions(mockProcessCameraProvider);
+
+      await camera.setAspectRatio(cameraId, 1.0);
+
+      verifyNever(mockProcessCameraProvider.unbind(any));
+      verifyNever(mockProcessCameraProvider.unbindAll());
+      expect(viewPortsBuilt, isEmpty);
+    });
+  });
+
+  group('a lost preview output', () {
+    const testCameraDescription = CameraDescription(
+      name: 'cameraName',
+      lensDirection: CameraLensDirection.back,
+      sensorOrientation: 90,
+    );
+
+    late MockProcessCameraProvider mockProcessCameraProvider;
+    late void Function(CameraEffectsManager) reportPreviewOutputLost;
+
+    setUp(() {
+      mockProcessCameraProvider = MockProcessCameraProvider();
+      final mockCamera = MockCamera();
+      final mockCameraInfo = MockCameraInfo();
+      when(
+        mockProcessCameraProvider.bindToLifecycle(any, any, any, any),
+      ).thenAnswer((_) async => mockCamera);
+      when(mockCamera.getCameraInfo()).thenAnswer((_) async => mockCameraInfo);
+      when(mockCameraInfo.getCameraState()).thenAnswer((_) async => MockLiveCameraState());
+      setUpOverridesForTestingUseCaseConfiguration(mockProcessCameraProvider);
+
+      // Stands in for the pipeline reporting that the surface it was drawing
+      // into is gone.
+      PigeonOverrides.cameraEffectsManager_new =
+          ({
+            required void Function(CameraEffectsManager, int, int) onPreviewSizeChanged,
+            required void Function(CameraEffectsManager) onPreviewOutputLost,
+            double? aspectRatio,
+          }) {
+            reportPreviewOutputLost = onPreviewOutputLost;
+            return mockEffectsManager;
+          };
+    });
+
+    test('re-binds the preview, which is what asks CameraX for a new surface', () async {
+      final camera = AndroidCameraCameraX();
+      final int cameraId = await camera.createCameraWithSettings(
+        testCameraDescription,
+        const MediaSettings(),
+      );
+      await camera.initializeCamera(cameraId);
+      when(mockProcessCameraProvider.isBound(camera.preview)).thenAnswer((_) async => true);
+      clearInteractions(mockProcessCameraProvider);
+
+      reportPreviewOutputLost(mockEffectsManager);
+      // The callback is synchronous; the re-bind it starts is not.
+      await pumpEventQueue();
+
+      verify(mockProcessCameraProvider.unbind(<UseCase>[camera.preview!]));
+      final List<Object?> bound = verify(
+        mockProcessCameraProvider.bindToLifecycle(any, captureAny, any, any),
+      ).captured;
+      expect(bound.single, <UseCase>[camera.preview!]);
+    });
+
+    test('is not acted on twice while the first re-bind is still running', () async {
+      // A re-bind that itself fails to produce a usable surface reports the loss
+      // again, and without the guard the two would spin against each other.
+      final camera = AndroidCameraCameraX();
+      final int cameraId = await camera.createCameraWithSettings(
+        testCameraDescription,
+        const MediaSettings(),
+      );
+      await camera.initializeCamera(cameraId);
+      when(mockProcessCameraProvider.isBound(camera.preview)).thenAnswer((_) async => true);
+      clearInteractions(mockProcessCameraProvider);
+
+      reportPreviewOutputLost(mockEffectsManager);
+      reportPreviewOutputLost(mockEffectsManager);
+      await pumpEventQueue();
+
+      verify(mockProcessCameraProvider.unbind(<UseCase>[camera.preview!])).called(1);
+    });
+
+    test('is ignored when the preview is not bound, since the next bind fixes it', () async {
+      final camera = AndroidCameraCameraX();
+      final int cameraId = await camera.createCameraWithSettings(
+        testCameraDescription,
+        const MediaSettings(),
+      );
+      await camera.initializeCamera(cameraId);
+      when(mockProcessCameraProvider.isBound(camera.preview)).thenAnswer((_) async => false);
+      clearInteractions(mockProcessCameraProvider);
+
+      reportPreviewOutputLost(mockEffectsManager);
+      await pumpEventQueue();
+
+      verifyNever(mockProcessCameraProvider.unbind(any));
+      verifyNever(mockProcessCameraProvider.bindToLifecycle(any, any, any, any));
+    });
+  });
+
+  test('a null aspect ratio disables cropping', () async {
+    final camera = AndroidCameraCameraX();
+    camera.effectsManager = mockEffectsManager;
+
+    // From a crop back to none: setting the ratio the camera already has is a
+    // deliberate no-op, since applying one re-binds and drops a preview frame.
+    await camera.setAspectRatio(3, 1.5);
+    await camera.setAspectRatio(3, null);
+
+    verify(mockEffectsManager.setAspectRatio(null));
+  });
+
+  test('the effects overrides are no-ops before a camera is created', () async {
+    // `effectsManager` is null until `createCameraWithSettings` runs; the platform interface
+    // documents these as no-ops rather than errors on platforms without a pipeline.
+    final camera = AndroidCameraCameraX();
+
+    await camera.setAspectRatio(3, 1.0);
+    await camera.setCaptureScale(3, 0.5);
+    await camera.setCaptureCornerRadius(3, 0.5);
+
+    verifyZeroInteractions(mockEffectsManager);
+  });
+
+  test('the effects pipeline is built once and reused by every camera', () async {
+    // CameraX caches a `CameraUseCaseAdapter` per camera id and keeps the effects bound to it
+    // there; unbinding drops the use cases but never the effects. A pipeline released along with
+    // its camera therefore leaves those adapters holding an effect whose GL context is gone, and
+    // the next bind that picks one up renders nothing — the preview freezes after a frame or two.
+    // Switching between photo and video mode disposes one camera and creates another, which is
+    // exactly how that is reached.
+    const testCameraDescription = CameraDescription(
+      name: 'cameraName',
+      lensDirection: CameraLensDirection.back,
+      sensorOrientation: 90,
+    );
+    final camera = AndroidCameraCameraX();
+    final mockProcessCameraProvider = MockProcessCameraProvider();
+    final mockCamera = MockCamera();
+    final mockCameraInfo = MockCameraInfo();
+    when(
+      mockProcessCameraProvider.bindToLifecycle(any, any, any, any),
+    ).thenAnswer((_) async => mockCamera);
+    when(mockCamera.getCameraInfo()).thenAnswer((_) async => mockCameraInfo);
+    when(mockCameraInfo.getCameraState()).thenAnswer((_) async => MockLiveCameraState());
+    setUpOverridesForTestingUseCaseConfiguration(mockProcessCameraProvider);
+
+    var buildCount = 0;
+    PigeonOverrides.cameraEffectsManager_new =
+        ({
+          required void Function(CameraEffectsManager, int, int) onPreviewSizeChanged,
+          required void Function(CameraEffectsManager) onPreviewOutputLost,
+          double? aspectRatio,
+        }) {
+          buildCount++;
+          return mockEffectsManager;
+        };
+
+    await camera.createCameraWithSettings(
+      testCameraDescription,
+      const MediaSettings(aspectRatio: 0.75),
+    );
+    expect(buildCount, 1);
+    final CameraEffectsManager? first = camera.effectsManager;
+
+    await camera.dispose(0);
+    await camera.createCameraWithSettings(testCameraDescription, const MediaSettings());
+
+    expect(buildCount, 1, reason: 'the pipeline must not be rebuilt for the second camera');
+    expect(camera.effectsManager, same(first));
+    verifyNever(mockEffectsManager.release());
+    // Settings that name no ratio leave the crop already in effect alone, like every other
+    // setting the reused pipeline holds — so both cameras are told the same one. Clearing it here
+    // is what left a camera rebuilt to change the resolution preset coming up at the sensor's own
+    // shape, corrected a frame or two later.
+    verify(mockEffectsManager.setAspectRatio(0.75)).called(2);
+    verifyNever(mockEffectsManager.setAspectRatio(null));
+  });
+
+  test('a camera built with no aspect ratio keeps the crop already in effect', () async {
+    final camera = AndroidCameraCameraX();
+    const testCameraDescription = CameraDescription(
+      name: 'cameraName',
+      lensDirection: CameraLensDirection.back,
+      sensorOrientation: 90,
+    );
+    final mockCamera = MockCamera();
+    final mockProcessCameraProvider = MockProcessCameraProvider();
+    final mockCameraInfo = MockCameraInfo();
+
+    when(
+      mockProcessCameraProvider.bindToLifecycle(any, any, any, any),
+    ).thenAnswer((_) async => mockCamera);
+    when(mockCamera.getCameraInfo()).thenAnswer((_) async => mockCameraInfo);
+    when(mockCameraInfo.getCameraState()).thenAnswer((_) async => MockLiveCameraState());
+    setUpOverridesForTestingUseCaseConfiguration(mockProcessCameraProvider);
+
+    final viewPortsBuilt = <List<Object?>>[];
+    PigeonOverrides.viewPort_new =
+        ({required int aspectRatioWidth, required int aspectRatioHeight, required int rotation}) {
+          viewPortsBuilt.add(<Object?>[aspectRatioWidth, aspectRatioHeight]);
+          return ViewPort.pigeon_detached();
+        };
+
+    final int firstId = await camera.createCameraWithSettings(
+      testCameraDescription,
+      const MediaSettings(aspectRatio: 1.0),
+    );
+    await camera.initializeCamera(firstId);
+    await camera.dispose(firstId);
+
+    // What replacing the controller to change the resolution preset looks like:
+    // a fresh `MediaSettings` that names a preset and nothing about the crop.
+    viewPortsBuilt.clear();
+    final int secondId = await camera.createCameraWithSettings(
+      testCameraDescription,
+      const MediaSettings(resolutionPreset: ResolutionPreset.veryHigh),
+    );
+    await camera.initializeCamera(secondId);
+
+    // A view port built for the second camera too, so its very first bind is
+    // cropped rather than corrected a frame or two later.
+    expect(viewPortsBuilt, hasLength(1));
+    expect(viewPortsBuilt.single.first, viewPortsBuilt.single.last);
+    expect(
+      verify(mockProcessCameraProvider.bindToLifecycle(any, any, any, captureAny)).captured.last,
+      isNotNull,
+    );
+  });
+
+  test('a camera built with no aspect ratio has no crop when none was ever set', () async {
+    final camera = AndroidCameraCameraX();
+    const testCameraDescription = CameraDescription(
+      name: 'cameraName',
+      lensDirection: CameraLensDirection.back,
+      sensorOrientation: 90,
+    );
+    final mockCamera = MockCamera();
+    final mockProcessCameraProvider = MockProcessCameraProvider();
+    final mockCameraInfo = MockCameraInfo();
+
+    when(
+      mockProcessCameraProvider.bindToLifecycle(any, any, any, any),
+    ).thenAnswer((_) async => mockCamera);
+    when(mockCamera.getCameraInfo()).thenAnswer((_) async => mockCameraInfo);
+    when(mockCameraInfo.getCameraState()).thenAnswer((_) async => MockLiveCameraState());
+    setUpOverridesForTestingUseCaseConfiguration(mockProcessCameraProvider);
+
+    final int cameraId = await camera.createCameraWithSettings(
+      testCameraDescription,
+      const MediaSettings(),
+    );
+    await camera.initializeCamera(cameraId);
+
+    expect(
+      verify(mockProcessCameraProvider.bindToLifecycle(any, any, any, captureAny)).captured.last,
+      isNull,
+    );
+  });
+
+  test('setExposureOffset does not report a cancellation caused by a rebind', () async {
+    // CameraX cancels an in-flight exposure index whenever the use cases are rebound, and reports
+    // it exactly like a rejected request. A lens switch, an aspect ratio change or the start of a
+    // recording all rebind, and callers routinely set the exposure offset alongside them, so
+    // raising here turns an ordinary camera switch into a fatal initialization error.
+    final camera = AndroidCameraCameraX();
+    const cameraId = 11;
+    final mockCameraInfo = MockCameraInfo();
+    final CameraControl mockCameraControl = MockCameraControl();
+    final CameraControl rebindTo = MockCameraControl();
+    final exposureState = ExposureState.pigeon_detached(
+      exposureCompensationRange: CameraIntegerRange.pigeon_detached(lower: -10, upper: 10),
+      exposureCompensationStep: 0.2,
+    );
+
+    camera.cameraInfo = mockCameraInfo;
+    camera.cameraControl = mockCameraControl;
+    when(mockCameraInfo.exposureState).thenReturn(exposureState);
+    when(mockCameraControl.setExposureCompensationIndex(5)).thenAnswer((_) async {
+      // Stands in for the rebind that `_updateCameraInfoAndLiveCameraState` performs, which swaps
+      // in the new camera's control while this request is still in flight.
+      camera.cameraControl = rebindTo;
+      return null;
+    });
+
+    final errors = <String>[];
+    final StreamSubscription<CameraErrorEvent> subscription = camera
+        .onCameraError(cameraId)
+        .listen((CameraErrorEvent event) => errors.add(event.description));
+    addTearDown(subscription.cancel);
+
+    expect(await camera.setExposureOffset(cameraId, 1.0), closeTo(1.0, 1e-9));
+    await pumpEventQueue();
+    expect(errors, isEmpty);
+  });
+
+  test('setExposureOffset still reports a cancellation on the camera it asked', () async {
+    // The counterpart of the test above: nothing was rebound and no newer request superseded it,
+    // so the camera genuinely refused and the caller has to hear about it.
+    final camera = AndroidCameraCameraX();
+    const cameraId = 11;
+    final mockCameraInfo = MockCameraInfo();
+    final CameraControl mockCameraControl = MockCameraControl();
+    final exposureState = ExposureState.pigeon_detached(
+      exposureCompensationRange: CameraIntegerRange.pigeon_detached(lower: -10, upper: 10),
+      exposureCompensationStep: 0.2,
+    );
+
+    camera.cameraInfo = mockCameraInfo;
+    camera.cameraControl = mockCameraControl;
+    when(mockCameraInfo.exposureState).thenReturn(exposureState);
+    when(mockCameraControl.setExposureCompensationIndex(5)).thenAnswer((_) async => null);
+
+    await expectLater(
+      camera.setExposureOffset(cameraId, 1.0),
+      throwsA(
+        isA<CameraException>().having(
+          (CameraException e) => e.code,
+          'code',
+          'setExposureOffsetFailed',
+        ),
+      ),
+    );
+  });
+
+  test('onAutoWhiteBalanceChanged emits the events for its own camera only', () async {
+    final camera = AndroidCameraCameraX();
+    const cameraId = 12;
+
+    final Stream<CameraAutoWhiteBalanceChangedEvent> stream = camera.onAutoWhiteBalanceChanged(
+      cameraId,
+    );
+    final queue = StreamQueue<CameraAutoWhiteBalanceChangedEvent>(stream);
+
+    camera.cameraEventStreamController.add(
+      const CameraAutoWhiteBalanceChangedEvent(cameraId + 1, 3000, 5),
+    );
+    camera.cameraEventStreamController.add(
+      const CameraAutoWhiteBalanceChangedEvent(cameraId, 5500, -10),
+    );
+
+    final CameraAutoWhiteBalanceChangedEvent event = await queue.next;
+    expect(event.cameraId, cameraId);
+    expect(event.temperature, 5500);
+    expect(event.tint, -10);
+
+    await queue.cancel();
+  });
 }
 
 class TestMeteringPoint extends MeteringPoint {

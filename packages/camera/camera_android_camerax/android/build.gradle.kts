@@ -81,6 +81,9 @@ dependencies {
     implementation("androidx.camera:camera-camera2:${cameraxVersion}")
     implementation("androidx.camera:camera-lifecycle:${cameraxVersion}")
     implementation("androidx.camera:camera-video:${cameraxVersion}")
+    // Used to carry the capture's Exif metadata onto the files the effects pipeline writes.
+    // Declared explicitly rather than leaned on as a transitive dependency of camera-core.
+    implementation("androidx.exifinterface:exifinterface:1.4.2")
     implementation("com.google.guava:guava:33.5.0-android")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.mockito:mockito-core:5.23.0")

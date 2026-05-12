@@ -22,6 +22,11 @@ class SavePhotoDelegate: NSObject, AVCapturePhotoCaptureDelegate {
   /// The queue on which captured photos are written to disk.
   private let ioQueue: DispatchQueue
 
+  /// Pre-save processor. Its return value is written to disk; returning nil is
+  /// treated as a capture failure (do not silently fall back to the raw sensor
+  /// frame — it would be wrong-sized or un-cropped).
+  private let photoProcessor: (AVCapturePhoto) -> Data?
+
   /// The completion handler block for capture and save photo operations.
   let completionHandler: SavePhotoDelegateCompletionHandler
 
@@ -39,10 +44,12 @@ class SavePhotoDelegate: NSObject, AVCapturePhotoCaptureDelegate {
   init(
     path: String,
     ioQueue: DispatchQueue,
+    photoProcessor: @escaping (AVCapturePhoto) -> Data? = { $0.fileDataRepresentation() },
     completionHandler: @escaping SavePhotoDelegateCompletionHandler
   ) {
     self.path = path
     self.ioQueue = ioQueue
+    self.photoProcessor = photoProcessor
     self.completionHandler = completionHandler
     super.init()
   }
@@ -63,9 +70,22 @@ class SavePhotoDelegate: NSObject, AVCapturePhotoCaptureDelegate {
     ioQueue.async { [weak self] in
       guard let strongSelf = self else { return }
 
+      guard let data = photoDataProvider() else {
+        // The processor explicitly returned nil, which means it could not
+        // process the photo (e.g. the Metal render failed). Falling back to
+        // the unprocessed sensor frame would silently produce a wrong-sized
+        // or un-cropped photo, so we surface this as an error instead.
+        strongSelf.completionHandler(
+          nil,
+          NSError(
+            domain: "FLTCameraErrorDomain",
+            code: -1,
+            userInfo: [NSLocalizedDescriptionKey: "Photo processor returned nil data"]))
+        return
+      }
+
       do {
-        let data = photoDataProvider()
-        try data?.writeToPath(strongSelf.path, options: .atomic)
+        try data.writeToPath(strongSelf.path, options: .atomic)
         strongSelf.completionHandler(strongSelf.path, nil)
       } catch {
         strongSelf.completionHandler(nil, error)
@@ -78,8 +98,6 @@ class SavePhotoDelegate: NSObject, AVCapturePhotoCaptureDelegate {
     didFinishProcessingPhoto photo: AVCapturePhoto,
     error: Error?
   ) {
-    handlePhotoCaptureResult(error: error) {
-      photo.fileDataRepresentation()
-    }
+    handlePhotoCaptureResult(error: error) { [photoProcessor] in photoProcessor(photo) }
   }
 }
