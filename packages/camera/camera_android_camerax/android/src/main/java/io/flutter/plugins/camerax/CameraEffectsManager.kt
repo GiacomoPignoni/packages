@@ -56,7 +56,33 @@ class CameraEffectsManager(
   // core, which costs dropped preview frames as well as a slower photo.
   private val glThread =
       HandlerThread("CameraEffectsGl", Process.THREAD_PRIORITY_DISPLAY).apply { start() }
+  /**
+   * The last output identity logged by [uniformsForOutput], so the line there is not per frame.
+   *
+   * A single packed key rather than a growing set: only the most recent output ever needs
+   * suppressing, since CameraX attaches an output once at bind and again when a recording starts.
+   */
+  private var lastLoggedOutputKey = -1L
+
   private val glHandler = Handler(glThread.looper)
+
+  // Background priority, the opposite end from [glThread]: an overlay is a full-frame image, so
+  // decoding one is a disk read and an 8 MB ARGB_8888 expansion, and nothing is waiting on the
+  // result while the frame [glThread] is drawing very much is.
+  private val overlayDecodeThread =
+      HandlerThread("CameraEffectsOverlayDecode", Process.THREAD_PRIORITY_BACKGROUND).apply {
+        start()
+      }
+
+  private val overlayDecodeHandler = Handler(overlayDecodeThread.looper)
+
+  /**
+   * The overlay image most recently asked for, or null for none.
+   *
+   * Checked again at each hop of [applyOverlay] so a load a later one has superseded is dropped
+   * rather than applied out of order, the way `VideoFrameRenderer.pendingOverlayTexturePath` does.
+   */
+  @Volatile private var pendingOverlayPath: String? = null
 
   /**
    * Posts to the render thread, falling back to running inline once that thread has quit.
@@ -203,10 +229,20 @@ class CameraEffectsManager(
     // recording, which is the cheaper of the two errors.
     if (targets == CameraEffect.PREVIEW) {
       snapshot.darkenOutside = CameraUniforms.PREVIEW_DARKEN_OUTSIDE
+      snapshot.overlayQuarterTurns = PREVIEW_OVERLAY_QUARTER_TURNS
     } else {
       snapshot.darkenOutside = 0f
       // Only the preview draws the rounded border, so the corner radius must not reach a recording.
       snapshot.captureCornerRadius = 0f
+      snapshot.overlayQuarterTurns = RECORDING_OVERLAY_QUARTER_TURNS
+    }
+    // One line per output, and an output is attached once - at a bind, and again when a recording
+    // starts and CameraX swaps in the shared surface. Enough to see which surfaces exist and what
+    // shape each is, which is what the overlay's orientation turns on.
+    val key = (targets.toLong() shl 48) or (outputWidth.toLong() shl 24) or outputHeight.toLong()
+    if (key != lastLoggedOutputKey) {
+      lastLoggedOutputKey = key
+      Log.i(TAG, "output targets=$targets size=${outputWidth}x$outputHeight")
     }
     snapshot.outputAspect = outputWidth.toFloat() / outputHeight.toFloat()
     // The live outputs are drawn in sensor orientation, which is what the grain UV is authored
@@ -287,7 +323,63 @@ class CameraEffectsManager(
         Log.e(TAG, "Applying effects values failed", e)
       }
     }
+    // Not part of the block above: the overlay decodes on its own thread and only its upload is
+    // posted to the render thread.
+    applyOverlay(values.overlayFilePath)
     processor.redraw()
+  }
+
+  /**
+   * Points the pipeline at the overlay image at `path`, or clears the overlay when it is null.
+   *
+   * Three hops, each of which drops the work if a later call has moved [pendingOverlayPath] on: the
+   * caller's thread decides there is anything to do, [overlayDecodeThread] reads and decodes the
+   * file, and [glHandler] uploads it. So a burst of switches costs one upload rather than one per
+   * call, and switching back to an image already decoded costs no disk read at all.
+   *
+   * A path that fails to decode leaves [pendingOverlayPath] pointing at it, so it is not retried
+   * until something else is asked for. That matches the pipeline's contract for a bad grain or LUT
+   * image: the previous texture stays, and the failure is a log line.
+   */
+  private fun applyOverlay(path: String?) {
+    if (path == pendingOverlayPath) {
+      return
+    }
+    pendingOverlayPath = path
+    if (path == null) {
+      glHandler.post { pipeline.clearOverlayTexture() }
+      processor.redraw()
+      return
+    }
+    overlayDecodeHandler.post decode@{
+      if (pendingOverlayPath != path) {
+        return@decode
+      }
+      // Decoding touches no GL state, so a driver that has lost its context cannot throw here -
+      // but a malformed file can, and an exception escaping a `HandlerThread` task kills the
+      // process.
+      val bitmap =
+          try {
+            pipeline.decodeOverlayBitmap(path)
+          } catch (e: Exception) {
+            Log.e(TAG, "Decoding the overlay image at '$path' failed", e)
+            null
+          } ?: return@decode
+      glHandler.post upload@{
+        if (pendingOverlayPath != path) {
+          return@upload
+        }
+        try {
+          pipeline.loadOverlayTexture(path, bitmap)
+        } catch (e: Exception) {
+          Log.e(TAG, "Uploading the overlay image at '$path' failed", e)
+          return@upload
+        }
+        // The `redraw` in `setEffectsValues` ran before this decode finished, so without one here
+        // a paused preview would keep showing the old overlay until something else moved.
+        processor.redraw()
+      }
+    }
   }
 
   /**
@@ -340,6 +432,9 @@ class CameraEffectsManager(
     // land the same way in the photo as it did in the preview.
     // `VideoFrameRenderer` passes `swapGrainAxes: true` on its photo path for the same reason.
     applyGrainScale(snapshot, scaledWidth, scaledHeight, swapAxes = true)
+    // Same as the preview's: the still is turned upright before the shader sees it, so the overlay
+    // is used exactly as authored in both.
+    snapshot.overlayQuarterTurns = PREVIEW_OVERLAY_QUARTER_TURNS
     return StillCapturePlan(crop, scaledWidth, scaledHeight, snapshot)
   }
 
@@ -467,6 +562,7 @@ class CameraEffectsManager(
     } finally {
       // Always: a thread left running holds its EGL context, and the next camera makes another one.
       glThread.quitSafely()
+      overlayDecodeThread.quitSafely()
     }
   }
 
@@ -532,6 +628,42 @@ class CameraEffectsManager(
 
   companion object {
     private const val TAG = "CameraEffectsManager"
+
+    /**
+     * Quarter turns applied to the overlay's UV on the preview-only output. None.
+     *
+     * Both paths present the frame to the shader the same way up. The still is turned upright by
+     * `CameraStillCaptureRenderer.uprightTransform` before it reaches the shader, and the live
+     * outputs are upright already: `AndroidCameraCameraX._previewTargetRotation` asks CameraX for
+     * the display's natural orientation, which makes it fold the whole sensor rotation into the
+     * transform the processor samples through. So the overlay is used exactly as authored in both,
+     * and this exists only to name that rather than leave it to the field's default.
+     *
+     * Metal is the one that needs a turn, on its photo path alone - see
+     * `VideoFrameRenderer.photoOverlayQuarterTurns`.
+     */
+    private const val PREVIEW_OVERLAY_QUARTER_TURNS = 0f
+
+    /**
+     * Quarter turns applied to the overlay's UV on the output a recording is attached to.
+     *
+     * Its own constant rather than [PREVIEW_OVERLAY_QUARTER_TURNS] because the surface is not the
+     * same one, nor even the same way round. Once a recording starts CameraX stops handing out a
+     * preview-only output and swaps in a shared one serving both targets, and that surface is the
+     * encoder's: sensor-landscape (1440x1080 where the preview is 1080x1440), with the turn back to
+     * upright carried as rotation metadata on the file rather than applied to the pixels. So the
+     * overlay is baked into a landscape frame that the player then rotates, overlay and all.
+     *
+     * Three, for the same reason `VideoFrameRenderer.photoOverlayQuarterTurns` is: this is the
+     * identical geometry to an iOS photo, a portrait-authored overlay going onto a sensor-landscape
+     * raster that is turned a quarter clockwise at display time. That maps display point `(x, y)`
+     * to raster point `(y, 1 - x)`, so the fragment at raster UV `(u, v)` is displayed at `(1 - v,
+     * u)` - which is where the overlay must be sampled, and is `rotateUv(uv, 3)`.
+     *
+     * It also explains why the preview turns the moment recording starts: the widget keeps showing
+     * the shared surface, which is the encoder's landscape one.
+     */
+    private const val RECORDING_OVERLAY_QUARTER_TURNS = 3f
 
     /** 24 fps, matching the grain animation timer in `VideoFrameRenderer`. */
     private const val GRAIN_ANIMATION_INTERVAL_MILLIS = 1000L / 24L

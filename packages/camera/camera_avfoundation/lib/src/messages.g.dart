@@ -110,6 +110,21 @@ int _deepHash(Object? value) {
 
 enum PlatformGrainBehavior { overlay, darkOnly }
 
+enum PlatformOverlayBlendMode {
+  srcOver,
+  multiply,
+  screen,
+  overlay,
+  darken,
+  lighten,
+  colorDodge,
+  colorBurn,
+  softLight,
+  hardLight,
+  difference,
+  exclusion,
+}
+
 enum PlatformCameraLensDirection {
   /// Front facing camera (a user looking at the screen is seen by the camera).
   front,
@@ -617,6 +632,8 @@ class PlatformEffectsValues {
     required this.grainBehavior,
     this.lutFilePath,
     required this.lutIntensity,
+    this.overlayFilePath,
+    required this.overlayBlendMode,
     required this.resolution,
     required this.colorShift,
     required this.mist,
@@ -653,6 +670,14 @@ class PlatformEffectsValues {
   /// Ignored when [lutFilePath] is null.
   double lutIntensity;
 
+  /// Absolute file path to a PNG stretched over the frame after every other
+  /// effect. Null disables the overlay.
+  String? overlayFilePath;
+
+  /// How [overlayFilePath] is combined with the frame beneath it.
+  /// Ignored when [overlayFilePath] is null.
+  PlatformOverlayBlendMode overlayBlendMode;
+
   /// Simulates a low-resolution sensor (0.0 = off, 1.0 = full strength).
   /// Adds a soft Gaussian blur and desaturation.
   double resolution;
@@ -685,6 +710,8 @@ class PlatformEffectsValues {
       grainBehavior,
       lutFilePath,
       lutIntensity,
+      overlayFilePath,
+      overlayBlendMode,
       resolution,
       colorShift,
       mist,
@@ -709,13 +736,15 @@ class PlatformEffectsValues {
       grainBehavior: result[4]! as PlatformGrainBehavior,
       lutFilePath: result[5] as String?,
       lutIntensity: result[6]! as double,
-      resolution: result[7]! as double,
-      colorShift: result[8]! as double,
-      mist: result[9]! as double,
-      prism: result[10]! as double,
-      cheapFisheye: result[11]! as bool,
-      bloom: result[12]! as double,
-      diffusion: result[13]! as double,
+      overlayFilePath: result[7] as String?,
+      overlayBlendMode: result[8]! as PlatformOverlayBlendMode,
+      resolution: result[9]! as double,
+      colorShift: result[10]! as double,
+      mist: result[11]! as double,
+      prism: result[12]! as double,
+      cheapFisheye: result[13]! as bool,
+      bloom: result[14]! as double,
+      diffusion: result[15]! as double,
     );
   }
 
@@ -735,6 +764,8 @@ class PlatformEffectsValues {
         _deepEquals(grainBehavior, other.grainBehavior) &&
         _deepEquals(lutFilePath, other.lutFilePath) &&
         _deepEquals(lutIntensity, other.lutIntensity) &&
+        _deepEquals(overlayFilePath, other.overlayFilePath) &&
+        _deepEquals(overlayBlendMode, other.overlayBlendMode) &&
         _deepEquals(resolution, other.resolution) &&
         _deepEquals(colorShift, other.colorShift) &&
         _deepEquals(mist, other.mist) &&
@@ -750,7 +781,7 @@ class PlatformEffectsValues {
 
   @override
   String toString() {
-    return 'PlatformEffectsValues(vignetteIntensity: $vignetteIntensity, grainNoisePath: $grainNoisePath, grainOpacity: $grainOpacity, grainSize: $grainSize, grainBehavior: $grainBehavior, lutFilePath: $lutFilePath, lutIntensity: $lutIntensity, resolution: $resolution, colorShift: $colorShift, mist: $mist, prism: $prism, cheapFisheye: $cheapFisheye, bloom: $bloom, diffusion: $diffusion)';
+    return 'PlatformEffectsValues(vignetteIntensity: $vignetteIntensity, grainNoisePath: $grainNoisePath, grainOpacity: $grainOpacity, grainSize: $grainSize, grainBehavior: $grainBehavior, lutFilePath: $lutFilePath, lutIntensity: $lutIntensity, overlayFilePath: $overlayFilePath, overlayBlendMode: $overlayBlendMode, resolution: $resolution, colorShift: $colorShift, mist: $mist, prism: $prism, cheapFisheye: $cheapFisheye, bloom: $bloom, diffusion: $diffusion)';
   }
 }
 
@@ -863,65 +894,68 @@ class _PigeonCodec extends StandardMessageCodec {
     } else if (value is PlatformGrainBehavior) {
       buffer.putUint8(129);
       writeValue(buffer, value.index);
-    } else if (value is PlatformCameraLensDirection) {
+    } else if (value is PlatformOverlayBlendMode) {
       buffer.putUint8(130);
       writeValue(buffer, value.index);
-    } else if (value is PlatformCameraLensType) {
+    } else if (value is PlatformCameraLensDirection) {
       buffer.putUint8(131);
       writeValue(buffer, value.index);
-    } else if (value is PlatformDeviceOrientation) {
+    } else if (value is PlatformCameraLensType) {
       buffer.putUint8(132);
       writeValue(buffer, value.index);
-    } else if (value is PlatformExposureMode) {
+    } else if (value is PlatformDeviceOrientation) {
       buffer.putUint8(133);
       writeValue(buffer, value.index);
-    } else if (value is PlatformFlashMode) {
+    } else if (value is PlatformExposureMode) {
       buffer.putUint8(134);
       writeValue(buffer, value.index);
-    } else if (value is PlatformFocusMode) {
+    } else if (value is PlatformFlashMode) {
       buffer.putUint8(135);
       writeValue(buffer, value.index);
-    } else if (value is PlatformImageFileFormat) {
+    } else if (value is PlatformFocusMode) {
       buffer.putUint8(136);
       writeValue(buffer, value.index);
-    } else if (value is PlatformImageFormatGroup) {
+    } else if (value is PlatformImageFileFormat) {
       buffer.putUint8(137);
       writeValue(buffer, value.index);
-    } else if (value is PlatformResolutionPreset) {
+    } else if (value is PlatformImageFormatGroup) {
       buffer.putUint8(138);
       writeValue(buffer, value.index);
-    } else if (value is PlatformVideoStabilizationMode) {
+    } else if (value is PlatformResolutionPreset) {
       buffer.putUint8(139);
       writeValue(buffer, value.index);
-    } else if (value is PlatformCameraDescription) {
+    } else if (value is PlatformVideoStabilizationMode) {
       buffer.putUint8(140);
-      writeValue(buffer, value.encode());
-    } else if (value is PlatformCameraState) {
+      writeValue(buffer, value.index);
+    } else if (value is PlatformCameraDescription) {
       buffer.putUint8(141);
       writeValue(buffer, value.encode());
-    } else if (value is PlatformCameraImageData) {
+    } else if (value is PlatformCameraState) {
       buffer.putUint8(142);
       writeValue(buffer, value.encode());
-    } else if (value is PlatformCameraImagePlane) {
+    } else if (value is PlatformCameraImageData) {
       buffer.putUint8(143);
       writeValue(buffer, value.encode());
-    } else if (value is PlatformMediaSettings) {
+    } else if (value is PlatformCameraImagePlane) {
       buffer.putUint8(144);
       writeValue(buffer, value.encode());
-    } else if (value is PlatformPoint) {
+    } else if (value is PlatformMediaSettings) {
       buffer.putUint8(145);
       writeValue(buffer, value.encode());
-    } else if (value is PlatformSize) {
+    } else if (value is PlatformPoint) {
       buffer.putUint8(146);
       writeValue(buffer, value.encode());
-    } else if (value is PlatformEffectsValues) {
+    } else if (value is PlatformSize) {
       buffer.putUint8(147);
       writeValue(buffer, value.encode());
-    } else if (value is PlatformCapturedPicturePaths) {
+    } else if (value is PlatformEffectsValues) {
       buffer.putUint8(148);
       writeValue(buffer, value.encode());
-    } else if (value is PlatformWhiteBalanceValues) {
+    } else if (value is PlatformCapturedPicturePaths) {
       buffer.putUint8(149);
+      writeValue(buffer, value.encode());
+    } else if (value is PlatformWhiteBalanceValues) {
+      buffer.putUint8(150);
       writeValue(buffer, value.encode());
     } else {
       super.writeValue(buffer, value);
@@ -936,53 +970,56 @@ class _PigeonCodec extends StandardMessageCodec {
         return value == null ? null : PlatformGrainBehavior.values[value];
       case 130:
         final value = readValue(buffer) as int?;
-        return value == null ? null : PlatformCameraLensDirection.values[value];
+        return value == null ? null : PlatformOverlayBlendMode.values[value];
       case 131:
         final value = readValue(buffer) as int?;
-        return value == null ? null : PlatformCameraLensType.values[value];
+        return value == null ? null : PlatformCameraLensDirection.values[value];
       case 132:
         final value = readValue(buffer) as int?;
-        return value == null ? null : PlatformDeviceOrientation.values[value];
+        return value == null ? null : PlatformCameraLensType.values[value];
       case 133:
         final value = readValue(buffer) as int?;
-        return value == null ? null : PlatformExposureMode.values[value];
+        return value == null ? null : PlatformDeviceOrientation.values[value];
       case 134:
         final value = readValue(buffer) as int?;
-        return value == null ? null : PlatformFlashMode.values[value];
+        return value == null ? null : PlatformExposureMode.values[value];
       case 135:
         final value = readValue(buffer) as int?;
-        return value == null ? null : PlatformFocusMode.values[value];
+        return value == null ? null : PlatformFlashMode.values[value];
       case 136:
         final value = readValue(buffer) as int?;
-        return value == null ? null : PlatformImageFileFormat.values[value];
+        return value == null ? null : PlatformFocusMode.values[value];
       case 137:
         final value = readValue(buffer) as int?;
-        return value == null ? null : PlatformImageFormatGroup.values[value];
+        return value == null ? null : PlatformImageFileFormat.values[value];
       case 138:
         final value = readValue(buffer) as int?;
-        return value == null ? null : PlatformResolutionPreset.values[value];
+        return value == null ? null : PlatformImageFormatGroup.values[value];
       case 139:
         final value = readValue(buffer) as int?;
-        return value == null ? null : PlatformVideoStabilizationMode.values[value];
+        return value == null ? null : PlatformResolutionPreset.values[value];
       case 140:
-        return PlatformCameraDescription.decode(readValue(buffer)!);
+        final value = readValue(buffer) as int?;
+        return value == null ? null : PlatformVideoStabilizationMode.values[value];
       case 141:
-        return PlatformCameraState.decode(readValue(buffer)!);
+        return PlatformCameraDescription.decode(readValue(buffer)!);
       case 142:
-        return PlatformCameraImageData.decode(readValue(buffer)!);
+        return PlatformCameraState.decode(readValue(buffer)!);
       case 143:
-        return PlatformCameraImagePlane.decode(readValue(buffer)!);
+        return PlatformCameraImageData.decode(readValue(buffer)!);
       case 144:
-        return PlatformMediaSettings.decode(readValue(buffer)!);
+        return PlatformCameraImagePlane.decode(readValue(buffer)!);
       case 145:
-        return PlatformPoint.decode(readValue(buffer)!);
+        return PlatformMediaSettings.decode(readValue(buffer)!);
       case 146:
-        return PlatformSize.decode(readValue(buffer)!);
+        return PlatformPoint.decode(readValue(buffer)!);
       case 147:
-        return PlatformEffectsValues.decode(readValue(buffer)!);
+        return PlatformSize.decode(readValue(buffer)!);
       case 148:
-        return PlatformCapturedPicturePaths.decode(readValue(buffer)!);
+        return PlatformEffectsValues.decode(readValue(buffer)!);
       case 149:
+        return PlatformCapturedPicturePaths.decode(readValue(buffer)!);
+      case 150:
         return PlatformWhiteBalanceValues.decode(readValue(buffer)!);
       default:
         return super.readValueOfType(type, buffer);

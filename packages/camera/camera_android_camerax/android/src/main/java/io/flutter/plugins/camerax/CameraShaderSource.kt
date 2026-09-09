@@ -42,8 +42,7 @@ object CameraShaderSource {
           "#define SOURCE_YUV 0\n"
 
   /** Prepended to a fragment shader whose source is a still-capture bitmap. */
-  const val DEFINE_SOURCE_2D =
-      "#version 300 es\n#define SOURCE_EXTERNAL 0\n#define SOURCE_YUV 0\n"
+  const val DEFINE_SOURCE_2D = "#version 300 es\n#define SOURCE_EXTERNAL 0\n#define SOURCE_YUV 0\n"
 
   /**
    * Prepended to a fragment shader whose source is an uncompressed `YUV_420_888` capture.
@@ -52,8 +51,7 @@ object CameraShaderSource {
    * there is no JPEG to decode and the chroma upsample and colour conversion the decoder used to do
    * on the CPU happen here, in the sampler, for free.
    */
-  const val DEFINE_SOURCE_YUV =
-      "#version 300 es\n#define SOURCE_EXTERNAL 0\n#define SOURCE_YUV 1\n"
+  const val DEFINE_SOURCE_YUV = "#version 300 es\n#define SOURCE_EXTERNAL 0\n#define SOURCE_YUV 1\n"
 
   /** Prepended to fragment shaders that do not read the camera source at all. */
   const val DEFINE_NO_SOURCE = "#version 300 es\n"
@@ -252,11 +250,16 @@ uniform float uDiffusion;
 // 1.0 to dither the final quantization, 0.0 to leave it alone. See `CameraUniforms.dither`.
 uniform float uDither;
 
+uniform float uOverlayEnabled;
+uniform float uOverlayBlendMode;
+uniform float uOverlayQuarterTurns;
+
 uniform sampler2D uGrainTexture;
 uniform sampler2D uLutTexture;
 uniform sampler2D uPreBlurredTexture;
 uniform sampler2D uBloomTexture;
 uniform sampler2D uFrameBlurTexture;
+uniform sampler2D uOverlayTexture;
 
 // Dimensions of the camera source in pixels; drives every pixel-space tap offset.
 uniform vec2 uSourceSize;
@@ -658,6 +661,107 @@ vec3 applySrgbPerturbations(vec3 rgb, float grainOpacity, vec2 grainUv, vec2 fra
 // source per tap and would discard any earlier LUT-graded value - and after mist/diffusion/bloom,
 // whose renderer-blurred textures are likewise derived from the ungraded source. The vignette runs
 // last so it darkens grain and every other effect.
+// ============================================================================
+// Overlay compositing
+// ============================================================================
+//
+// A caller-supplied PNG stretched across the visible rect and combined with the finished frame.
+// Runs after everything else, so the overlay is never vignetted, grained or graded - it sits on
+// top of the photograph the way a physical frame would.
+//
+// Everything here works on non-linear sRGB, because that is the space the blend modes are defined
+// in (W3C compositing, and what Photoshop and Skia match). The caller already holds an encoded
+// value at that point, so no extra conversion is needed on this platform.
+//
+// Port of `applyOverlay` in `CameraShader.metal`; the two must stay in step so the same overlay
+// renders the same on both platforms.
+
+const int kBlendSrcOver = 0;
+const int kBlendMultiply = 1;
+const int kBlendScreen = 2;
+const int kBlendOverlay = 3;
+const int kBlendDarken = 4;
+const int kBlendLighten = 5;
+const int kBlendColorDodge = 6;
+const int kBlendColorBurn = 7;
+const int kBlendSoftLight = 8;
+const int kBlendHardLight = 9;
+const int kBlendDifference = 10;
+const int kBlendExclusion = 11;
+
+// Separable blend of one channel pair, `cb` backdrop against `cs` source. Per-channel so the
+// branchy modes read like their reference formulas.
+float blendChannel(float cb, float cs, int mode) {
+  if (mode == kBlendMultiply) {
+    return cb * cs;
+  } else if (mode == kBlendScreen) {
+    return cb + cs - cb * cs;
+  } else if (mode == kBlendOverlay) {
+    // Hard light with the operands swapped: the backdrop picks the branch.
+    return cb <= 0.5 ? (2.0 * cs * cb) : (1.0 - 2.0 * (1.0 - cs) * (1.0 - cb));
+  } else if (mode == kBlendDarken) {
+    return min(cb, cs);
+  } else if (mode == kBlendLighten) {
+    return max(cb, cs);
+  } else if (mode == kBlendColorDodge) {
+    if (cb <= 0.0) return 0.0;
+    if (cs >= 1.0) return 1.0;
+    return min(1.0, cb / (1.0 - cs));
+  } else if (mode == kBlendColorBurn) {
+    if (cb >= 1.0) return 1.0;
+    if (cs <= 0.0) return 0.0;
+    return 1.0 - min(1.0, (1.0 - cb) / cs);
+  } else if (mode == kBlendSoftLight) {
+    // W3C separable soft-light. `d` is the piecewise "darkening curve" the spec names D(Cb); the
+    // sqrt branch above 0.25 keeps the curve smooth.
+    float d = cb <= 0.25 ? ((16.0 * cb - 12.0) * cb + 4.0) * cb : sqrt(cb);
+    return cs <= 0.5 ? (cb - (1.0 - 2.0 * cs) * cb * (1.0 - cb))
+                     : (cb + (2.0 * cs - 1.0) * (d - cb));
+  } else if (mode == kBlendHardLight) {
+    return cs <= 0.5 ? (2.0 * cb * cs) : (1.0 - 2.0 * (1.0 - cb) * (1.0 - cs));
+  } else if (mode == kBlendDifference) {
+    return abs(cb - cs);
+  } else if (mode == kBlendExclusion) {
+    return cb + cs - 2.0 * cb * cs;
+  }
+  return cs;  // kBlendSrcOver
+}
+
+vec3 blendSrgb(vec3 cb, vec3 cs, int mode) {
+  return vec3(blendChannel(cb.r, cs.r, mode),
+              blendChannel(cb.g, cs.g, mode),
+              blendChannel(cb.b, cs.b, mode));
+}
+
+// Rotates a [0,1] UV by `quarterTurns` clockwise quarter turns. Same mapping as
+// `CameraStillCaptureRenderer.uprightTransform`.
+vec2 rotateUv(vec2 uv, int quarterTurns) {
+  if (quarterTurns == 1) {
+    return vec2(uv.y, 1.0 - uv.x);
+  } else if (quarterTurns == 2) {
+    return vec2(1.0 - uv.x, 1.0 - uv.y);
+  } else if (quarterTurns == 3) {
+    return vec2(1.0 - uv.y, uv.x);
+  }
+  return uv;
+}
+
+// Composites the overlay over `srgb` (non-linear) and returns the result in the same space.
+// `localUv` is [0,1] across the visible rect, so the image is stretched to fill it regardless of
+// its own aspect ratio.
+vec3 applyOverlay(vec3 srgb, vec2 localUv) {
+  vec2 uv = rotateUv(localUv, int(uOverlayQuarterTurns + 0.5));
+  vec4 texel = texture(uOverlayTexture, uv);
+  if (texel.a <= 0.0) return srgb;
+
+  // The texture is premultiplied (`GLUtils.texImage2D` uploads an ARGB_8888 bitmap as stored, and
+  // premultiplied is the right space to filter a stretched image in), but the blend formulas are
+  // defined on straight colour - so undo it before blending.
+  vec3 cs = clamp(texel.rgb / texel.a, 0.0, 1.0);
+  vec3 blended = blendSrgb(srgb, cs, int(uOverlayBlendMode + 0.5));
+  return mix(srgb, clamp(blended, 0.0, 1.0), texel.a);
+}
+
 void main() {
   computeCropContext(vUv);
 
@@ -721,7 +825,21 @@ void main() {
   rgb *= fisheyeMask;
 
   // Metal renders into an sRGB view and gets this encode for free; GLES does it explicitly.
-  fragColor = vec4(linearToSrgb(rgb), 1.0);
+  vec3 srgbOut = linearToSrgb(rgb);
+
+  // Last of all, and inside the scaled rect only, like the vignette and grain above: the rect is
+  // what a capture actually keeps, so stopping there makes the preview show the overlay over
+  // exactly the area that will be saved, and leaves the dimmed border outside it clean. On a
+  // capture pass every fragment is inside, so this costs those paths nothing.
+  //
+  // Folded into the encode above rather than bracketed by its own conversion pair, since the blend
+  // modes want exactly this space - the Metal port has to convert back because it returns linear
+  // to an sRGB render target.
+  if (uOverlayEnabled > 0.5 && gInsideScaled) {
+    srgbOut = applyOverlay(srgbOut, gLocalUv);
+  }
+
+  fragColor = vec4(srgbOut, 1.0);
 }
 """
 

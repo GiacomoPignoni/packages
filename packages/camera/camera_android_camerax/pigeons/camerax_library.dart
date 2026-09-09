@@ -1284,6 +1284,48 @@ enum PlatformGrainBehavior {
   darkOnly,
 }
 
+/// How the overlay image is combined with the camera frame beneath it.
+///
+/// Pigeon version of `OverlayBlendMode`. Order matches the `BLEND_*` constants
+/// the GLSL shader switches on, so the raw index crosses unchanged.
+enum PlatformOverlayBlendMode {
+  /// Normal alpha compositing: the overlay replaces the frame where opaque.
+  srcOver,
+
+  /// Multiplies the two colours; always darker.
+  multiply,
+
+  /// Multiplies the inverses; always lighter.
+  screen,
+
+  /// Multiply on dark parts of the frame, screen on light parts.
+  overlay,
+
+  /// Keeps the darker of the two colours per channel.
+  darken,
+
+  /// Keeps the lighter of the two colours per channel.
+  lighten,
+
+  /// Brightens the frame to reflect the overlay.
+  colorDodge,
+
+  /// Darkens the frame to reflect the overlay.
+  colorBurn,
+
+  /// A softer hard light, as if a diffused spotlight were shone on the frame.
+  softLight,
+
+  /// Multiply on dark parts of the overlay, screen on light parts.
+  hardLight,
+
+  /// The absolute difference of the two colours.
+  difference,
+
+  /// Like difference but with lower contrast in the midtones.
+  exclusion,
+}
+
 /// Visual effect parameters forwarded to the OpenGL ES shader pipeline.
 ///
 /// Field-for-field equivalent of `PlatformEffectsValues` in
@@ -1323,6 +1365,14 @@ abstract class PlatformEffectsValues {
   /// Intensity of the LUT color filter (0.0 = no effect, 1.0 = full LUT).
   /// Ignored when [lutFilePath] is null.
   late double lutIntensity;
+
+  /// Absolute file path to a PNG stretched over the frame after every other
+  /// effect. Null disables the overlay.
+  late String? overlayFilePath;
+
+  /// How [overlayFilePath] is combined with the frame beneath it.
+  /// Ignored when [overlayFilePath] is null.
+  late PlatformOverlayBlendMode overlayBlendMode;
 
   /// Simulates a low-resolution sensor (0.0 = off, 1.0 = full strength).
   /// Adds a soft Gaussian blur and desaturation.

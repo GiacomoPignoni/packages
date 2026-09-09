@@ -52,6 +52,11 @@ extension CameraUniforms {
     bloom = Float(values.bloom)
     diffusion = Float(values.diffusion)
     cheapFisheye = values.cheapFisheye ? 1 : 0
+    // `overlayEnabled` is not set here: it follows whether a texture is
+    // actually bound, which only `submitRender` knows. The blend mode is
+    // still recorded so a path change and a mode change can arrive in
+    // either order without the mode being lost.
+    overlayBlendMode = Float(values.overlayBlendMode.rawValue)
   }
 }
 
@@ -558,6 +563,46 @@ final class VideoFrameRenderer {
   private static let lutLoadQueue = DispatchQueue(
     label: "io.flutter.camera.lutLoadQueue", qos: .utility)
 
+  // Overlay state — all private, GUARDED BY overlayTextureLock.
+  private let overlayTextureLock = NSLock()
+  private var overlayTexture: MTLTexture?
+  private var pendingOverlayTexturePath: String?
+  /// Mirror of `grainLoadInFlightPath` / `lutLoadInFlightPath`: dedupes
+  /// parallel decodes of the same overlay path.
+  private var overlayLoadInFlightPath: String?
+
+  #if DEBUG
+    /// Test-only snapshot of `overlayTexture`. Takes the lock internally so
+    /// callers can't observe the field mid-write.
+    var overlayTextureForTesting: MTLTexture? {
+      overlayTextureLock.lock(); defer { overlayTextureLock.unlock() }
+      return overlayTexture
+    }
+    /// Test-only snapshot of `pendingOverlayTexturePath`.
+    var pendingOverlayTexturePathForTesting: String? {
+      overlayTextureLock.lock(); defer { overlayTextureLock.unlock() }
+      return pendingOverlayTexturePath
+    }
+  #endif
+
+  /// Wraps an `MTLTexture` so it can be stored in an `NSCache` (whose
+  /// `ObjectType` must be a class, while `MTLTexture` is a protocol).
+  private final class OverlayTextureBox {
+    let texture: MTLTexture
+    init(_ texture: MTLTexture) { self.texture = texture }
+  }
+
+  /// In-memory cache of decoded overlay textures, keyed by absolute file
+  /// path. Class-level like the grain and LUT caches so it survives renderer
+  /// rebuilds and is shared across cameras.
+  private static let overlayTextureCache = NSCache<NSString, OverlayTextureBox>()
+
+  /// Dedicated serial queue for overlay disk-IO + decode + texture upload.
+  /// Serial, like the grain and LUT loaders, so rapid overlay switches don't
+  /// fan out into parallel decodes.
+  private static let overlayLoadQueue = DispatchQueue(
+    label: "io.flutter.camera.overlayLoadQueue", qos: .utility)
+
   // Pools.
   private let pool: CVPixelBufferPool
   private let poolAuxAttributes: CFDictionary
@@ -845,6 +890,16 @@ final class VideoFrameRenderer {
       && snapshot.prism == 0
       && snapshot.bloom == 0
       && snapshot.diffusion == 0
+      && !hasOverlayTexture
+  }
+
+  /// Whether an overlay texture is currently bound. Read by
+  /// `canBypassPreview`, which otherwise only inspects uniforms — the
+  /// overlay is the one effect whose "is it on?" lives in a texture rather
+  /// than in a scalar, and skipping the pass would drop it silently.
+  private var hasOverlayTexture: Bool {
+    overlayTextureLock.lock(); defer { overlayTextureLock.unlock() }
+    return overlayTexture != nil
   }
 
   // ---------------------------------------------------------------------------
@@ -1074,7 +1129,8 @@ final class VideoFrameRenderer {
           uvScale: crop.uvScale,
           captureScale: captureScale,
           darkenOutside: 0.0,
-          swapGrainAxes: true))
+          swapGrainAxes: true,
+          overlayQuarterTurns: VideoFrameRenderer.photoOverlayQuarterTurns))
     else {
       return nil
     }
@@ -1411,6 +1467,11 @@ final class VideoFrameRenderer {
     /// the axis transposition so the grain looks identical in the displayed
     /// photo and the live preview.
     var swapGrainAxes: Bool = false
+    /// Quarter turns to rotate the overlay by for this pass. The overlay is
+    /// authored in display orientation; the preview and recording passes
+    /// already render that way and leave this at 0, while the photo pass
+    /// renders in sensor orientation and sets it.
+    var overlayQuarterTurns: Float = 0
   }
 
   /// Bundle of textures bound for a single render pass. Inline-storage
@@ -1439,6 +1500,7 @@ final class VideoFrameRenderer {
     var grainTexture: MTLTexture?
     var grainSize: Float
     var lutTexture: MTLTexture?
+    var overlayTexture: MTLTexture?
   }
 
   private func snapshotRenderState() -> RenderSnapshot {
@@ -1455,7 +1517,12 @@ final class VideoFrameRenderer {
     let lt = lutTexture
     lutTextureLock.unlock()
 
-    return RenderSnapshot(uniforms: u, grainTexture: gt, grainSize: gs, lutTexture: lt)
+    overlayTextureLock.lock()
+    let ot = overlayTexture
+    overlayTextureLock.unlock()
+
+    return RenderSnapshot(
+      uniforms: u, grainTexture: gt, grainSize: gs, lutTexture: lt, overlayTexture: ot)
   }
 
   /// Encodes the render pass and returns the uncommitted command buffer.
@@ -1494,6 +1561,7 @@ final class VideoFrameRenderer {
     if let v = overrides.uvScale { snapshot.uniforms.uvScale = v }
     if let v = overrides.captureScale { snapshot.uniforms.captureScale = v }
     if let v = overrides.darkenOutside { snapshot.uniforms.darkenOutside = v }
+    snapshot.uniforms.overlayQuarterTurns = overrides.overlayQuarterTurns
 
     // Aspect of the actual destination buffer. Preview and recording write
     // portrait-oriented buffers; the photo path writes a sensor-orientation
@@ -1658,6 +1726,17 @@ final class VideoFrameRenderer {
       snapshot.uniforms.mist = 0
       snapshot.uniforms.diffusion = 0
       encoder.setFragmentTexture(sourceSet.mtl0, slot: CameraShaderTextureFrameBlur)
+    }
+
+    // Caller-supplied overlay. Same fallback contract again: bind the source
+    // and clear `overlayEnabled` when nothing is loaded, so the shader's
+    // guard skips the composite rather than blending the frame over itself.
+    if let ot = snapshot.overlayTexture {
+      snapshot.uniforms.overlayEnabled = 1
+      encoder.setFragmentTexture(ot, slot: CameraShaderTextureOverlay)
+    } else {
+      snapshot.uniforms.overlayEnabled = 0
+      encoder.setFragmentTexture(sourceSet.mtl0, slot: CameraShaderTextureOverlay)
     }
 
     // Resolution-independent, aspect-correct grain UV scale, then optional
@@ -2600,6 +2679,181 @@ final class VideoFrameRenderer {
     lutTextureLock.unlock()
   }
 
+  /// Decodes the PNG at `path` and publishes it as the overlay texture.
+  ///
+  /// Structured exactly like `loadGrainTexture` — cache fast path, in-flight
+  /// dedupe, serial decode queue, stale-path check before publishing — and
+  /// like it accepts an image of any size, since the shader stretches the
+  /// overlay across the frame. The two differ only in what they do with the
+  /// result: there is no animation timer here, and the sampler clamps rather
+  /// than repeats (`applyOverlay`), so a stretched edge extends instead of
+  /// wrapping around.
+  func loadOverlayTexture(path: String) {
+    if let cached = VideoFrameRenderer.overlayTextureCache.object(forKey: path as NSString) {
+      overlayTextureLock.lock()
+      pendingOverlayTexturePath = path
+      overlayTexture = cached.texture
+      overlayTextureLock.unlock()
+      return
+    }
+
+    overlayTextureLock.lock()
+    pendingOverlayTexturePath = path
+    if overlayLoadInFlightPath == path {
+      overlayTextureLock.unlock()
+      return
+    }
+    overlayLoadInFlightPath = path
+    overlayTextureLock.unlock()
+
+    VideoFrameRenderer.overlayLoadQueue.async { [weak self] in
+      guard let self = self else { return }
+      defer {
+        self.overlayTextureLock.lock()
+        if self.overlayLoadInFlightPath == path {
+          self.overlayLoadInFlightPath = nil
+        }
+        self.overlayTextureLock.unlock()
+      }
+
+      self.overlayTextureLock.lock()
+      let stillCurrent = self.pendingOverlayTexturePath == path
+      self.overlayTextureLock.unlock()
+      if !stillCurrent { return }
+
+      if let cached = VideoFrameRenderer.overlayTextureCache.object(forKey: path as NSString) {
+        self.overlayTextureLock.lock()
+        if self.pendingOverlayTexturePath == path {
+          self.overlayTexture = cached.texture
+        }
+        self.overlayTextureLock.unlock()
+        return
+      }
+
+      let cfURL = URL(fileURLWithPath: path) as CFURL
+      guard let source = CGImageSourceCreateWithURL(cfURL, nil) else {
+        NSLog("VideoFrameRenderer: cannot open overlay image at '\(path)'")
+        return
+      }
+      let sourceStatus = CGImageSourceGetStatus(source)
+      guard sourceStatus == .statusComplete else {
+        let typeHint = (CGImageSourceGetType(source) as String?) ?? "unknown"
+        NSLog(
+          "VideoFrameRenderer: overlay image source is not complete at '\(path)'"
+            + " (CGImageSourceStatus=\(sourceStatus.rawValue), type=\(typeHint))")
+        return
+      }
+      guard let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+        let typeHint = (CGImageSourceGetType(source) as String?) ?? "unknown"
+        NSLog(
+          "VideoFrameRenderer: failed to decode overlay CGImage at '\(path)'"
+            + " (type=\(typeHint), frames=\(CGImageSourceGetCount(source)))")
+        return
+      }
+      let width = cgImage.width
+      let height = cgImage.height
+      guard width > 0, height > 0 else {
+        NSLog(
+          "VideoFrameRenderer: overlay image has zero dimensions"
+            + " (\(width)×\(height)) at '\(path)'")
+        return
+      }
+
+      // Normalise to RGBA8 the same way the grain loader does, including the
+      // `.copy` blend mode that keeps the un-zeroed buffer from leaking
+      // through transparent pixels.
+      //
+      // The result is *premultiplied*, which is deliberate rather than merely
+      // convenient: `CGBitmapContext` supports no straight-alpha RGBA8 layout
+      // at all, and premultiplied is the correct space for the bilinear
+      // filtering that stretching the overlay implies. `applyOverlay` divides
+      // the alpha back out before blending, since the blend formulas are
+      // defined on straight colour.
+      let bytesPerRow = width * 4
+      let totalBytes = height * bytesPerRow
+      let pixelData = UnsafeMutableRawPointer.allocate(
+        byteCount: totalBytes, alignment: 1)
+      defer { pixelData.deallocate() }
+
+      guard let ctx = CGContext(
+        data: pixelData,
+        width: width, height: height,
+        bitsPerComponent: 8, bytesPerRow: bytesPerRow,
+        space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+      else {
+        NSLog(
+          "VideoFrameRenderer: failed to create CGContext for overlay texture at"
+            + " '\(path)' (size \(width)×\(height))")
+        return
+      }
+      ctx.setBlendMode(.copy)
+      ctx.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+      // Uploaded as `.rgba8Unorm`, not `_srgb`: sampling must return the
+      // PNG's stored sRGB values untouched, because `applyOverlay` blends in
+      // sRGB space. Same choice as the grain and LUT textures.
+      let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+        pixelFormat: .rgba8Unorm,
+        width: width, height: height, mipmapped: false)
+      descriptor.usage = .shaderRead
+      descriptor.storageMode = .shared
+      guard let texture = self.device.makeTexture(descriptor: descriptor) else {
+        NSLog(
+          "VideoFrameRenderer: failed to create Metal texture for overlay at"
+            + " '\(path)' (size \(width)×\(height))")
+        return
+      }
+      texture.replace(
+        region: MTLRegionMake2D(0, 0, width, height),
+        mipmapLevel: 0,
+        withBytes: pixelData,
+        bytesPerRow: bytesPerRow)
+
+      let costBytes = width * height * 4
+      VideoFrameRenderer.overlayTextureCache.setObject(
+        OverlayTextureBox(texture), forKey: path as NSString, cost: costBytes)
+
+      self.overlayTextureLock.lock()
+      if self.pendingOverlayTexturePath == path {
+        self.overlayTexture = texture
+      }
+      self.overlayTextureLock.unlock()
+    }
+  }
+
+  /// Removes the overlay texture. The overlay disappears on the next rendered
+  /// frame: `submitRender` finds no texture to bind and clears
+  /// `overlayEnabled`, so the shader skips the composite.
+  func clearOverlayTexture() {
+    overlayTextureLock.lock()
+    pendingOverlayTexturePath = nil
+    overlayTexture = nil
+    overlayTextureLock.unlock()
+  }
+
+  /// Quarter turns applied to the overlay on the photo path.
+  ///
+  /// The overlay is authored in display orientation, which is what the
+  /// preview and recording passes already render in — the video connection is
+  /// pinned to `.portrait` at session setup, so those two pass 0. Photo
+  /// sample buffers instead arrive in sensor (landscape) orientation and are
+  /// turned upright by the EXIF tag the viewer applies, so the overlay has to
+  /// be turned by the same amount to land where the preview showed it. This
+  /// is the same discrepancy `swapGrainAxes` exists for, resolved to a
+  /// direction rather than a transpose.
+  ///
+  /// Three, not one. The viewer turns the buffer a quarter turn clockwise
+  /// (the EXIF tag a portrait capture carries), which in normalised coordinates
+  /// maps display point `(x, y)` to buffer point `(y, 1 - x)`. Inverting that,
+  /// the fragment at buffer UV `(u, v)` is displayed at `(1 - v, u)` — which is
+  /// where the overlay has to be sampled, and is exactly `rotateUv(uv, 3)`.
+  ///
+  /// One is the same rotation the other way round, so it lands the overlay 180°
+  /// out — upside down rather than merely turned, which is what makes this
+  /// particular mistake easy to spot and easy to misread as a flip.
+  static let photoOverlayQuarterTurns: Float = 3
+
   /// The required width and height, in pixels, of a LUT PNG atlas
   /// (an 8×8 grid of 64×64 tiles = one 64×64×64 colour cube).
   static let lutImageDimension = 512
@@ -2732,6 +2986,17 @@ final class VideoFrameRenderer {
       grainSize = grainSz
       startGrainAnimationLocked()
       grainTextureLock.unlock()
+    }
+
+    other.overlayTextureLock.lock()
+    let overlayTex = other.overlayTexture
+    let overlayPath = other.pendingOverlayTexturePath
+    other.overlayTextureLock.unlock()
+    if overlayTex != nil {
+      overlayTextureLock.lock()
+      overlayTexture = overlayTex
+      pendingOverlayTexturePath = overlayPath
+      overlayTextureLock.unlock()
     }
   }
 }

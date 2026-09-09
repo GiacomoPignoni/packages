@@ -929,6 +929,7 @@ private class CameraXLibraryPigeonProxyApiBaseCodec(
         value is AspectRatioStrategyFallbackRule ||
         value is CameraStateErrorCode ||
         value is PlatformGrainBehavior ||
+        value is PlatformOverlayBlendMode ||
         value == null) {
       super.writeValue(stream, value)
       return
@@ -1631,6 +1632,45 @@ enum class PlatformGrainBehavior(val raw: Int) {
   }
 }
 
+/**
+ * How the overlay image is combined with the camera frame beneath it.
+ *
+ * Pigeon version of `OverlayBlendMode`. Order matches the `BLEND_*` constants the GLSL shader
+ * switches on, so the raw index crosses unchanged.
+ */
+enum class PlatformOverlayBlendMode(val raw: Int) {
+  /** Normal alpha compositing: the overlay replaces the frame where opaque. */
+  SRC_OVER(0),
+  /** Multiplies the two colours; always darker. */
+  MULTIPLY(1),
+  /** Multiplies the inverses; always lighter. */
+  SCREEN(2),
+  /** Multiply on dark parts of the frame, screen on light parts. */
+  OVERLAY(3),
+  /** Keeps the darker of the two colours per channel. */
+  DARKEN(4),
+  /** Keeps the lighter of the two colours per channel. */
+  LIGHTEN(5),
+  /** Brightens the frame to reflect the overlay. */
+  COLOR_DODGE(6),
+  /** Darkens the frame to reflect the overlay. */
+  COLOR_BURN(7),
+  /** A softer hard light, as if a diffused spotlight were shone on the frame. */
+  SOFT_LIGHT(8),
+  /** Multiply on dark parts of the overlay, screen on light parts. */
+  HARD_LIGHT(9),
+  /** The absolute difference of the two colours. */
+  DIFFERENCE(10),
+  /** Like difference but with lower contrast in the midtones. */
+  EXCLUSION(11);
+
+  companion object {
+    fun ofRaw(raw: Int): PlatformOverlayBlendMode? {
+      return values().firstOrNull { it.raw == raw }
+    }
+  }
+}
+
 private open class CameraXLibraryPigeonCodec : StandardMessageCodec() {
   override fun readValueOfType(type: Byte, buffer: ByteBuffer): Any? {
     return when (type) {
@@ -1673,6 +1713,9 @@ private open class CameraXLibraryPigeonCodec : StandardMessageCodec() {
       }
       140.toByte() -> {
         return (readValue(buffer) as Long?)?.let { PlatformGrainBehavior.ofRaw(it.toInt()) }
+      }
+      141.toByte() -> {
+        return (readValue(buffer) as Long?)?.let { PlatformOverlayBlendMode.ofRaw(it.toInt()) }
       }
       else -> super.readValueOfType(type, buffer)
     }
@@ -1726,6 +1769,10 @@ private open class CameraXLibraryPigeonCodec : StandardMessageCodec() {
       }
       is PlatformGrainBehavior -> {
         stream.write(140)
+        writeValue(stream, value.raw.toLong())
+      }
+      is PlatformOverlayBlendMode -> {
+        stream.write(141)
         writeValue(stream, value.raw.toLong())
       }
       else -> super.writeValue(stream, value)
@@ -8099,6 +8146,8 @@ abstract class PigeonApiPlatformEffectsValues(
       grainBehavior: PlatformGrainBehavior,
       lutFilePath: String?,
       lutIntensity: Double,
+      overlayFilePath: String?,
+      overlayBlendMode: PlatformOverlayBlendMode,
       resolution: Double,
       colorShift: Double,
       mist: Double,
@@ -8138,6 +8187,18 @@ abstract class PigeonApiPlatformEffectsValues(
    * is null.
    */
   abstract fun lutIntensity(pigeon_instance: PlatformEffectsValues): Double
+
+  /**
+   * Absolute file path to a PNG stretched over the frame after every other effect. Null disables
+   * the overlay.
+   */
+  abstract fun overlayFilePath(pigeon_instance: PlatformEffectsValues): String?
+
+  /**
+   * How [overlayFilePath] is combined with the frame beneath it. Ignored when [overlayFilePath] is
+   * null.
+   */
+  abstract fun overlayBlendMode(pigeon_instance: PlatformEffectsValues): PlatformOverlayBlendMode
 
   /**
    * Simulates a low-resolution sensor (0.0 = off, 1.0 = full strength). Adds a soft Gaussian blur
@@ -8187,13 +8248,15 @@ abstract class PigeonApiPlatformEffectsValues(
             val grainBehaviorArg = args[5] as PlatformGrainBehavior
             val lutFilePathArg = args[6] as String?
             val lutIntensityArg = args[7] as Double
-            val resolutionArg = args[8] as Double
-            val colorShiftArg = args[9] as Double
-            val mistArg = args[10] as Double
-            val prismArg = args[11] as Double
-            val cheapFisheyeArg = args[12] as Boolean
-            val bloomArg = args[13] as Double
-            val diffusionArg = args[14] as Double
+            val overlayFilePathArg = args[8] as String?
+            val overlayBlendModeArg = args[9] as PlatformOverlayBlendMode
+            val resolutionArg = args[10] as Double
+            val colorShiftArg = args[11] as Double
+            val mistArg = args[12] as Double
+            val prismArg = args[13] as Double
+            val cheapFisheyeArg = args[14] as Boolean
+            val bloomArg = args[15] as Double
+            val diffusionArg = args[16] as Double
             val wrapped: List<Any?> =
                 try {
                   api.pigeonRegistrar.instanceManager.addDartCreatedInstance(
@@ -8205,6 +8268,8 @@ abstract class PigeonApiPlatformEffectsValues(
                           grainBehaviorArg,
                           lutFilePathArg,
                           lutIntensityArg,
+                          overlayFilePathArg,
+                          overlayBlendModeArg,
                           resolutionArg,
                           colorShiftArg,
                           mistArg,
@@ -8248,6 +8313,8 @@ abstract class PigeonApiPlatformEffectsValues(
       val grainBehaviorArg = grainBehavior(pigeon_instanceArg)
       val lutFilePathArg = lutFilePath(pigeon_instanceArg)
       val lutIntensityArg = lutIntensity(pigeon_instanceArg)
+      val overlayFilePathArg = overlayFilePath(pigeon_instanceArg)
+      val overlayBlendModeArg = overlayBlendMode(pigeon_instanceArg)
       val resolutionArg = resolution(pigeon_instanceArg)
       val colorShiftArg = colorShift(pigeon_instanceArg)
       val mistArg = mist(pigeon_instanceArg)
@@ -8270,6 +8337,8 @@ abstract class PigeonApiPlatformEffectsValues(
               grainBehaviorArg,
               lutFilePathArg,
               lutIntensityArg,
+              overlayFilePathArg,
+              overlayBlendModeArg,
               resolutionArg,
               colorShiftArg,
               mistArg,

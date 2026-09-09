@@ -19,6 +19,8 @@ class EffectsValuesProxyApi(override val pigeonRegistrar: ProxyApiRegistrar) :
       grainBehavior: PlatformGrainBehavior,
       lutFilePath: String?,
       lutIntensity: Double,
+      overlayFilePath: String?,
+      overlayBlendMode: PlatformOverlayBlendMode,
       resolution: Double,
       colorShift: Double,
       mist: Double,
@@ -35,6 +37,8 @@ class EffectsValuesProxyApi(override val pigeonRegistrar: ProxyApiRegistrar) :
           grainBehavior = grainBehavior,
           lutFilePath = lutFilePath,
           lutIntensity = lutIntensity,
+          overlayFilePath = overlayFilePath,
+          overlayBlendMode = overlayBlendMode,
           resolution = resolution,
           colorShift = colorShift,
           mist = mist,
@@ -63,6 +67,12 @@ class EffectsValuesProxyApi(override val pigeonRegistrar: ProxyApiRegistrar) :
 
   override fun lutIntensity(pigeon_instance: PlatformEffectsValues): Double =
       pigeon_instance.lutIntensity
+
+  override fun overlayFilePath(pigeon_instance: PlatformEffectsValues): String? =
+      pigeon_instance.overlayFilePath
+
+  override fun overlayBlendMode(pigeon_instance: PlatformEffectsValues): PlatformOverlayBlendMode =
+      pigeon_instance.overlayBlendMode
 
   override fun resolution(pigeon_instance: PlatformEffectsValues): Double =
       pigeon_instance.resolution

@@ -1521,6 +1521,7 @@ final class DefaultCamera: NSObject, Camera {
     assertOnCaptureSessionQueue()
     let previousPath = currentEffectsValues?.grainNoisePath
     let previousLutPath = currentEffectsValues?.lutFilePath
+    let previousOverlayPath = currentEffectsValues?.overlayFilePath
     currentEffectsValues = values
 
     // Finiteness and range are enforced at the Dart `EffectsValues`
@@ -1548,6 +1549,18 @@ final class DefaultCamera: NSObject, Camera {
         videoFrameRenderer?.loadLutTexture(path: path)
       } else {
         videoFrameRenderer?.clearLutTexture()
+      }
+    }
+
+    // Same change-detection contract again. Note the blend mode is not part
+    // of this check: it rides in the uniforms applied above, so changing only
+    // the mode re-blends the already-loaded texture without a reload.
+    let newOverlayPath = values.overlayFilePath
+    if newOverlayPath != previousOverlayPath {
+      if let path = newOverlayPath {
+        videoFrameRenderer?.loadOverlayTexture(path: path)
+      } else {
+        videoFrameRenderer?.clearOverlayTexture()
       }
     }
   }
@@ -1679,6 +1692,9 @@ final class DefaultCamera: NSObject, Camera {
         }
         if let lutPath = values.lutFilePath {
           renderer.loadLutTexture(path: lutPath)
+        }
+        if let overlayPath = values.overlayFilePath {
+          renderer.loadOverlayTexture(path: overlayPath)
         }
       }
       updatePreviewSize(

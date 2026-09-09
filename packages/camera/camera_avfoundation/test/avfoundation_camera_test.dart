@@ -915,6 +915,8 @@ void main() {
           grainNoisePath: '/tmp/grain.png',
           grainOpacity: 0.4,
           grainSize: 0.2,
+          overlayFilePath: '/tmp/overlay.png',
+          overlayBlendMode: OverlayBlendMode.colorDodge,
         ),
       );
 
@@ -925,6 +927,17 @@ void main() {
       expect(forwarded.grainNoisePath, '/tmp/grain.png');
       expect(forwarded.grainOpacity, 0.4);
       expect(forwarded.grainSize, 0.2);
+      expect(forwarded.overlayFilePath, '/tmp/overlay.png');
+      expect(forwarded.overlayBlendMode, PlatformOverlayBlendMode.colorDodge);
+    });
+
+    test('Should forward null overlayFilePath when no overlay is set', () async {
+      await camera.setEffectsValues(cameraId, const EffectsValues(vignetteIntensity: 0.3));
+
+      final List<Object?> captured = verify(mockApi.setEffectsValues(captureAny)).captured;
+      final forwarded = captured.single! as PlatformEffectsValues;
+      expect(forwarded.overlayFilePath, isNull);
+      expect(forwarded.overlayBlendMode, PlatformOverlayBlendMode.srcOver);
     });
 
     test('Should forward null grainNoisePath when grain is disabled', () async {

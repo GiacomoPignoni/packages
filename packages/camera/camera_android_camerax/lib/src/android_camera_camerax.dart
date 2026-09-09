@@ -565,6 +565,12 @@ class AndroidCameraCameraX extends CameraPlatform {
       targetVideoEncodingBitRate: mediaSettings?.videoBitrate,
     );
     videoCapture = VideoCapture.withOutput(videoOutput: recorder!, targetFpsRange: _targetFpsRange);
+    // Same reason as the preview's, and it has to happen here for the same
+    // reason: the effect's output orientation is fixed when CameraX builds the
+    // pipeline, so a target rotation set after the first bind never reaches the
+    // pixels - only the file's rotation metadata, which is worse than not
+    // setting it at all.
+    await videoCapture!.setTargetRotation(_videoCaptureTargetRotation);
 
     // Retrieve info required for correcting the rotation of the camera preview.
     //
@@ -765,10 +771,13 @@ class AndroidCameraCameraX extends CameraPlatform {
     final int targetLockedRotation = _getRotationConstantFromDeviceOrientation(orientation);
     _lockedCaptureOrientation = targetLockedRotation;
 
-    // Update UseCases to use target device orientation.
+    // Update UseCases to use target device orientation. `videoCapture` is
+    // deliberately absent: its frames are composed by the effect pipeline in
+    // [_videoCaptureTargetRotation], effects and overlay baked into the pixels,
+    // so tagging the file with a different rotation would turn the picture
+    // without turning what was drawn on it.
     await imageCapture!.setTargetRotation(targetLockedRotation);
     await imageAnalysis!.setTargetRotation(targetLockedRotation);
-    await videoCapture!.setTargetRotation(targetLockedRotation);
   }
 
   /// Unlocks the capture orientation of camera with ID [cameraId].
@@ -1349,6 +1358,10 @@ class AndroidCameraCameraX extends CameraPlatform {
         },
         lutFilePath: values.lutFilePath,
         lutIntensity: values.lutIntensity,
+        overlayFilePath: values.overlayFilePath,
+        // `PlatformOverlayBlendMode` is index-aligned with `OverlayBlendMode` by design (see its
+        // doc comment), so the raw index crosses unchanged instead of a per-case mapping.
+        overlayBlendMode: PlatformOverlayBlendMode.values[values.overlayBlendMode.index],
         resolution: values.resolution,
         colorShift: values.colorShift,
         mist: values.mist,
@@ -1645,12 +1658,11 @@ class AndroidCameraCameraX extends CameraPlatform {
 
     await _bindUseCaseToLifecycle(videoCapture!, options.cameraId);
 
-    // Set target rotation to default CameraX rotation only if capture
-    // orientation not locked.
+    // Restore the pinned rotation rather than the display's. An unlock left the
+    // use case pointing at whatever orientation was locked, and the recording
+    // has to go back to the one the effect pipeline composes in.
     if (!captureOrientationLocked && shouldSetDefaultRotation) {
-      await videoCapture!.setTargetRotation(
-        await deviceOrientationManager.getDefaultDisplayRotation(),
-      );
+      await videoCapture!.setTargetRotation(_videoCaptureTargetRotation);
     }
 
     videoOutputPath = await systemServicesManager.getTempFilePath(videoPrefix, '.mp4');
@@ -2143,6 +2155,18 @@ class AndroidCameraCameraX extends CameraPlatform {
   /// mirror, which reverses its sense, and the correction stops being
   /// expressible as a quarter-turn count that is right for both cameras.
   int get _previewTargetRotation => Surface.rotation0;
+
+  /// The target rotation the recording is configured with.
+  ///
+  /// The same one the preview uses, and it must stay that way. Both outputs are
+  /// drawn by one pass of the shader pipeline — while a recording is running
+  /// CameraX may even hand out a single surface serving both — and the overlay
+  /// and every other effect are composited in that surface's own raster space.
+  /// Give the two use cases different target rotations and CameraX builds the
+  /// recording's output a quarter turn from the preview's, so the camera image
+  /// still lands upright (its transform is computed per output) while the
+  /// overlay drawn on top of it does not.
+  int get _videoCaptureTargetRotation => _previewTargetRotation;
 
   /// The frame rate range to build this camera's [UseCase]s with, given the
   /// application asked for [requestedFps], or null to leave the rate to CameraX.

@@ -33,9 +33,58 @@ class CameraUniformsTest {
     assertEquals(1f, uniforms.mist, 0f)
   }
 
+  @Test
+  fun applyEffects_leavesTheOverlayOffWhenNoPathIsSet() {
+    // The blend mode is still recorded, so setting a path later does not need the mode resent.
+    val uniforms = CameraUniforms()
+
+    uniforms.applyEffects(
+        effectsValues(overlayFilePath = null, overlayBlendMode = PlatformOverlayBlendMode.MULTIPLY))
+
+    assertEquals(0f, uniforms.overlayEnabled, 0f)
+    assertEquals(PlatformOverlayBlendMode.MULTIPLY.raw.toFloat(), uniforms.overlayBlendMode, 0f)
+  }
+
+  @Test
+  fun applyEffects_enablesTheOverlayAndCarriesTheBlendModeIndex() {
+    // The raw index is the wire format shared with the shader's `kBlend*` constants and with
+    // `CameraShaderBlendMode` on iOS, so it has to cross unchanged.
+    val uniforms = CameraUniforms()
+
+    uniforms.applyEffects(
+        effectsValues(
+            overlayFilePath = "/tmp/overlay.png",
+            overlayBlendMode = PlatformOverlayBlendMode.SOFT_LIGHT,
+        ))
+
+    assertEquals(1f, uniforms.overlayEnabled, 0f)
+    assertEquals(8f, uniforms.overlayBlendMode, 0f)
+  }
+
+  @Test
+  fun setFrom_copiesTheOverlayFields() {
+    // `setFrom` is the allocation-free per-frame copy; a field missed here is a field that silently
+    // reverts to its default on every rendered frame.
+    val source =
+        CameraUniforms().apply {
+          overlayEnabled = 1f
+          overlayBlendMode = 5f
+          overlayQuarterTurns = 3f
+        }
+
+    val destination = CameraUniforms()
+    destination.setFrom(source)
+
+    assertEquals(1f, destination.overlayEnabled, 0f)
+    assertEquals(5f, destination.overlayBlendMode, 0f)
+    assertEquals(3f, destination.overlayQuarterTurns, 0f)
+  }
+
   private fun effectsValues(
       vignetteIntensity: Double = 0.0,
       lutIntensity: Double = 0.0,
+      overlayFilePath: String? = null,
+      overlayBlendMode: PlatformOverlayBlendMode = PlatformOverlayBlendMode.SRC_OVER,
       resolution: Double = 0.0,
       colorShift: Double = 0.0,
       mist: Double = 0.0,
@@ -51,6 +100,8 @@ class CameraUniformsTest {
           grainBehavior = PlatformGrainBehavior.OVERLAY,
           lutFilePath = null,
           lutIntensity = lutIntensity,
+          overlayFilePath = overlayFilePath,
+          overlayBlendMode = overlayBlendMode,
           resolution = resolution,
           colorShift = colorShift,
           mist = mist,

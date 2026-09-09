@@ -17,6 +17,23 @@ enum PlatformGrainBehavior {
   darkOnly,
 }
 
+// Pigeon version of OverlayBlendMode. Order matches the `CameraShaderBlendMode`
+// constants the Metal shader switches on, so the raw index crosses unchanged.
+enum PlatformOverlayBlendMode {
+  srcOver,
+  multiply,
+  screen,
+  overlay,
+  darken,
+  lighten,
+  colorDodge,
+  colorBurn,
+  softLight,
+  hardLight,
+  difference,
+  exclusion,
+}
+
 // Pigeon version of CameraLensDirection.
 enum PlatformCameraLensDirection {
   /// Front facing camera (a user looking at the screen is seen by the camera).
@@ -214,6 +231,8 @@ class PlatformEffectsValues {
     required this.grainBehavior,
     this.lutFilePath,
     required this.lutIntensity,
+    this.overlayFilePath,
+    required this.overlayBlendMode,
     required this.resolution,
     required this.colorShift,
     required this.mist,
@@ -249,6 +268,14 @@ class PlatformEffectsValues {
   /// Intensity of the LUT color filter (0.0 = no effect, 1.0 = full LUT).
   /// Ignored when [lutFilePath] is null.
   final double lutIntensity;
+
+  /// Absolute file path to a PNG stretched over the frame after every other
+  /// effect. Null disables the overlay.
+  final String? overlayFilePath;
+
+  /// How [overlayFilePath] is combined with the frame beneath it.
+  /// Ignored when [overlayFilePath] is null.
+  final PlatformOverlayBlendMode overlayBlendMode;
 
   /// Simulates a low-resolution sensor (0.0 = off, 1.0 = full strength).
   /// Adds a soft Gaussian blur and desaturation.

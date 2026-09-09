@@ -238,6 +238,7 @@ class PigeonOverrides {
     required double grainSize,
     required PlatformGrainBehavior grainBehavior,
     required double lutIntensity,
+    required PlatformOverlayBlendMode overlayBlendMode,
     required double resolution,
     required double colorShift,
     required double mist,
@@ -247,6 +248,7 @@ class PigeonOverrides {
     required double diffusion,
     String? grainNoisePath,
     String? lutFilePath,
+    String? overlayFilePath,
   })?
   platformEffectsValues_new;
 
@@ -1008,6 +1010,48 @@ enum PlatformGrainBehavior {
   darkOnly,
 }
 
+/// How the overlay image is combined with the camera frame beneath it.
+///
+/// Pigeon version of `OverlayBlendMode`. Order matches the `BLEND_*` constants
+/// the GLSL shader switches on, so the raw index crosses unchanged.
+enum PlatformOverlayBlendMode {
+  /// Normal alpha compositing: the overlay replaces the frame where opaque.
+  srcOver,
+
+  /// Multiplies the two colours; always darker.
+  multiply,
+
+  /// Multiplies the inverses; always lighter.
+  screen,
+
+  /// Multiply on dark parts of the frame, screen on light parts.
+  overlay,
+
+  /// Keeps the darker of the two colours per channel.
+  darken,
+
+  /// Keeps the lighter of the two colours per channel.
+  lighten,
+
+  /// Brightens the frame to reflect the overlay.
+  colorDodge,
+
+  /// Darkens the frame to reflect the overlay.
+  colorBurn,
+
+  /// A softer hard light, as if a diffused spotlight were shone on the frame.
+  softLight,
+
+  /// Multiply on dark parts of the overlay, screen on light parts.
+  hardLight,
+
+  /// The absolute difference of the two colours.
+  difference,
+
+  /// Like difference but with lower contrast in the midtones.
+  exclusion,
+}
+
 class _PigeonCodec extends StandardMessageCodec {
   const _PigeonCodec();
   @override
@@ -1050,6 +1094,9 @@ class _PigeonCodec extends StandardMessageCodec {
       writeValue(buffer, value.index);
     } else if (value is PlatformGrainBehavior) {
       buffer.putUint8(140);
+      writeValue(buffer, value.index);
+    } else if (value is PlatformOverlayBlendMode) {
+      buffer.putUint8(141);
       writeValue(buffer, value.index);
     } else {
       super.writeValue(buffer, value);
@@ -1095,6 +1142,9 @@ class _PigeonCodec extends StandardMessageCodec {
       case 140:
         final value = readValue(buffer) as int?;
         return value == null ? null : PlatformGrainBehavior.values[value];
+      case 141:
+        final value = readValue(buffer) as int?;
+        return value == null ? null : PlatformOverlayBlendMode.values[value];
       default:
         return super.readValueOfType(type, buffer);
     }
@@ -8581,6 +8631,8 @@ class PlatformEffectsValues extends PigeonInternalProxyApiBaseClass {
     required PlatformGrainBehavior grainBehavior,
     String? lutFilePath,
     required double lutIntensity,
+    String? overlayFilePath,
+    required PlatformOverlayBlendMode overlayBlendMode,
     required double resolution,
     required double colorShift,
     required double mist,
@@ -8598,6 +8650,8 @@ class PlatformEffectsValues extends PigeonInternalProxyApiBaseClass {
         grainBehavior: grainBehavior,
         lutFilePath: lutFilePath,
         lutIntensity: lutIntensity,
+        overlayFilePath: overlayFilePath,
+        overlayBlendMode: overlayBlendMode,
         resolution: resolution,
         colorShift: colorShift,
         mist: mist,
@@ -8617,6 +8671,8 @@ class PlatformEffectsValues extends PigeonInternalProxyApiBaseClass {
       grainBehavior: grainBehavior,
       lutFilePath: lutFilePath,
       lutIntensity: lutIntensity,
+      overlayFilePath: overlayFilePath,
+      overlayBlendMode: overlayBlendMode,
       resolution: resolution,
       colorShift: colorShift,
       mist: mist,
@@ -8638,6 +8694,8 @@ class PlatformEffectsValues extends PigeonInternalProxyApiBaseClass {
     required this.grainBehavior,
     this.lutFilePath,
     required this.lutIntensity,
+    this.overlayFilePath,
+    required this.overlayBlendMode,
     required this.resolution,
     required this.colorShift,
     required this.mist,
@@ -8666,6 +8724,8 @@ class PlatformEffectsValues extends PigeonInternalProxyApiBaseClass {
       grainBehavior,
       lutFilePath,
       lutIntensity,
+      overlayFilePath,
+      overlayBlendMode,
       resolution,
       colorShift,
       mist,
@@ -8696,6 +8756,8 @@ class PlatformEffectsValues extends PigeonInternalProxyApiBaseClass {
     required this.grainBehavior,
     this.lutFilePath,
     required this.lutIntensity,
+    this.overlayFilePath,
+    required this.overlayBlendMode,
     required this.resolution,
     required this.colorShift,
     required this.mist,
@@ -8736,6 +8798,14 @@ class PlatformEffectsValues extends PigeonInternalProxyApiBaseClass {
   /// Ignored when [lutFilePath] is null.
   final double lutIntensity;
 
+  /// Absolute file path to a PNG stretched over the frame after every other
+  /// effect. Null disables the overlay.
+  final String? overlayFilePath;
+
+  /// How [overlayFilePath] is combined with the frame beneath it.
+  /// Ignored when [overlayFilePath] is null.
+  final PlatformOverlayBlendMode overlayBlendMode;
+
   /// Simulates a low-resolution sensor (0.0 = off, 1.0 = full strength).
   /// Adds a soft Gaussian blur and desaturation.
   final double resolution;
@@ -8770,6 +8840,8 @@ class PlatformEffectsValues extends PigeonInternalProxyApiBaseClass {
       PlatformGrainBehavior grainBehavior,
       String? lutFilePath,
       double lutIntensity,
+      String? overlayFilePath,
+      PlatformOverlayBlendMode overlayBlendMode,
       double resolution,
       double colorShift,
       double mist,
@@ -8803,13 +8875,16 @@ class PlatformEffectsValues extends PigeonInternalProxyApiBaseClass {
           final PlatformGrainBehavior arg_grainBehavior = args[5]! as PlatformGrainBehavior;
           final String? arg_lutFilePath = args[6] as String?;
           final double arg_lutIntensity = args[7]! as double;
-          final double arg_resolution = args[8]! as double;
-          final double arg_colorShift = args[9]! as double;
-          final double arg_mist = args[10]! as double;
-          final double arg_prism = args[11]! as double;
-          final bool arg_cheapFisheye = args[12]! as bool;
-          final double arg_bloom = args[13]! as double;
-          final double arg_diffusion = args[14]! as double;
+          final String? arg_overlayFilePath = args[8] as String?;
+          final PlatformOverlayBlendMode arg_overlayBlendMode =
+              args[9]! as PlatformOverlayBlendMode;
+          final double arg_resolution = args[10]! as double;
+          final double arg_colorShift = args[11]! as double;
+          final double arg_mist = args[12]! as double;
+          final double arg_prism = args[13]! as double;
+          final bool arg_cheapFisheye = args[14]! as bool;
+          final double arg_bloom = args[15]! as double;
+          final double arg_diffusion = args[16]! as double;
           try {
             (pigeon_instanceManager ?? PigeonInstanceManager.instance).addHostCreatedInstance(
               pigeon_newInstance?.call(
@@ -8820,6 +8895,8 @@ class PlatformEffectsValues extends PigeonInternalProxyApiBaseClass {
                     arg_grainBehavior,
                     arg_lutFilePath,
                     arg_lutIntensity,
+                    arg_overlayFilePath,
+                    arg_overlayBlendMode,
                     arg_resolution,
                     arg_colorShift,
                     arg_mist,
@@ -8838,6 +8915,8 @@ class PlatformEffectsValues extends PigeonInternalProxyApiBaseClass {
                     grainBehavior: arg_grainBehavior,
                     lutFilePath: arg_lutFilePath,
                     lutIntensity: arg_lutIntensity,
+                    overlayFilePath: arg_overlayFilePath,
+                    overlayBlendMode: arg_overlayBlendMode,
                     resolution: arg_resolution,
                     colorShift: arg_colorShift,
                     mist: arg_mist,
@@ -8873,6 +8952,8 @@ class PlatformEffectsValues extends PigeonInternalProxyApiBaseClass {
       grainBehavior: grainBehavior,
       lutFilePath: lutFilePath,
       lutIntensity: lutIntensity,
+      overlayFilePath: overlayFilePath,
+      overlayBlendMode: overlayBlendMode,
       resolution: resolution,
       colorShift: colorShift,
       mist: mist,

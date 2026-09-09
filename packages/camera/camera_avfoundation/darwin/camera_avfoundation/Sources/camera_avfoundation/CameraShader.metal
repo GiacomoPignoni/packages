@@ -690,6 +690,108 @@ static inline float3 applySrgbPerturbations(
 }
 
 // ============================================================================
+// Overlay compositing
+// ============================================================================
+//
+// A caller-supplied PNG stretched across the visible rect and combined with
+// the finished frame through one of the separable `CameraShaderBlendMode`
+// modes. Runs after everything else, so the overlay is never vignetted,
+// grained or graded — it sits on top of the photograph the way a physical
+// frame would.
+//
+// Everything here works on non-linear sRGB, because that is the space the
+// blend modes are defined in (W3C compositing, and what Photoshop and Skia
+// match). The caller converts on the way in and back out.
+
+// Separable blend of one channel pair, `cb` backdrop against `cs` source.
+// Split out per-channel so the branchy modes (dodge/burn/hard light) read
+// like their reference formulas rather than as vector select chains.
+static inline float blendChannel(float cb, float cs, int mode) {
+  switch (mode) {
+    case CameraShaderBlendModeMultiply:
+      return cb * cs;
+    case CameraShaderBlendModeScreen:
+      return cb + cs - cb * cs;
+    case CameraShaderBlendModeOverlay:
+      // Hard light with the operands swapped: the backdrop picks the branch.
+      return cb <= 0.5 ? (2.0 * cs * cb) : (1.0 - 2.0 * (1.0 - cs) * (1.0 - cb));
+    case CameraShaderBlendModeDarken:
+      return min(cb, cs);
+    case CameraShaderBlendModeLighten:
+      return max(cb, cs);
+    case CameraShaderBlendModeColorDodge:
+      if (cb <= 0.0) return 0.0;
+      if (cs >= 1.0) return 1.0;
+      return min(1.0, cb / (1.0 - cs));
+    case CameraShaderBlendModeColorBurn:
+      if (cb >= 1.0) return 1.0;
+      if (cs <= 0.0) return 0.0;
+      return 1.0 - min(1.0, (1.0 - cb) / cs);
+    case CameraShaderBlendModeSoftLight: {
+      // W3C separable soft-light. `d` is the piecewise "darkening curve" the
+      // spec names D(Cb); the sqrt branch above 0.25 keeps the curve smooth.
+      float d = cb <= 0.25 ? ((16.0 * cb - 12.0) * cb + 4.0) * cb : sqrt(cb);
+      return cs <= 0.5 ? (cb - (1.0 - 2.0 * cs) * cb * (1.0 - cb))
+                       : (cb + (2.0 * cs - 1.0) * (d - cb));
+    }
+    case CameraShaderBlendModeHardLight:
+      return cs <= 0.5 ? (2.0 * cb * cs) : (1.0 - 2.0 * (1.0 - cb) * (1.0 - cs));
+    case CameraShaderBlendModeDifference:
+      return abs(cb - cs);
+    case CameraShaderBlendModeExclusion:
+      return cb + cs - 2.0 * cb * cs;
+    default:  // CameraShaderBlendModeSrcOver
+      return cs;
+  }
+}
+
+static inline float3 blendSrgb(float3 cb, float3 cs, int mode) {
+  return float3(blendChannel(cb.r, cs.r, mode),
+                blendChannel(cb.g, cs.g, mode),
+                blendChannel(cb.b, cs.b, mode));
+}
+
+// Rotates a [0,1] UV by `quarterTurns` clockwise quarter turns. Matches
+// `CameraStillCaptureRenderer.uprightTransform` on Android so an overlay
+// lands identically on both platforms.
+static inline float2 rotateUv(float2 uv, int quarterTurns) {
+  switch (quarterTurns & 3) {
+    case 1:
+      return float2(uv.y, 1.0 - uv.x);
+    case 2:
+      return float2(1.0 - uv.x, 1.0 - uv.y);
+    case 3:
+      return float2(1.0 - uv.y, uv.x);
+    default:
+      return uv;
+  }
+}
+
+// Composites the overlay over `srgb` (non-linear) and returns the result in
+// the same space. `localUv` is [0,1] across the visible rect, so the image is
+// stretched to fill it regardless of its own aspect ratio.
+static inline float3 applyOverlay(
+    float3 srgb,
+    float2 localUv,
+    texture2d<float, access::sample> overlayTex,
+    float blendMode,
+    float quarterTurns) {
+  constexpr sampler clampSampler(
+      mag_filter::linear, min_filter::linear,
+      address::clamp_to_edge);
+
+  float4 texel = overlayTex.sample(clampSampler, rotateUv(localUv, int(quarterTurns + 0.5)));
+  if (texel.a <= 0.0) return srgb;
+
+  // The texture is premultiplied (see `loadOverlayTexture`, and it is the
+  // right space to filter a stretched image in), but the blend formulas are
+  // defined on straight colour — so undo it before blending.
+  float3 cs = saturate(texel.rgb / texel.a);
+  float3 blended = blendSrgb(srgb, cs, int(blendMode + 0.5));
+  return mix(srgb, saturate(blended), texel.a);
+}
+
+// ============================================================================
 // Post-process pipeline
 // ============================================================================
 //
@@ -714,6 +816,7 @@ static inline float4 renderCamera(
     texture2d<float, access::sample> preBlurredTex,
     texture2d<float, access::sample> bloomTex,
     texture2d<float, access::sample> frameBlurTex,
+    texture2d<float, access::sample> overlayTex,
     float2 sourceSize,
     SampleFn sampleColor) {
   CropContext ctx = computeCropContext(
@@ -798,6 +901,20 @@ static inline float4 renderCamera(
 
   rgb *= fisheyeMask;
 
+  // Last of all, and inside the scaled rect only, like the vignette and grain
+  // above: the rect is what a capture actually keeps, so stopping there makes
+  // the preview show the overlay over exactly the area that will be saved,
+  // and leaves the dimmed border outside it clean. On a capture pass every
+  // fragment is inside, so this costs those paths nothing.
+  //
+  // The pipeline works in linear light while the blend modes are defined on
+  // sRGB, hence the encode/decode pair around it.
+  if (uniforms.overlayEnabled > 0.5 && ctx.insideScaled) {
+    rgb = srgbToLinear(applyOverlay(
+        linearToSrgb(rgb), ctx.localUv, overlayTex,
+        uniforms.overlayBlendMode, uniforms.overlayQuarterTurns));
+  }
+
   return float4(rgb, 1.0);
 }
 
@@ -820,11 +937,13 @@ fragment float4 camera_fragment(
     texture2d<float, access::sample> bloomTexture [[texture(CameraShaderTextureBloom)]],
     texture2d<float, access::sample> frameBlurTexture
         [[texture(CameraShaderTextureFrameBlur)]],
+    texture2d<float, access::sample> overlayTexture
+        [[texture(CameraShaderTextureOverlay)]],
     constant CameraUniforms& uniforms [[buffer(0)]]) {
   constexpr sampler s(mag_filter::linear, min_filter::linear);
   float2 sourceSize = float2(sourceTexture.get_width(), sourceTexture.get_height());
   return renderCamera(in, uniforms, grainTexture, lutTexture, preBlurredTexture,
-                      bloomTexture, frameBlurTexture, sourceSize,
+                      bloomTexture, frameBlurTexture, overlayTexture, sourceSize,
                       SourceSampleFn{sourceTexture, cbcrTexture, s});
 }
 

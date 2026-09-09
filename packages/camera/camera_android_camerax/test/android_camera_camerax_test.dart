@@ -2908,7 +2908,7 @@ void main() {
     });
 
     test(
-      'startVideoCapturing sets VideoCapture target rotation to current video orientation if orientation unlocked',
+      'startVideoCapturing restores the pinned VideoCapture target rotation if orientation unlocked',
       () async {
         // Set up mocks and constants.
         final camera = AndroidCameraCameraX();
@@ -3029,12 +3029,16 @@ void main() {
         );
 
         // Orientation is unlocked and plugin does need to set default target
-        // rotation manually.
+        // rotation manually. It restores the rotation the effect pipeline
+        // composes in rather than the display's: the recording's frames are
+        // drawn by the same shader pass as the preview, with the overlay and
+        // every other effect baked into the pixels, so the two must agree.
         camera.recording = null;
         camera.captureOrientationLocked = false;
         camera.shouldSetDefaultRotation = true;
         await camera.startVideoCapturing(const VideoCaptureOptions(cameraId));
-        verify(mockVideoCapture.setTargetRotation(defaultTargetRotation));
+        verify(mockVideoCapture.setTargetRotation(Surface.rotation0));
+        verifyNever(mockVideoCapture.setTargetRotation(defaultTargetRotation));
       },
     );
 
@@ -4803,7 +4807,7 @@ void main() {
   );
 
   test(
-    'lockCaptureOrientation sets capture-related use case target rotations to correct orientation',
+    'lockCaptureOrientation sets photo use case target rotations but leaves the recording pinned',
     () async {
       final camera = AndroidCameraCameraX();
       const cameraId = 44;
@@ -4834,7 +4838,11 @@ void main() {
 
         verify(mockImageAnalysis.setTargetRotation(expectedTargetRotation));
         verify(mockImageCapture.setTargetRotation(expectedTargetRotation));
-        verify(mockVideoCapture.setTargetRotation(expectedTargetRotation));
+        // `videoCapture` is deliberately left alone: its frames carry the
+        // overlay and the other effects baked in, composed in the orientation
+        // the effect pipeline renders, so re-tagging the file would turn the
+        // picture without turning what was drawn on it.
+        verifyNever(mockVideoCapture.setTargetRotation(any));
         expect(camera.captureOrientationLocked, isTrue);
         expect(camera.shouldSetDefaultRotation, isTrue);
 
@@ -6591,6 +6599,7 @@ void main() {
           required double grainSize,
           required PlatformGrainBehavior grainBehavior,
           required double lutIntensity,
+          required PlatformOverlayBlendMode overlayBlendMode,
           required double resolution,
           required double colorShift,
           required double mist,
@@ -6600,6 +6609,7 @@ void main() {
           required double diffusion,
           String? grainNoisePath,
           String? lutFilePath,
+          String? overlayFilePath,
         }) {
           // Capture the pigeon values so the mapping can be asserted without a live channel.
           expect(vignetteIntensity, 0.5);
@@ -6609,6 +6619,8 @@ void main() {
           expect(grainNoisePath, 'grain.png');
           expect(lutFilePath, 'lut.png');
           expect(lutIntensity, 0.75);
+          expect(overlayFilePath, 'overlay.png');
+          expect(overlayBlendMode, PlatformOverlayBlendMode.softLight);
           expect(resolution, 0.1);
           expect(colorShift, 0.2);
           expect(mist, 0.3);
@@ -6630,6 +6642,8 @@ void main() {
         grainBehavior: GrainBehavior.darkOnly,
         lutFilePath: 'lut.png',
         lutIntensity: 0.75,
+        overlayFilePath: 'overlay.png',
+        overlayBlendMode: OverlayBlendMode.softLight,
         resolution: 0.1,
         colorShift: 0.2,
         mist: 0.3,

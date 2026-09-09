@@ -9,6 +9,7 @@ import android.graphics.BitmapFactory
 import android.opengl.GLES11Ext
 import android.opengl.GLES30
 import android.util.Log
+import android.util.LruCache
 import java.io.File
 import kotlin.math.max
 
@@ -99,10 +100,9 @@ class CameraGlPipeline(private val eglCore: EglCore) {
    */
   private val targetSets = HashMap<Any, TargetSet>()
 
-  private var grainTextureId = 0
-  private var grainTexturePath: String? = null
-  private var lutTextureId = 0
-  private var lutTexturePath: String? = null
+  private val grainTexture = SwappableTexture()
+  private val lutTexture = SwappableTexture()
+  private val overlayTexture = SwappableTexture()
 
   /**
    * Width / height of the loaded grain tile, or 1 when none is loaded.
@@ -258,6 +258,8 @@ class CameraGlPipeline(private val eglCore: EglCore) {
         GLES30.GL_TEXTURE_2D,
         if (uniforms.needsFrameBlurPass) targets.frameBlurA.texture else placeholderTexture,
     )
+    // Unit 6 is the chroma plane of a YUV source (see `bindSource`), so the overlay takes 7.
+    program.bindTexture("uOverlayTexture", 7, GLES30.GL_TEXTURE_2D, overlayOrPlaceholder())
 
     GlUtil.drawFullscreenTriangle()
     GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
@@ -394,6 +396,17 @@ class CameraGlPipeline(private val eglCore: EglCore) {
     program.uniform1f("uPrism", u.prism)
     program.uniform1f("uBloom", u.bloom)
     program.uniform1f("uDiffusion", u.diffusion)
+    // Two gates, both required: the plan decides whether this pass wants an overlay at all (the
+    // neutral still-capture plan does not, so the un-effected original stays clean), and the
+    // texture id decides whether one is actually loaded. Without the second the placeholder's
+    // opaque grey would blend over the whole frame between the path arriving and the decode
+    // finishing.
+    program.uniform1f(
+        "uOverlayEnabled",
+        if (overlayTexture.id != 0) u.overlayEnabled else 0f,
+    )
+    program.uniform1f("uOverlayBlendMode", u.overlayBlendMode)
+    program.uniform1f("uOverlayQuarterTurns", u.overlayQuarterTurns)
     program.uniform1f("uDither", u.dither)
     // The frame as this pass sees it, which is the output rather than the source once
     // `source.transform` has rotated the incoming buffer. Every pixel-space tap offset scales off
@@ -423,23 +436,19 @@ class CameraGlPipeline(private val eglCore: EglCore) {
    * not re-decode. On failure the previous texture is kept, matching the iOS behaviour.
    */
   fun loadGrainTexture(path: String) {
-    if (path == grainTexturePath && grainTextureId != 0) {
+    if (grainTexture.matches(path)) {
       return
     }
     val bitmap = decodeBitmap(path) ?: return
-    GlUtil.deleteTexture(grainTextureId)
     // GL_REPEAT matches Metal's address::repeat grain sampler: the tile is walked with fract() and
     // has to wrap seamlessly.
-    grainTextureId = GlUtil.createTextureFromBitmap(bitmap, GLES30.GL_REPEAT)
-    grainTexturePath = path
+    grainTexture.replace(path, bitmap, GLES30.GL_REPEAT)
     grainTextureAspect = bitmap.width.toFloat() / bitmap.height.toFloat()
     bitmap.recycle()
   }
 
   fun clearGrainTexture() {
-    GlUtil.deleteTexture(grainTextureId)
-    grainTextureId = 0
-    grainTexturePath = null
+    grainTexture.clear()
     grainTextureAspect = 1f
   }
 
@@ -455,7 +464,7 @@ class CameraGlPipeline(private val eglCore: EglCore) {
    * tile arithmetic would silently produce a garbage grade.
    */
   fun loadLutTexture(path: String) {
-    if (path == lutTexturePath && lutTextureId != 0) {
+    if (lutTexture.matches(path)) {
       return
     }
     val bitmap = decodeBitmap(path) ?: return
@@ -468,16 +477,61 @@ class CameraGlPipeline(private val eglCore: EglCore) {
       bitmap.recycle()
       return
     }
-    GlUtil.deleteTexture(lutTextureId)
-    lutTextureId = GlUtil.createTextureFromBitmap(bitmap, GLES30.GL_CLAMP_TO_EDGE)
-    lutTexturePath = path
+    lutTexture.replace(path, bitmap, GLES30.GL_CLAMP_TO_EDGE)
     bitmap.recycle()
   }
 
   fun clearLutTexture() {
-    GlUtil.deleteTexture(lutTextureId)
-    lutTextureId = 0
-    lutTexturePath = null
+    lutTexture.clear()
+  }
+
+  // ---------------------------------------------------------------------------
+  // Overlay texture
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Returns the decoded overlay image at `path`, from [overlayBitmapCache] where it can.
+   *
+   * The half of loading an overlay that is worth keeping off the render thread, and the only
+   * function in this class that may be called from another one: it touches no GL state and no
+   * mutable instance state. [CameraEffectsManager] runs it on its own decode thread and posts the
+   * returned bitmap back for [loadOverlayTexture] to upload.
+   *
+   * The bitmap belongs to the cache, so callers must not recycle it. Nothing recycles it, in fact
+   * - an eviction drops the reference and leaves the memory to the collector, because a bitmap
+   *   evicted while the render thread is mid-upload would otherwise be recycled out from under it.
+   */
+  internal fun decodeOverlayBitmap(path: String): Bitmap? {
+    overlayBitmapCache.get(path)?.let {
+      return it
+    }
+    val bitmap = decodeBitmap(path) ?: return null
+    overlayBitmapCache.put(path, bitmap)
+    return bitmap
+  }
+
+  /**
+   * Uploads `bitmap` as the overlay texture, replacing any previously loaded one.
+   *
+   * Only the upload half lives here, and like everything else in this class it must run on the
+   * thread that owns the context. The decode is [decodeOverlayBitmap]'s, off that thread: an
+   * overlay is full-frame, so its disk read and ARGB_8888 expansion are far the expensive part, and
+   * doing them here cost a visible hitch in the preview on every overlay switch.
+   *
+   * Any size is accepted: the shader stretches the overlay across the visible rect, so unlike the
+   * LUT there is no shape to validate. Re-uploading the image already bound is a no-op.
+   */
+  fun loadOverlayTexture(path: String, bitmap: Bitmap) {
+    if (overlayTexture.matches(path)) {
+      return
+    }
+    // GL_CLAMP_TO_EDGE matches Metal's address::clamp_to_edge overlay sampler: the image is
+    // stretched rather than tiled, so an edge must extend, not wrap around.
+    overlayTexture.replace(path, bitmap, GLES30.GL_CLAMP_TO_EDGE)
+  }
+
+  fun clearOverlayTexture() {
+    overlayTexture.clear()
   }
 
   private fun decodeBitmap(path: String): Bitmap? {
@@ -513,14 +567,18 @@ class CameraGlPipeline(private val eglCore: EglCore) {
     targetSets.clear()
     clearGrainTexture()
     clearLutTexture()
+    clearOverlayTexture()
     if (placeholderTextureDelegate.isInitialized()) {
       GlUtil.deleteTexture(placeholderTexture)
     }
   }
 
-  private fun grainOrPlaceholder() = if (grainTextureId != 0) grainTextureId else placeholderTexture
+  private fun grainOrPlaceholder() = if (grainTexture.id != 0) grainTexture.id else placeholderTexture
 
-  private fun lutOrPlaceholder() = if (lutTextureId != 0) lutTextureId else placeholderTexture
+  private fun lutOrPlaceholder() = if (lutTexture.id != 0) lutTexture.id else placeholderTexture
+
+  private fun overlayOrPlaceholder() =
+      if (overlayTexture.id != 0) overlayTexture.id else placeholderTexture
 
   private companion object {
     const val TAG = "CameraGlPipeline"
@@ -541,6 +599,32 @@ class CameraGlPipeline(private val eglCore: EglCore) {
 
     val IDENTITY_MATRIX =
         floatArrayOf(1f, 0f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 0f, 1f)
+
+    /**
+     * How much decoded overlay imagery to keep, in bytes.
+     *
+     * A sixteenth of the heap, capped: half the eighth that is the conventional share for a bitmap
+     * cache, because this process is a camera and already holds preview buffers, a capture at
+     * sensor resolution and the GL targets. A 1080x1920 image is 8 MB, so this is a few of them.
+     *
+     * Missing the cache costs one disk read on a thread nobody is waiting on, which is why the
+     * budget errs small.
+     */
+    val OVERLAY_BITMAP_CACHE_BYTES =
+        (Runtime.getRuntime().maxMemory() / 16).coerceAtMost(32L * 1024 * 1024).toInt()
+
+    /**
+     * Decoded overlay images, keyed by absolute path.
+     *
+     * The counterpart of `VideoFrameRenderer.overlayTextureCache`, and class-level for the same
+     * reason: it outlives any one pipeline, so rebuilding one - an aspect-ratio change, or the next
+     * camera - does not re-read the file. It holds bitmaps rather than textures because a GL
+     * texture belongs to the context that made it and would not survive that rebuild.
+     */
+    val overlayBitmapCache =
+        object : LruCache<String, Bitmap>(OVERLAY_BITMAP_CACHE_BYTES) {
+          override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
+        }
   }
 }
 
@@ -562,6 +646,34 @@ private class TargetSet {
 
   fun release() {
     listOf(preBlur, bloomA, bloomB, frameBlurA, frameBlurB).forEach { it.release() }
+  }
+}
+
+/**
+ * One GL texture kept in sync with a source path: [grainTexture], [lutTexture] and
+ * [overlayTexture] all share this same "skip if the path is already loaded, else delete the old
+ * texture and upload the new one" shape, and only differ in the wrap mode and the validation
+ * around the decode - which stays with each of [CameraGlPipeline.loadGrainTexture],
+ * [CameraGlPipeline.loadLutTexture] and [CameraGlPipeline.loadOverlayTexture].
+ */
+private class SwappableTexture {
+  var id = 0
+    private set
+
+  private var path: String? = null
+
+  fun matches(path: String) = id != 0 && path == this.path
+
+  fun replace(path: String, bitmap: Bitmap, wrapMode: Int) {
+    GlUtil.deleteTexture(id)
+    id = GlUtil.createTextureFromBitmap(bitmap, wrapMode)
+    this.path = path
+  }
+
+  fun clear() {
+    GlUtil.deleteTexture(id)
+    id = 0
+    path = null
   }
 }
 

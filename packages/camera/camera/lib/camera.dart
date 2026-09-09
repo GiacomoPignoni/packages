@@ -14,6 +14,7 @@ export 'package:camera_platform_interface/camera_platform_interface.dart'
         FocusMode,
         GrainBehavior,
         ImageFormatGroup,
+        OverlayBlendMode,
         ResolutionPreset,
         VideoStabilizationMode,
         WhiteBalanceMode,

@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import 'overlay_blend_mode.dart';
+
 /// Controls where grain is visible across the tonal range.
 enum GrainBehavior {
   /// Grain is applied uniformly (additive) across all tones — visible on both
@@ -27,6 +29,8 @@ class EffectsValues {
     this.grainBehavior = GrainBehavior.overlay,
     this.lutFilePath,
     this.lutIntensity = 0.0,
+    this.overlayFilePath,
+    this.overlayBlendMode = OverlayBlendMode.srcOver,
     this.resolution = 0.0,
     this.colorShift = 0.0,
     this.mist = 0.0,
@@ -115,6 +119,33 @@ class EffectsValues {
   ///
   /// Ignored when [lutFilePath] is null.
   final double lutIntensity;
+
+  /// Absolute file path to a PNG composited over the frame.
+  ///
+  /// The image is stretched to fill the frame, ignoring its own aspect ratio,
+  /// so author it at the aspect ratio the camera is configured for. It is
+  /// applied last — after every other effect in this [EffectsValues] — and
+  /// appears in the preview, in captured photos and in recorded video alike.
+  /// The un-effected `original` of
+  /// [CameraPlatform.takePictureWithOriginal] never carries it.
+  ///
+  /// Author the image in the orientation [CameraPreview] displays; the
+  /// platform turns it to match each of the preview, photo and video paths.
+  ///
+  /// In the preview the overlay covers exactly the area a capture would keep,
+  /// so it stops at the edge of the capture-scale rect rather than extending
+  /// into the dimmed border around it.
+  ///
+  /// Transparency comes from the PNG's own alpha channel — there is no
+  /// separate opacity control. When null the overlay is disabled and
+  /// [overlayBlendMode] is ignored. On platforms that do not support overlays
+  /// this field is ignored.
+  final String? overlayFilePath;
+
+  /// How [overlayFilePath] is combined with the frame beneath it.
+  ///
+  /// Ignored when [overlayFilePath] is null.
+  final OverlayBlendMode overlayBlendMode;
 
   /// Simulates a low-resolution sensor (0.0 = off, 1.0 = full strength).
   ///

@@ -46,6 +46,18 @@ data class CameraUniforms(
     var prism: Float = 0f,
     var bloom: Float = 0f,
     var diffusion: Float = 0f,
+    /** 1.0 when an overlay texture is bound and should be composited. */
+    var overlayEnabled: Float = 0f,
+    /** Which `BLEND_*` mode composites the overlay; see `PlatformOverlayBlendMode`. */
+    var overlayBlendMode: Float = 0f,
+    /**
+     * Quarter turns (0-3) applied to the overlay's UV before sampling.
+     *
+     * The overlay is authored in display orientation and each pass renders in its own, so this
+     * turns one into the other. A true rotation, unlike [grainSwapUV]'s transpose, which mirrors -
+     * unnoticeable on noise, not on an image.
+     */
+    var overlayQuarterTurns: Float = 0f,
     /**
      * Whether the final 8-bit quantization is dithered; 1.0 for every ordinary pass.
      *
@@ -100,6 +112,9 @@ data class CameraUniforms(
     prism = other.prism
     bloom = other.bloom
     diffusion = other.diffusion
+    overlayEnabled = other.overlayEnabled
+    overlayBlendMode = other.overlayBlendMode
+    overlayQuarterTurns = other.overlayQuarterTurns
     dither = other.dither
   }
 
@@ -113,8 +128,7 @@ data class CameraUniforms(
    */
   fun applyEffects(values: PlatformEffectsValues) {
     vignetteIntensity = values.vignetteIntensity.clampedIntensity()
-    grainOpacity =
-        if (values.grainNoisePath == null) 0f else values.grainOpacity.clampedIntensity()
+    grainOpacity = if (values.grainNoisePath == null) 0f else values.grainOpacity.clampedIntensity()
     grainBehavior = if (values.grainBehavior == PlatformGrainBehavior.DARK_ONLY) 1f else 0f
     lutIntensity = if (values.lutFilePath == null) 0f else values.lutIntensity.clampedIntensity()
     resolution = values.resolution.clampedIntensity()
@@ -124,6 +138,8 @@ data class CameraUniforms(
     cheapFisheye = if (values.cheapFisheye) 1f else 0f
     bloom = values.bloom.clampedIntensity()
     diffusion = values.diffusion.clampedIntensity()
+    overlayEnabled = if (values.overlayFilePath == null) 0f else 1f
+    overlayBlendMode = values.overlayBlendMode.raw.toFloat()
   }
 
   /**

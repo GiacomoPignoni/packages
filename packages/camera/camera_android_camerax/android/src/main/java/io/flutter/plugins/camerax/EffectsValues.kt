@@ -18,6 +18,8 @@ data class PlatformEffectsValues(
     val grainBehavior: PlatformGrainBehavior,
     val lutFilePath: String?,
     val lutIntensity: Double,
+    val overlayFilePath: String?,
+    val overlayBlendMode: PlatformOverlayBlendMode,
     val resolution: Double,
     val colorShift: Double,
     val mist: Double,

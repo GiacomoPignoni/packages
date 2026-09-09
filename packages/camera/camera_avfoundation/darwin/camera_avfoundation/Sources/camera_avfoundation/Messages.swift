@@ -197,6 +197,21 @@ enum PlatformGrainBehavior: Int, CaseIterable {
   case darkOnly = 1
 }
 
+enum PlatformOverlayBlendMode: Int, CaseIterable {
+  case srcOver = 0
+  case multiply = 1
+  case screen = 2
+  case overlay = 3
+  case darken = 4
+  case lighten = 5
+  case colorDodge = 6
+  case colorBurn = 7
+  case softLight = 8
+  case hardLight = 9
+  case difference = 10
+  case exclusion = 11
+}
+
 enum PlatformCameraLensDirection: Int, CaseIterable {
   /// Front facing camera (a user looking at the screen is seen by the camera).
   case front = 0
@@ -691,6 +706,12 @@ struct PlatformEffectsValues: Hashable, CustomStringConvertible {
   /// Intensity of the LUT color filter (0.0 = no effect, 1.0 = full LUT).
   /// Ignored when [lutFilePath] is null.
   var lutIntensity: Double
+  /// Absolute file path to a PNG stretched over the frame after every other
+  /// effect. Null disables the overlay.
+  var overlayFilePath: String? = nil
+  /// How [overlayFilePath] is combined with the frame beneath it.
+  /// Ignored when [overlayFilePath] is null.
+  var overlayBlendMode: PlatformOverlayBlendMode
   /// Simulates a low-resolution sensor (0.0 = off, 1.0 = full strength).
   /// Adds a soft Gaussian blur and desaturation.
   var resolution: Double
@@ -717,13 +738,15 @@ struct PlatformEffectsValues: Hashable, CustomStringConvertible {
     let grainBehavior = pigeonVar_list[4] as! PlatformGrainBehavior
     let lutFilePath: String? = nilOrValue(pigeonVar_list[5])
     let lutIntensity = pigeonVar_list[6] as! Double
-    let resolution = pigeonVar_list[7] as! Double
-    let colorShift = pigeonVar_list[8] as! Double
-    let mist = pigeonVar_list[9] as! Double
-    let prism = pigeonVar_list[10] as! Double
-    let cheapFisheye = pigeonVar_list[11] as! Bool
-    let bloom = pigeonVar_list[12] as! Double
-    let diffusion = pigeonVar_list[13] as! Double
+    let overlayFilePath: String? = nilOrValue(pigeonVar_list[7])
+    let overlayBlendMode = pigeonVar_list[8] as! PlatformOverlayBlendMode
+    let resolution = pigeonVar_list[9] as! Double
+    let colorShift = pigeonVar_list[10] as! Double
+    let mist = pigeonVar_list[11] as! Double
+    let prism = pigeonVar_list[12] as! Double
+    let cheapFisheye = pigeonVar_list[13] as! Bool
+    let bloom = pigeonVar_list[14] as! Double
+    let diffusion = pigeonVar_list[15] as! Double
 
     return PlatformEffectsValues(
       vignetteIntensity: vignetteIntensity,
@@ -733,6 +756,8 @@ struct PlatformEffectsValues: Hashable, CustomStringConvertible {
       grainBehavior: grainBehavior,
       lutFilePath: lutFilePath,
       lutIntensity: lutIntensity,
+      overlayFilePath: overlayFilePath,
+      overlayBlendMode: overlayBlendMode,
       resolution: resolution,
       colorShift: colorShift,
       mist: mist,
@@ -751,6 +776,8 @@ struct PlatformEffectsValues: Hashable, CustomStringConvertible {
       grainBehavior,
       lutFilePath,
       lutIntensity,
+      overlayFilePath,
+      overlayBlendMode,
       resolution,
       colorShift,
       mist,
@@ -771,6 +798,8 @@ struct PlatformEffectsValues: Hashable, CustomStringConvertible {
       && MessagesPigeonInternal.deepEquals(lhs.grainBehavior, rhs.grainBehavior)
       && MessagesPigeonInternal.deepEquals(lhs.lutFilePath, rhs.lutFilePath)
       && MessagesPigeonInternal.deepEquals(lhs.lutIntensity, rhs.lutIntensity)
+      && MessagesPigeonInternal.deepEquals(lhs.overlayFilePath, rhs.overlayFilePath)
+      && MessagesPigeonInternal.deepEquals(lhs.overlayBlendMode, rhs.overlayBlendMode)
       && MessagesPigeonInternal.deepEquals(lhs.resolution, rhs.resolution)
       && MessagesPigeonInternal.deepEquals(lhs.colorShift, rhs.colorShift)
       && MessagesPigeonInternal.deepEquals(lhs.mist, rhs.mist)
@@ -789,6 +818,8 @@ struct PlatformEffectsValues: Hashable, CustomStringConvertible {
     MessagesPigeonInternal.deepHash(value: grainBehavior, hasher: &hasher)
     MessagesPigeonInternal.deepHash(value: lutFilePath, hasher: &hasher)
     MessagesPigeonInternal.deepHash(value: lutIntensity, hasher: &hasher)
+    MessagesPigeonInternal.deepHash(value: overlayFilePath, hasher: &hasher)
+    MessagesPigeonInternal.deepHash(value: overlayBlendMode, hasher: &hasher)
     MessagesPigeonInternal.deepHash(value: resolution, hasher: &hasher)
     MessagesPigeonInternal.deepHash(value: colorShift, hasher: &hasher)
     MessagesPigeonInternal.deepHash(value: mist, hasher: &hasher)
@@ -800,7 +831,7 @@ struct PlatformEffectsValues: Hashable, CustomStringConvertible {
 
   public var description: String {
     return
-      "PlatformEffectsValues(vignetteIntensity: \(String(describing: vignetteIntensity)), grainNoisePath: \(String(describing: grainNoisePath)), grainOpacity: \(String(describing: grainOpacity)), grainSize: \(String(describing: grainSize)), grainBehavior: \(String(describing: grainBehavior)), lutFilePath: \(String(describing: lutFilePath)), lutIntensity: \(String(describing: lutIntensity)), resolution: \(String(describing: resolution)), colorShift: \(String(describing: colorShift)), mist: \(String(describing: mist)), prism: \(String(describing: prism)), cheapFisheye: \(String(describing: cheapFisheye)), bloom: \(String(describing: bloom)), diffusion: \(String(describing: diffusion)))"
+      "PlatformEffectsValues(vignetteIntensity: \(String(describing: vignetteIntensity)), grainNoisePath: \(String(describing: grainNoisePath)), grainOpacity: \(String(describing: grainOpacity)), grainSize: \(String(describing: grainSize)), grainBehavior: \(String(describing: grainBehavior)), lutFilePath: \(String(describing: lutFilePath)), lutIntensity: \(String(describing: lutIntensity)), overlayFilePath: \(String(describing: overlayFilePath)), overlayBlendMode: \(String(describing: overlayBlendMode)), resolution: \(String(describing: resolution)), colorShift: \(String(describing: colorShift)), mist: \(String(describing: mist)), prism: \(String(describing: prism)), cheapFisheye: \(String(describing: cheapFisheye)), bloom: \(String(describing: bloom)), diffusion: \(String(describing: diffusion)))"
   }
 }
 
@@ -908,82 +939,88 @@ private class MessagesPigeonCodecReader: FlutterStandardReader {
     case 130:
       let enumResultAsInt: Int? = nilOrValue(self.readValue() as! Int?)
       if let enumResultAsInt = enumResultAsInt {
-        return PlatformCameraLensDirection(rawValue: enumResultAsInt)
+        return PlatformOverlayBlendMode(rawValue: enumResultAsInt)
       }
       return nil
     case 131:
       let enumResultAsInt: Int? = nilOrValue(self.readValue() as! Int?)
       if let enumResultAsInt = enumResultAsInt {
-        return PlatformCameraLensType(rawValue: enumResultAsInt)
+        return PlatformCameraLensDirection(rawValue: enumResultAsInt)
       }
       return nil
     case 132:
       let enumResultAsInt: Int? = nilOrValue(self.readValue() as! Int?)
       if let enumResultAsInt = enumResultAsInt {
-        return PlatformDeviceOrientation(rawValue: enumResultAsInt)
+        return PlatformCameraLensType(rawValue: enumResultAsInt)
       }
       return nil
     case 133:
       let enumResultAsInt: Int? = nilOrValue(self.readValue() as! Int?)
       if let enumResultAsInt = enumResultAsInt {
-        return PlatformExposureMode(rawValue: enumResultAsInt)
+        return PlatformDeviceOrientation(rawValue: enumResultAsInt)
       }
       return nil
     case 134:
       let enumResultAsInt: Int? = nilOrValue(self.readValue() as! Int?)
       if let enumResultAsInt = enumResultAsInt {
-        return PlatformFlashMode(rawValue: enumResultAsInt)
+        return PlatformExposureMode(rawValue: enumResultAsInt)
       }
       return nil
     case 135:
       let enumResultAsInt: Int? = nilOrValue(self.readValue() as! Int?)
       if let enumResultAsInt = enumResultAsInt {
-        return PlatformFocusMode(rawValue: enumResultAsInt)
+        return PlatformFlashMode(rawValue: enumResultAsInt)
       }
       return nil
     case 136:
       let enumResultAsInt: Int? = nilOrValue(self.readValue() as! Int?)
       if let enumResultAsInt = enumResultAsInt {
-        return PlatformImageFileFormat(rawValue: enumResultAsInt)
+        return PlatformFocusMode(rawValue: enumResultAsInt)
       }
       return nil
     case 137:
       let enumResultAsInt: Int? = nilOrValue(self.readValue() as! Int?)
       if let enumResultAsInt = enumResultAsInt {
-        return PlatformImageFormatGroup(rawValue: enumResultAsInt)
+        return PlatformImageFileFormat(rawValue: enumResultAsInt)
       }
       return nil
     case 138:
       let enumResultAsInt: Int? = nilOrValue(self.readValue() as! Int?)
       if let enumResultAsInt = enumResultAsInt {
-        return PlatformResolutionPreset(rawValue: enumResultAsInt)
+        return PlatformImageFormatGroup(rawValue: enumResultAsInt)
       }
       return nil
     case 139:
       let enumResultAsInt: Int? = nilOrValue(self.readValue() as! Int?)
       if let enumResultAsInt = enumResultAsInt {
-        return PlatformVideoStabilizationMode(rawValue: enumResultAsInt)
+        return PlatformResolutionPreset(rawValue: enumResultAsInt)
       }
       return nil
     case 140:
-      return PlatformCameraDescription.fromList(self.readValue() as! [Any?])
+      let enumResultAsInt: Int? = nilOrValue(self.readValue() as! Int?)
+      if let enumResultAsInt = enumResultAsInt {
+        return PlatformVideoStabilizationMode(rawValue: enumResultAsInt)
+      }
+      return nil
     case 141:
-      return PlatformCameraState.fromList(self.readValue() as! [Any?])
+      return PlatformCameraDescription.fromList(self.readValue() as! [Any?])
     case 142:
-      return PlatformCameraImageData.fromList(self.readValue() as! [Any?])
+      return PlatformCameraState.fromList(self.readValue() as! [Any?])
     case 143:
-      return PlatformCameraImagePlane.fromList(self.readValue() as! [Any?])
+      return PlatformCameraImageData.fromList(self.readValue() as! [Any?])
     case 144:
-      return PlatformMediaSettings.fromList(self.readValue() as! [Any?])
+      return PlatformCameraImagePlane.fromList(self.readValue() as! [Any?])
     case 145:
-      return PlatformPoint.fromList(self.readValue() as! [Any?])
+      return PlatformMediaSettings.fromList(self.readValue() as! [Any?])
     case 146:
-      return PlatformSize.fromList(self.readValue() as! [Any?])
+      return PlatformPoint.fromList(self.readValue() as! [Any?])
     case 147:
-      return PlatformEffectsValues.fromList(self.readValue() as! [Any?])
+      return PlatformSize.fromList(self.readValue() as! [Any?])
     case 148:
-      return PlatformCapturedPicturePaths.fromList(self.readValue() as! [Any?])
+      return PlatformEffectsValues.fromList(self.readValue() as! [Any?])
     case 149:
+      return PlatformCapturedPicturePaths.fromList(self.readValue() as! [Any?])
+    case 150:
       return PlatformWhiteBalanceValues.fromList(self.readValue() as! [Any?])
     default:
       return super.readValue(ofType: type)
@@ -996,65 +1033,68 @@ private class MessagesPigeonCodecWriter: FlutterStandardWriter {
     if let value = value as? PlatformGrainBehavior {
       super.writeByte(129)
       super.writeValue(value.rawValue)
-    } else if let value = value as? PlatformCameraLensDirection {
+    } else if let value = value as? PlatformOverlayBlendMode {
       super.writeByte(130)
       super.writeValue(value.rawValue)
-    } else if let value = value as? PlatformCameraLensType {
+    } else if let value = value as? PlatformCameraLensDirection {
       super.writeByte(131)
       super.writeValue(value.rawValue)
-    } else if let value = value as? PlatformDeviceOrientation {
+    } else if let value = value as? PlatformCameraLensType {
       super.writeByte(132)
       super.writeValue(value.rawValue)
-    } else if let value = value as? PlatformExposureMode {
+    } else if let value = value as? PlatformDeviceOrientation {
       super.writeByte(133)
       super.writeValue(value.rawValue)
-    } else if let value = value as? PlatformFlashMode {
+    } else if let value = value as? PlatformExposureMode {
       super.writeByte(134)
       super.writeValue(value.rawValue)
-    } else if let value = value as? PlatformFocusMode {
+    } else if let value = value as? PlatformFlashMode {
       super.writeByte(135)
       super.writeValue(value.rawValue)
-    } else if let value = value as? PlatformImageFileFormat {
+    } else if let value = value as? PlatformFocusMode {
       super.writeByte(136)
       super.writeValue(value.rawValue)
-    } else if let value = value as? PlatformImageFormatGroup {
+    } else if let value = value as? PlatformImageFileFormat {
       super.writeByte(137)
       super.writeValue(value.rawValue)
-    } else if let value = value as? PlatformResolutionPreset {
+    } else if let value = value as? PlatformImageFormatGroup {
       super.writeByte(138)
       super.writeValue(value.rawValue)
-    } else if let value = value as? PlatformVideoStabilizationMode {
+    } else if let value = value as? PlatformResolutionPreset {
       super.writeByte(139)
       super.writeValue(value.rawValue)
-    } else if let value = value as? PlatformCameraDescription {
+    } else if let value = value as? PlatformVideoStabilizationMode {
       super.writeByte(140)
-      super.writeValue(value.toList())
-    } else if let value = value as? PlatformCameraState {
+      super.writeValue(value.rawValue)
+    } else if let value = value as? PlatformCameraDescription {
       super.writeByte(141)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformCameraImageData {
+    } else if let value = value as? PlatformCameraState {
       super.writeByte(142)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformCameraImagePlane {
+    } else if let value = value as? PlatformCameraImageData {
       super.writeByte(143)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformMediaSettings {
+    } else if let value = value as? PlatformCameraImagePlane {
       super.writeByte(144)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformPoint {
+    } else if let value = value as? PlatformMediaSettings {
       super.writeByte(145)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformSize {
+    } else if let value = value as? PlatformPoint {
       super.writeByte(146)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformEffectsValues {
+    } else if let value = value as? PlatformSize {
       super.writeByte(147)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformCapturedPicturePaths {
+    } else if let value = value as? PlatformEffectsValues {
       super.writeByte(148)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformWhiteBalanceValues {
+    } else if let value = value as? PlatformCapturedPicturePaths {
       super.writeByte(149)
+      super.writeValue(value.toList())
+    } else if let value = value as? PlatformWhiteBalanceValues {
+      super.writeByte(150)
       super.writeValue(value.toList())
     } else {
       super.writeValue(value)

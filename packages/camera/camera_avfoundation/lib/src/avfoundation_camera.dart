@@ -475,6 +475,8 @@ class AVFoundationCamera extends CameraPlatform {
         },
         lutFilePath: values.lutFilePath,
         lutIntensity: values.lutIntensity,
+        overlayFilePath: values.overlayFilePath,
+        overlayBlendMode: _pigeonOverlayBlendMode(values.overlayBlendMode),
         resolution: values.resolution,
         colorShift: values.colorShift,
         mist: values.mist,
@@ -679,6 +681,43 @@ class AVFoundationCamera extends CameraPlatform {
     // would require a breaking change at this layer and the app-facing layer.
     // ignore: dead_code
     return PlatformImageFileFormat.jpeg;
+  }
+
+  /// Returns an [OverlayBlendMode]'s Pigeon representation.
+  PlatformOverlayBlendMode _pigeonOverlayBlendMode(OverlayBlendMode mode) {
+    switch (mode) {
+      case OverlayBlendMode.srcOver:
+        return PlatformOverlayBlendMode.srcOver;
+      case OverlayBlendMode.multiply:
+        return PlatformOverlayBlendMode.multiply;
+      case OverlayBlendMode.screen:
+        return PlatformOverlayBlendMode.screen;
+      case OverlayBlendMode.overlay:
+        return PlatformOverlayBlendMode.overlay;
+      case OverlayBlendMode.darken:
+        return PlatformOverlayBlendMode.darken;
+      case OverlayBlendMode.lighten:
+        return PlatformOverlayBlendMode.lighten;
+      case OverlayBlendMode.colorDodge:
+        return PlatformOverlayBlendMode.colorDodge;
+      case OverlayBlendMode.colorBurn:
+        return PlatformOverlayBlendMode.colorBurn;
+      case OverlayBlendMode.softLight:
+        return PlatformOverlayBlendMode.softLight;
+      case OverlayBlendMode.hardLight:
+        return PlatformOverlayBlendMode.hardLight;
+      case OverlayBlendMode.difference:
+        return PlatformOverlayBlendMode.difference;
+      case OverlayBlendMode.exclusion:
+        return PlatformOverlayBlendMode.exclusion;
+    }
+    // The enum comes from a different package, which could get a new value at
+    // any time, so provide a fallback that ensures this won't break when used
+    // with a version that contains new values. This is deliberately outside
+    // the switch rather than a `default` so that the linter will flag the
+    // switch as needing an update.
+    // ignore: dead_code
+    return PlatformOverlayBlendMode.srcOver;
   }
 
   /// Returns a [Point]s Pigeon representation.

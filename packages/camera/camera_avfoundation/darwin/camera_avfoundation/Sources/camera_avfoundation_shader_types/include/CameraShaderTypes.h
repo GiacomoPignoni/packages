@@ -33,7 +33,28 @@ typedef enum CameraShaderTextureIndex {
   CameraShaderTexturePreBlurred = 4,  // horizontal half of the old-camera blur
   CameraShaderTextureBloom = 5,       // renderer-blurred bloom halo
   CameraShaderTextureFrameBlur = 6,   // renderer-blurred frame (mist + diffusion)
+  CameraShaderTextureOverlay = 7,     // user PNG composited over the finished frame
 } CameraShaderTextureIndex;
+
+// Blend mode used to composite the overlay PNG over the finished frame. The
+// raw values are the wire format: `PlatformOverlayBlendMode` is declared in the
+// same order, so the pigeon enum's index crosses into `overlayBlendMode`
+// unchanged. Every mode is separable (applied per channel) and defined on
+// non-linear sRGB values, which is the space `applyOverlay` blends in.
+typedef enum CameraShaderBlendMode {
+  CameraShaderBlendModeSrcOver = 0,
+  CameraShaderBlendModeMultiply = 1,
+  CameraShaderBlendModeScreen = 2,
+  CameraShaderBlendModeOverlay = 3,
+  CameraShaderBlendModeDarken = 4,
+  CameraShaderBlendModeLighten = 5,
+  CameraShaderBlendModeColorDodge = 6,
+  CameraShaderBlendModeColorBurn = 7,
+  CameraShaderBlendModeSoftLight = 8,
+  CameraShaderBlendModeHardLight = 9,
+  CameraShaderBlendModeDifference = 10,
+  CameraShaderBlendModeExclusion = 11,
+} CameraShaderBlendMode;
 
 // Per-draw uniforms, bound at buffer index 0 of both shader stages. The
 // declaration order below *is* the buffer ABI — Swift writes the raw bytes
@@ -100,6 +121,21 @@ typedef struct {
   // tonal range. Unlike `bloom` it is not limited to highlights, and unlike
   // `mist` it neither brightens nor lifts contrast — it only softens.
   float diffusion;
+  // 1.0 when an overlay texture is bound and should be composited, 0.0
+  // otherwise. Zeroed whenever the overlay slot holds the dummy texture, so
+  // the shader never samples a stand-in.
+  float overlayEnabled;
+  // Which `CameraShaderBlendMode` to composite the overlay with, held as a
+  // float like every other discrete field in this struct (see `grainBehavior`,
+  // `cheapFisheye`). Rounded back to an integer in the shader.
+  float overlayBlendMode;
+  // Quarter turns (0-3) applied to the overlay's UV before sampling, bringing
+  // the image the caller authored in display orientation into the orientation
+  // this particular pass renders in. The preview and recording passes render
+  // portrait and need none; the photo pass renders in sensor orientation and
+  // does. Only Metal's photo pass sets it; Android's two paths both present
+  // the frame the same way up and leave it at 0.
+  float overlayQuarterTurns;
 } CameraUniforms;
 
 #endif  // CameraShaderTypes_h
