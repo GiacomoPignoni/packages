@@ -4,6 +4,7 @@
 
 import 'dart:async';
 import 'dart:math' show Point;
+import 'dart:ui' show channelBuffers;
 
 import 'package:async/async.dart';
 import 'package:camera_platform_interface/camera_platform_interface.dart';
@@ -22,6 +23,40 @@ class AndroidCameraCameraX extends CameraPlatform {
   /// Registers this class as the default instance of [CameraPlatform].
   static void registerWith() {
     CameraPlatform.instance = AndroidCameraCameraX();
+    _dropUnlistenedAutoWhiteBalanceReadings();
+  }
+
+  /// The channel `WhiteBalanceManager.onAutoWhiteBalanceChanged` arrives on.
+  static const String _autoWhiteBalanceChannel =
+      'dev.flutter.pigeon.camera_android_camerax.WhiteBalanceManager.onAutoWhiteBalanceChanged';
+
+  /// Stops the engine holding on to auto white balance readings that arrive
+  /// while nothing is listening for them.
+  ///
+  /// The camera keeps running natively across a hot restart, and keeps
+  /// reporting what its auto white balance settles on. The engine buffers the
+  /// last such reading until an isolate installs a handler for the channel, and
+  /// then delivers it — carrying an instance identifier minted by the isolate
+  /// that is gone. Pigeon's generated handler resolves that identifier against
+  /// the new isolate's instance manager, which has never heard of it, and
+  /// dereferences the `null` it gets back: a `_TypeError` thrown out of a
+  /// platform message callback, every hot restart with a camera on screen.
+  ///
+  /// Configured from Dart rather than from the plugin's Java side, which is
+  /// where a channel's buffer is normally sized: a hot restart builds a fresh
+  /// isolate with fresh channel buffers but does not re-attach the plugin, so
+  /// only the Dart side gets a say in the isolate this is a problem for.
+  ///
+  /// A reading describes a frame that has long since been shown, so a reading
+  /// nobody is listening for is of no use to whoever listens next.
+  static void _dropUnlistenedAutoWhiteBalanceReadings() {
+    channelBuffers
+      // Discards what is already buffered, and buffers nothing further. A
+      // listener still receives everything: a channel with one delivers
+      // straight to it, whatever its buffer size.
+      ..resize(_autoWhiteBalanceChannel, 0)
+      // The discarding is deliberate, so it is not something to warn about.
+      ..allowOverflow(_autoWhiteBalanceChannel, true);
   }
 
   /// The [ProcessCameraProvider] instance used to access camera functionality.
@@ -139,6 +174,44 @@ class AndroidCameraCameraX extends CameraPlatform {
   /// a call was issued at against the latest one tells a superseded request — a
   /// slider drag makes a stream of them — apart from a genuine failure.
   int _exposureOffsetRequests = 0;
+
+  /// The exposure compensation index [setExposureOffset] last asked for, re-sent
+  /// every time the camera device opens or the use cases are re-bound.
+  ///
+  /// CameraX only holds an index for as long as the camera control behind it
+  /// stays active: it drops the pending request and forgets the value when the
+  /// device closes, and refuses — cancels, in its own vocabulary — a request
+  /// submitted while it is not active yet. Keeping the requested value here is
+  /// what lets an offset set right after [initializeCamera], before the device
+  /// has finished opening, still reach the camera.
+  int? _requestedExposureCompensationIndex;
+
+  /// The last [CameraState] the current camera reported, or `null` before it has
+  /// reported one.
+  ///
+  /// Only [CameraStateType.open] means the camera control behind [cameraControl]
+  /// is live; in every other state a request against it is cancelled on
+  /// arrival, which is not a failure the caller can do anything about.
+  @visibleForTesting
+  CameraStateType? cameraStateType;
+
+  /// The zoom ratio the current camera should be sitting at.
+  ///
+  /// Set by [setZoomLevel], and by creating a camera from the description of a
+  /// lens that is reached by zooming — for which the ratio is not a zoom the
+  /// user asked for but the lens itself. Re-sent every time the use cases are
+  /// re-bound, which builds a new camera adapter that starts back at 1.0.
+  double? _requestedZoomRatio;
+
+  /// Counts binds and unbinds of the use cases.
+  ///
+  /// Each one reconfigures the capture session and cancels the [CameraControl]
+  /// requests that were in flight against the old configuration. Comparing the
+  /// count a request was issued at against the current one recognises that,
+  /// which camera control identity cannot: CameraX hands back the *same*
+  /// control for a camera it re-binds without closing, and a rebind that is
+  /// still in flight has not swapped it in yet.
+  int _bindGeneration = 0;
 
   /// Manages the white balance of the camera and reports what auto white
   /// balance settles on.
@@ -397,7 +470,9 @@ class AndroidCameraCameraX extends CameraPlatform {
       }
 
       cameraSensorOrientation = cameraInfo.sensorRotationDegrees;
-      cameraName = await Camera2CameraInfo.from(cameraInfo: cameraInfo).getCameraId();
+      final camera2CameraInfo = Camera2CameraInfo.from(cameraInfo: cameraInfo);
+      cameraName = await camera2CameraInfo.getCameraId();
+      final double? equivalentFocalLength = await camera2CameraInfo.getEquivalentFocalLength();
 
       _savedCameras[cameraName] = cameraInfo;
 
@@ -406,14 +481,213 @@ class AndroidCameraCameraX extends CameraPlatform {
           name: cameraName,
           lensDirection: cameraLensDirection,
           sensorOrientation: cameraSensorOrientation,
-          equivalentFocalLength: await Camera2CameraInfo.from(
-            cameraInfo: cameraInfo,
-          ).getEquivalentFocalLength(),
+          equivalentFocalLength: equivalentFocalLength,
+          constituentLenses: await _constituentLenses(cameraInfo, equivalentFocalLength),
         ),
       );
     }
 
-    return cameraDescriptions;
+    return _withLensTypes(<CameraDescription>[
+      ...cameraDescriptions,
+      ..._lensCameraDescriptions(cameraDescriptions),
+    ]);
+  }
+
+  /// [cameras] with the kind of lens each one has filled in.
+  ///
+  /// CameraX has no notion of an ultra-wide or a telephoto camera — it reports
+  /// what a camera *is*, not what it is *for* — so a caller looking for the 1x
+  /// camera to open by default would otherwise have to work it out from focal
+  /// lengths itself, on a list where every entry says `unknown`.
+  ///
+  /// Worked out here by comparing each camera against the first one the device
+  /// lists facing the same way, which is the camera its own camera app opens at
+  /// 1x: much wider than that one and a lens is an ultra-wide, much longer and
+  /// it is a telephoto. Cameras the device will not give a focal length for are
+  /// left [CameraLensType.unknown], which is the honest answer rather than a
+  /// guess that a picker would act on.
+  List<CameraDescription> _withLensTypes(List<CameraDescription> cameras) {
+    // The lens cameras are appended after the real ones, so the first camera
+    // facing a direction is always one the device itself published.
+    final mainFocalLengths = <CameraLensDirection, double>{};
+    for (final camera in cameras) {
+      final double? focalLength = camera.equivalentFocalLength;
+      if (focalLength != null && focalLength > 0) {
+        mainFocalLengths.putIfAbsent(camera.lensDirection, () => focalLength);
+      }
+    }
+
+    return cameras.map((CameraDescription camera) {
+      final double? focalLength = camera.equivalentFocalLength;
+      final double? mainFocalLength = mainFocalLengths[camera.lensDirection];
+      if (focalLength == null || mainFocalLength == null) {
+        return camera;
+      }
+
+      final double ratio = focalLength / mainFocalLength;
+      return CameraDescription(
+        name: camera.name,
+        lensDirection: camera.lensDirection,
+        sensorOrientation: camera.sensorOrientation,
+        lensType: switch (ratio) {
+          < _ultraWideMaxRatio => CameraLensType.ultraWide,
+          > _telephotoMinRatio => CameraLensType.telephoto,
+          _ => CameraLensType.wide,
+        },
+        equivalentFocalLength: focalLength,
+        constituentLenses: camera.constituentLenses,
+      );
+    }).toList();
+  }
+
+  /// How much wider than the main lens a lens has to be to count as an
+  /// ultra-wide, and how much longer to count as a telephoto.
+  ///
+  /// Wide enough apart to leave the main lens, and anything cropped from it —
+  /// the second front camera many phones publish is the same sensor at a
+  /// tighter field of view — in the middle as a plain wide. Phones put their
+  /// ultra-wide around 0.5x and their telephoto at 2x or beyond, so nothing
+  /// sits near either edge.
+  static const double _ultraWideMaxRatio = 0.8;
+  static const double _telephotoMinRatio = 1.5;
+
+  /// A camera of its own for every lens that has none.
+  ///
+  /// A phone that reaches three rear lenses through one camera publishes fewer
+  /// cameras than it has lenses: on a Galaxy S22 the 66mm one is not a camera
+  /// anything can open, only a zoom ratio on the camera that is. Handing the
+  /// caller a description for it, and applying that zoom when the description
+  /// is used to create a camera, is what makes a lens picker built from
+  /// [availableCameras] able to offer every lens the phone has — the way it
+  /// already can where the platform publishes each lens separately.
+  ///
+  /// Skips a lens that is already a camera in its own right: the wide one a
+  /// logical camera *is*, and the ultra-wide that most phones publish twice,
+  /// once inside the logical camera and once beside it. Both are recognised by
+  /// focal length, which is the only thing a lens and the camera standing for
+  /// it are guaranteed to agree on.
+  ///
+  /// Zoom, rather than `Camera2Interop.setPhysicalCameraId`, which binds a
+  /// physical camera directly: Android guarantees physical streams only up to
+  /// about 1440p and only two at a time, where this plugin binds three. It
+  /// would cap stills from these lenses well below what the same sensor
+  /// delivers through the zoom the device intends for it.
+  List<CameraDescription> _lensCameraDescriptions(List<CameraDescription> cameras) {
+    final lensCameras = <CameraDescription>[];
+
+    for (final camera in cameras) {
+      for (final ConstituentLens lens in camera.constituentLenses) {
+        final double? focalLength = lens.equivalentFocalLength;
+        if (focalLength == null) {
+          continue;
+        }
+        final bool alreadyACamera = cameras.any(
+          (CameraDescription other) =>
+              other.lensDirection == camera.lensDirection &&
+              other.equivalentFocalLength != null &&
+              _isSameLens(other.equivalentFocalLength!, focalLength),
+        );
+        if (alreadyACamera) {
+          continue;
+        }
+        lensCameras.add(
+          CameraDescription(
+            name: _lensCameraName(camera.name, lens.zoomRatio),
+            lensDirection: camera.lensDirection,
+            // The lens is behind [camera] and reached by zooming it, so its
+            // frames arrive through that camera's pipeline, mounted the way
+            // that camera is.
+            sensorOrientation: camera.sensorOrientation,
+            equivalentFocalLength: focalLength,
+          ),
+        );
+      }
+    }
+
+    return lensCameras;
+  }
+
+  /// Whether two focal lengths describe the same lens.
+  ///
+  /// Loose because the two come from different places: a camera reports the
+  /// focal length of the lens it is, a logical camera reports its physical
+  /// cameras', and a device rounds them to different numbers of decimals in
+  /// each. Nothing on a phone sits close enough to another lens for 5% to
+  /// confuse them.
+  static bool _isSameLens(double focalLength, double other) =>
+      (focalLength - other).abs() <= other * 0.05;
+
+  /// The name of the camera that stands for the lens [parentName] reaches at
+  /// [zoomRatio].
+  ///
+  /// Built from the two things creating that camera needs, so it survives being
+  /// stored by an app and handed back in a later session, where no list of
+  /// lenses gathered at discovery time would still be around.
+  static String _lensCameraName(String parentName, double zoomRatio) =>
+      '$parentName$_lensCameraNameSeparator${zoomRatio.toStringAsFixed(2)}x';
+
+  /// The camera and zoom ratio a name built by [_lensCameraName] refers to, or
+  /// null for the name of a camera the platform publishes itself.
+  static ({String parentName, double zoomRatio})? _parseLensCameraName(String name) {
+    final int separator = name.lastIndexOf(_lensCameraNameSeparator);
+    if (separator < 0) {
+      return null;
+    }
+    final double? zoomRatio = double.tryParse(name.substring(separator + 1).replaceFirst('x', ''));
+    if (zoomRatio == null || zoomRatio <= 0) {
+      return null;
+    }
+    return (parentName: name.substring(0, separator), zoomRatio: zoomRatio);
+  }
+
+  /// Separates the two halves of a [_lensCameraName].
+  ///
+  /// Camera ids are digits on every device seen, but the platform only promises
+  /// a string, so this has to be something an id would not contain.
+  static const String _lensCameraNameSeparator = '@';
+
+  /// The lenses [cameraInfo] switches between as it is zoomed.
+  ///
+  /// A phone that reaches three rear lenses through one camera hands out that
+  /// camera and nothing else: its physical cameras are absent from
+  /// [ProcessCameraProvider.getAvailableCameraInfos] and cannot be opened, so
+  /// the zoom ratio that selects each one is the only handle a caller has on
+  /// them. That ratio is the lens's focal length over the camera's own — a 66mm
+  /// lens behind a 23mm camera is what the device gives at 2.9x, which is how a
+  /// phone's "3x" is built. [_lensCameraDescriptions] turns the ones that are
+  /// not cameras already into cameras of their own.
+  ///
+  /// Never throws. This describes a camera in more detail than a caller needs
+  /// to open one, and [availableCameras] is what every camera on the platform
+  /// begins with: a device that answers awkwardly about a lens must not cost
+  /// the app its camera list.
+  Future<List<ConstituentLens>> _constituentLenses(
+    CameraInfo cameraInfo,
+    double? equivalentFocalLength,
+  ) async {
+    if (equivalentFocalLength == null || equivalentFocalLength <= 0) {
+      // Nothing to express the physical lenses relative to.
+      return const <ConstituentLens>[];
+    }
+
+    List<double> focalLengths;
+    try {
+      focalLengths = await cameraInfo.getPhysicalCameraFocalLengths();
+    } catch (e) {
+      debugPrint('Could not read the lenses behind a camera: $e');
+      return const <ConstituentLens>[];
+    }
+
+    final lenses = <ConstituentLens>[
+      for (final double lensFocalLength in focalLengths)
+        if (lensFocalLength > 0)
+          ConstituentLens(
+            zoomRatio: lensFocalLength / equivalentFocalLength,
+            equivalentFocalLength: lensFocalLength,
+          ),
+    ];
+    lenses.sort((ConstituentLens a, ConstituentLens b) => a.zoomRatio.compareTo(b.zoomRatio));
+    return lenses;
   }
 
   /// Creates an uninitialized camera instance with default settings and returns the camera ID.
@@ -458,8 +732,15 @@ class AndroidCameraCameraX extends CameraPlatform {
     if (error != null) {
       throw CameraException(error.errorCode, error.description);
     }
+    // A description naming a lens rather than a camera is served by the camera
+    // that lens sits behind, zoomed to where the device switches to it.
+    final ({String parentName, double zoomRatio})? lens = _parseLensCameraName(
+      cameraDescription.name,
+    );
+    _requestedZoomRatio = lens?.zoomRatio;
+
     // Choose CameraInfo to create CameraSelector by name associated with desired camera.
-    final CameraInfo? chosenCameraInfo = _savedCameras[cameraDescription.name];
+    final CameraInfo? chosenCameraInfo = _savedCameras[lens?.parentName ?? cameraDescription.name];
 
     // Save CameraSelector that matches cameraDescription.
     final LensFacing cameraSelectorLensDirection = _getCameraSelectorLensDirection(
@@ -488,7 +769,14 @@ class AndroidCameraCameraX extends CameraPlatform {
     // one those still-bound use cases are feeding. Building the next camera
     // while the previous one is mid-detach is how surfaces end up outliving the
     // context that renders into them.
+    _bindGeneration++;
     await processCameraProvider!.unbindAll();
+    cameraStateType = null;
+
+    // The exposure offset a previous camera was asked for is not this one's:
+    // re-applying it when this camera opens would leave the hardware exposing
+    // for a lens the caller has moved on from.
+    _requestedExposureCompensationIndex = null;
 
     // The white balance manager belongs to the plugin rather than to any one
     // camera, so the lock requested for a previous one is still on it. Clearing
@@ -687,7 +975,9 @@ class AndroidCameraCameraX extends CameraPlatform {
     // surface created from that same `Surface` and swaps a buffer into it on
     // every frame. Awaiting each step keeps the sequence deterministic.
     await liveCameraState?.removeObservers();
+    _bindGeneration++;
     await processCameraProvider?.unbindAll();
+    cameraStateType = null;
     await imageAnalysis?.clearAnalyzer();
     await deviceOrientationManager.stopListeningForDeviceOrientationChange();
     // Detached, not released: the pipeline is reused by the next camera, and
@@ -943,9 +1233,13 @@ class AndroidCameraCameraX extends CameraPlatform {
     // (exposure offset).
     final int roundedExposureCompensationIndex = (offset / exposureOffsetStepSize).round();
     final int request = ++_exposureOffsetRequests;
-    // Captured to tell a rebind from a real rejection below;
-    // `_updateCameraInfoAndLiveCameraState` swaps this for a new instance every
-    // time the use cases are rebound.
+    // Held for [_reapplyExposureCompensationIndex] to re-send: a cancelled
+    // request leaves nothing behind on the CameraX side.
+    _requestedExposureCompensationIndex = roundedExposureCompensationIndex;
+    // Both captured to tell a rebind from a real rejection below. The bind
+    // count catches a rebind that is still in flight, which has not swapped the
+    // control in yet, as well as one CameraX served with the same control.
+    final int bindGeneration = _bindGeneration;
     final CameraControl requestedOn = cameraControl;
 
     try {
@@ -961,7 +1255,7 @@ class AndroidCameraCameraX extends CameraPlatform {
           // here would only bury the caller in errors it cannot act on.
           return roundedExposureCompensationIndex * exposureOffsetStepSize;
         }
-        if (!identical(requestedOn, cameraControl)) {
+        if (bindGeneration != _bindGeneration || !identical(requestedOn, cameraControl)) {
           // The camera this was asked of has been rebound underneath it — a lens
           // switch, an aspect ratio change, or binding video capture at the start
           // of a recording. CameraX reports that with the same cancellation it
@@ -969,6 +1263,18 @@ class AndroidCameraCameraX extends CameraPlatform {
           // than something the caller got wrong, and callers commonly set the
           // exposure offset alongside the very calls that rebind. Raising here
           // turns an ordinary camera switch into a fatal initialization error.
+          //
+          // The index is re-sent once the rebind settles, so returning here
+          // still leaves the camera at the requested offset.
+          return roundedExposureCompensationIndex * exposureOffsetStepSize;
+        }
+        if (cameraStateType != CameraStateType.open) {
+          // The camera device is not open yet — a camera created moments ago is
+          // still opening, and one that is closing or closed is on its way out.
+          // CameraX cancels a request submitted to a camera control that is not
+          // live, which is exactly what a caller setting the exposure offset
+          // right after `initialize()` runs into. Same as above: the index is
+          // re-sent when the device reports itself open.
           return roundedExposureCompensationIndex * exposureOffsetStepSize;
         }
         cameraErrorStreamController.add(
@@ -995,6 +1301,36 @@ class AndroidCameraCameraX extends CameraPlatform {
         setExposureOffsetFailedErrorCode,
         e.message ?? 'Setting the camera exposure compensation index failed.',
       );
+    }
+  }
+
+  /// Re-sends the exposure compensation index [setExposureOffset] last asked
+  /// for, if any, to the camera control that is current now.
+  ///
+  /// Called every time the camera device opens and every time the use cases are
+  /// re-bound, because both leave CameraX holding no index at all: it drops the
+  /// value along with the request when the control it belongs to stops being
+  /// active. Without this an offset requested while the camera was still
+  /// opening — the ordinary case, since callers set it as soon as
+  /// `initialize()` returns — would silently never apply.
+  ///
+  /// Failures are swallowed: this is the plugin re-stating something the caller
+  /// already asked for and already heard the outcome of, and the value stays
+  /// recorded for the next camera that comes up.
+  Future<void> _reapplyExposureCompensationIndex() async {
+    final int? index = _requestedExposureCompensationIndex;
+    if (index == null || camera == null) {
+      return;
+    }
+    // Counted as a request in its own right: it carries the newest index there
+    // is, so a [setExposureOffset] still waiting on the control this supersedes
+    // reads its own cancellation as superseded — which it is — rather than as a
+    // refusal to report.
+    _exposureOffsetRequests++;
+    try {
+      await cameraControl.setExposureCompensationIndex(index);
+    } on PlatformException {
+      // The camera refused it; the caller heard that when it asked.
     }
   }
 
@@ -1141,6 +1477,9 @@ class AndroidCameraCameraX extends CameraPlatform {
   /// Throws a `CameraException` when an illegal zoom level is supplied.
   @override
   Future<void> setZoomLevel(int cameraId, double zoom) async {
+    // Held so a rebind can restore it; a caller that has zoomed away from the
+    // lens its camera was created for is not put back on that lens.
+    _requestedZoomRatio = zoom;
     try {
       await cameraControl.setZoomRatio(zoom);
     } on PlatformException catch (e) {
@@ -1233,7 +1572,9 @@ class AndroidCameraCameraX extends CameraPlatform {
       cameraErrorStreamController.add('Camera description not set. No active video recording.');
       return;
     }
-    final CameraInfo? chosenCameraInfo = _savedCameras[description.name];
+    final ({String parentName, double zoomRatio})? lens = _parseLensCameraName(description.name);
+    _requestedZoomRatio = lens?.zoomRatio;
+    final CameraInfo? chosenCameraInfo = _savedCameras[lens?.parentName ?? description.name];
 
     // Save CameraSelector that matches cameraDescription.
     final LensFacing cameraSelectorLensDirection = _getCameraSelectorLensDirection(
@@ -1259,6 +1600,7 @@ class AndroidCameraCameraX extends CameraPlatform {
     if (imageAnalysis != null && await processCameraProvider!.isBound(imageAnalysis!)) {
       useCases.add(imageAnalysis!);
     }
+    _bindGeneration++;
     await processCameraProvider?.unbindAll();
     camera = await _bindWithFallback(useCases);
 
@@ -1467,6 +1809,7 @@ class AndroidCameraCameraX extends CameraPlatform {
       return false;
     }
 
+    _bindGeneration++;
     await provider.unbind(<UseCase>[previewUseCase]);
     // Binding the preview alone is enough: CameraX unions it with the use cases
     // that are still attached, so image capture and image analysis stay bound
@@ -1853,6 +2196,7 @@ class AndroidCameraCameraX extends CameraPlatform {
   /// alternative is matching CameraX's exception text, and the cost of a wrong
   /// guess is one extra bind attempt on a camera that was failing anyway.
   Future<Camera> _bindWithFallback(List<UseCase> useCases) async {
+    _bindGeneration++;
     try {
       return await processCameraProvider!.bindToLifecycle(
         cameraSelector!,
@@ -1975,6 +2319,7 @@ class AndroidCameraCameraX extends CameraPlatform {
       return;
     }
 
+    _bindGeneration++;
     await processCameraProvider!.unbind(<UseCase>[useCase]);
   }
 
@@ -2043,6 +2388,48 @@ class AndroidCameraCameraX extends CameraPlatform {
     await liveCameraState?.removeObservers();
     liveCameraState = await cameraInfo!.getCameraState();
     await liveCameraState!.observe(_createCameraClosingObserver(cameraId));
+
+    // Same reason as the white balance lock above: the exposure compensation
+    // index lives on the camera control the bind just replaced. Not awaited —
+    // CameraX only completes the request once a capture result carries the new
+    // index, and no caller of a rebind should wait a frame for that.
+    unawaited(_reapplyExposureCompensationIndex());
+
+    // And the zoom ratio with it, which is what selects the lens on a camera
+    // created for one: a bind that came back at 1.0 would quietly leave the
+    // camera on a different lens than the one the caller asked for.
+    unawaited(_reapplyZoomRatio());
+  }
+
+  /// Re-sends the zoom ratio the camera should be at, if any.
+  ///
+  /// Clamped to what the camera says it can do: the ratio of a lens is derived
+  /// from focal lengths the device reports, and a device whose zoom range does
+  /// not quite reach its own longest lens would otherwise have every rebind
+  /// rejected.
+  ///
+  /// Failures are swallowed. A caller that set the zoom itself already heard
+  /// how that went, and one that did not never asked for this.
+  Future<void> _reapplyZoomRatio() async {
+    final double? zoomRatio = _requestedZoomRatio;
+    if (zoomRatio == null || camera == null) {
+      return;
+    }
+    try {
+      await cameraControl.setZoomRatio(await _clampToZoomRange(zoomRatio));
+    } on PlatformException catch (e) {
+      debugPrint('Could not restore the zoom ratio after a rebind: ${e.message}');
+    }
+  }
+
+  /// [zoomRatio] brought within what the current camera supports.
+  Future<double> _clampToZoomRange(double zoomRatio) async {
+    final LiveData<ZoomState> liveZoomState = await cameraInfo!.getZoomState();
+    final ZoomState? zoomState = await liveZoomState.getValue();
+    if (zoomState == null) {
+      return zoomRatio;
+    }
+    return zoomRatio.clamp(zoomState.minZoomRatio, zoomState.maxZoomRatio);
   }
 
   /// Creates [Observer] of the [CameraState] that will:
@@ -2056,6 +2443,12 @@ class AndroidCameraCameraX extends CameraPlatform {
 
     // Callback method used to implement the behavior described above:
     void onChanged(CameraState state) {
+      weakThis.target!.cameraStateType = state.type;
+      if (state.type == CameraStateType.open) {
+        // The camera control only accepts requests while the device is open,
+        // and comes up holding none of what was asked of the previous one.
+        unawaited(weakThis.target!._reapplyExposureCompensationIndex());
+      }
       if (state.type == CameraStateType.closing) {
         weakThis.target!.cameraEventStreamController.add(CameraClosingEvent(cameraId));
       }

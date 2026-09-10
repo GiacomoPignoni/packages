@@ -2363,6 +2363,22 @@ abstract class PigeonApiCameraInfo(
   /** Whether this camera has a flash unit. */
   abstract fun hasFlashUnit(pigeon_instance: androidx.camera.core.CameraInfo): Boolean
 
+  /**
+   * The approximate 35mm-equivalent focal lengths, in millimetres, of the cameras this one is made
+   * of, when it is a logical multi-camera.
+   *
+   * A logical camera stands for several physical ones and picks between them by zoom ratio; the
+   * physical ones it is made of are not in `ProcessCameraProvider.getAvailableCameraInfos` and
+   * cannot be opened on their own. Empty for a camera that is a single sensor.
+   *
+   * The focal lengths rather than the cameras themselves: a physical camera answers questions about
+   * its characteristics and throws `UnsupportedOperationException` on most of the rest, including
+   * the exposure state every `CameraInfo` handed to Dart is built from.
+   */
+  abstract fun getPhysicalCameraFocalLengths(
+      pigeon_instance: androidx.camera.core.CameraInfo
+  ): List<Double>
+
   companion object {
     @Suppress("LocalVariableName")
     fun setUpMessageHandlers(binaryMessenger: BinaryMessenger, api: PigeonApiCameraInfo?) {
@@ -2424,6 +2440,28 @@ abstract class PigeonApiCameraInfo(
             val wrapped: List<Any?> =
                 try {
                   listOf(api.hasFlashUnit(pigeon_instanceArg))
+                } catch (exception: Throwable) {
+                  CameraXLibraryPigeonUtils.wrapError(exception)
+                }
+            reply.reply(wrapped)
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel =
+            BasicMessageChannel<Any?>(
+                binaryMessenger,
+                "dev.flutter.pigeon.camera_android_camerax.CameraInfo.getPhysicalCameraFocalLengths",
+                codec)
+        if (api != null) {
+          channel.setMessageHandler { message, reply ->
+            val args = message as List<Any?>
+            val pigeon_instanceArg = args[0] as androidx.camera.core.CameraInfo
+            val wrapped: List<Any?> =
+                try {
+                  listOf(api.getPhysicalCameraFocalLengths(pigeon_instanceArg))
                 } catch (exception: Throwable) {
                   CameraXLibraryPigeonUtils.wrapError(exception)
                 }

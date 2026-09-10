@@ -4,6 +4,8 @@
 
 import 'dart:async';
 import 'dart:math' show Point;
+import 'dart:typed_data' show ByteData;
+import 'dart:ui' as ui;
 
 import 'package:async/async.dart';
 import 'package:camera_android_camerax/camera_android_camerax.dart';
@@ -107,6 +109,36 @@ void main() {
     PigeonOverrides.camera2CameraInfo_from = ({required dynamic cameraInfo}) =>
         Camera2CameraInfo.pigeon_detached();
   });
+
+  /// Points [availableCameras] at [cameras], each keyed by the [CameraInfo] the plugin will see
+  /// and valued by the camera id and 35mm-equivalent focal length the device reports for it.
+  void setUpOverridesForTestingAvailableCameras(
+    MockProcessCameraProvider mockProcessCameraProvider,
+    Map<CameraInfo, ({String id, double? focalLength})> cameras, {
+    int sensorRotationDegrees = 90,
+  }) {
+    PigeonOverrides.processCameraProvider_getInstance = () async => mockProcessCameraProvider;
+    PigeonOverrides.camera2CameraInfo_from = ({required dynamic cameraInfo}) {
+      final camera2CameraInfo = MockCamera2CameraInfo();
+      final ({String id, double? focalLength})? camera = cameras[cameraInfo];
+      when(camera2CameraInfo.getCameraId()).thenAnswer((_) async => camera?.id ?? '');
+      when(
+        camera2CameraInfo.getEquivalentFocalLength(),
+      ).thenAnswer((_) async => camera?.focalLength);
+      return camera2CameraInfo;
+    };
+    PigeonOverrides.systemServicesManager_new =
+        ({required void Function(SystemServicesManager, String) onCameraError}) =>
+            MockSystemServicesManager();
+
+    when(
+      mockProcessCameraProvider.getAvailableCameraInfos(),
+    ).thenAnswer((_) async => cameras.keys.toList());
+    for (final CameraInfo cameraInfo in cameras.keys) {
+      when(cameraInfo.sensorRotationDegrees).thenReturn(sensorRotationDegrees);
+      when(cameraInfo.lensFacing).thenReturn(LensFacing.back);
+    }
+  }
 
   /// Helper method for testing sending/receiving CameraErrorEvents.
   Future<bool> testCameraClosingObserver(
@@ -5230,6 +5262,9 @@ void main() {
       // Set directly for test versus calling createCamera.
       camera.cameraInfo = mockCameraInfo;
       camera.cameraControl = mockCameraControl;
+      // A cancellation only counts as a refusal on a camera that is open; one
+      // that is still opening cancels everything it is sent.
+      camera.cameraStateType = CameraStateType.open;
 
       when(mockCameraInfo.exposureState).thenReturn(exposureState);
       when(
@@ -7114,6 +7149,7 @@ void main() {
 
     camera.cameraInfo = mockCameraInfo;
     camera.cameraControl = mockCameraControl;
+    camera.cameraStateType = CameraStateType.open;
     when(mockCameraInfo.exposureState).thenReturn(exposureState);
     when(mockCameraControl.setExposureCompensationIndex(5)).thenAnswer((_) async {
       // Stands in for the rebind that `_updateCameraInfoAndLiveCameraState` performs, which swaps
@@ -7147,6 +7183,7 @@ void main() {
 
     camera.cameraInfo = mockCameraInfo;
     camera.cameraControl = mockCameraControl;
+    camera.cameraStateType = CameraStateType.open;
     when(mockCameraInfo.exposureState).thenReturn(exposureState);
     when(mockCameraControl.setExposureCompensationIndex(5)).thenAnswer((_) async => null);
 
@@ -7160,6 +7197,404 @@ void main() {
         ),
       ),
     );
+  });
+
+  test(
+    'setExposureOffset does not report a cancellation from a camera that is still opening',
+    () async {
+      // A camera control only accepts requests once its device is open, and cancels — rather than
+      // queues — anything submitted before that. Callers set the exposure offset as soon as
+      // `initialize()` returns, which is comfortably before the device has finished opening.
+      final camera = AndroidCameraCameraX();
+      const cameraId = 11;
+      final mockCameraInfo = MockCameraInfo();
+      final CameraControl mockCameraControl = MockCameraControl();
+      final exposureState = ExposureState.pigeon_detached(
+        exposureCompensationRange: CameraIntegerRange.pigeon_detached(lower: -10, upper: 10),
+        exposureCompensationStep: 0.2,
+      );
+
+      camera.cameraInfo = mockCameraInfo;
+      camera.cameraControl = mockCameraControl;
+      camera.cameraStateType = CameraStateType.opening;
+      when(mockCameraInfo.exposureState).thenReturn(exposureState);
+      when(mockCameraControl.setExposureCompensationIndex(5)).thenAnswer((_) async => null);
+
+      final errors = <String>[];
+      final StreamSubscription<CameraErrorEvent> subscription = camera
+          .onCameraError(cameraId)
+          .listen((CameraErrorEvent event) => errors.add(event.description));
+      addTearDown(subscription.cancel);
+
+      expect(await camera.setExposureOffset(cameraId, 1.0), closeTo(1.0, 1e-9));
+      await pumpEventQueue();
+      expect(errors, isEmpty);
+    },
+  );
+
+  test('the requested exposure offset is re-sent when the camera reports itself open', () async {
+    // The other half of the test above: the index a cancelled request never delivered has to
+    // reach the camera on its own, or an offset set during initialization is silently lost.
+    final camera = AndroidCameraCameraX();
+    const testCameraDescription = CameraDescription(
+      name: 'cameraName',
+      lensDirection: CameraLensDirection.back,
+      sensorOrientation: 90,
+    );
+    const testSurfaceTextureId = 6;
+    final mockCamera = MockCamera();
+    final mockCameraControl = MockCameraControl();
+    final mockProcessCameraProvider = MockProcessCameraProvider();
+    final mockCameraInfo = MockCameraInfo();
+    final mockLiveCameraState = MockLiveCameraState();
+    final mockPreview = MockPreview();
+    final exposureState = ExposureState.pigeon_detached(
+      exposureCompensationRange: CameraIntegerRange.pigeon_detached(lower: -10, upper: 10),
+      exposureCompensationStep: 0.2,
+    );
+
+    when(
+      mockProcessCameraProvider.bindToLifecycle(any, any, any, any),
+    ).thenAnswer((_) async => mockCamera);
+    when(mockCamera.getCameraInfo()).thenAnswer((_) async => mockCameraInfo);
+    when(mockCamera.cameraControl).thenReturn(mockCameraControl);
+    when(mockCameraInfo.getCameraState()).thenAnswer((_) async => mockLiveCameraState);
+    when(mockCameraInfo.exposureState).thenReturn(exposureState);
+    when(
+      mockPreview.getResolutionInfo(),
+    ).thenAnswer((_) async => ResolutionInfo.pigeon_detached(resolution: MockCameraSize()));
+    when(mockPreview.setSurfaceProvider(any)).thenAnswer((_) async => testSurfaceTextureId);
+    // Cancelled while the camera is opening, applied once it is open.
+    when(mockCameraControl.setExposureCompensationIndex(5)).thenAnswer((_) async => null);
+
+    camera.processCameraProvider = mockProcessCameraProvider;
+    camera.effectsManager = MockCameraEffectsManager();
+    camera.cameraEffect = MockCameraEffect();
+    setUpOverridesForTestingUseCaseConfiguration(
+      mockProcessCameraProvider,
+      newPreview:
+          ({
+            ResolutionSelector? resolutionSelector,
+            int? targetRotation,
+            CameraIntegerRange? targetFpsRange,
+            WhiteBalanceManager? whiteBalanceManager,
+          }) => mockPreview,
+    );
+
+    await camera.createCameraWithSettings(testCameraDescription, const MediaSettings());
+    await camera.initializeCamera(testSurfaceTextureId);
+
+    expect(await camera.setExposureOffset(testSurfaceTextureId, 1.0), closeTo(1.0, 1e-9));
+    verify(mockCameraControl.setExposureCompensationIndex(5)).called(1);
+
+    when(mockCameraControl.setExposureCompensationIndex(5)).thenAnswer((_) async => 5);
+    final observer =
+        verify(mockLiveCameraState.observe(captureAny)).captured.single as Observer<CameraState>;
+    observer.onChanged(observer, CameraState.pigeon_detached(type: CameraStateType.open));
+    await pumpEventQueue();
+
+    verify(mockCameraControl.setExposureCompensationIndex(5)).called(1);
+  });
+
+  test('availableCameras reports the lenses a logical camera switches between', () async {
+    // Modelled on a Galaxy S22, whose three rear lenses sit behind one camera: only the 23mm one
+    // and the standalone ultra-wide are cameras a caller can open, and the 66mm one is reachable
+    // solely by zooming the logical camera to the ratio it takes over at.
+    final camera = AndroidCameraCameraX();
+    final mockProcessCameraProvider = MockProcessCameraProvider();
+    final mockLogicalCameraInfo = MockCameraInfo();
+    final mockUltraWideCameraInfo = MockCameraInfo();
+
+    setUpOverridesForTestingAvailableCameras(mockProcessCameraProvider, {
+      mockLogicalCameraInfo: (id: '0', focalLength: 22.9),
+      mockUltraWideCameraInfo: (id: '2', focalLength: 13.5),
+    });
+    // The ultra-wide, the telephoto and the wide, in the order the device happens to list them.
+    when(
+      mockLogicalCameraInfo.getPhysicalCameraFocalLengths(),
+    ).thenAnswer((_) async => <double>[13.5, 66.4, 22.9]);
+
+    final List<CameraDescription> cameraDescriptions = await camera.availableCameras();
+
+    final List<ConstituentLens> lenses = cameraDescriptions.first.constituentLenses;
+    expect(lenses.map((ConstituentLens lens) => lens.equivalentFocalLength), <double>[
+      13.5,
+      22.9,
+      66.4,
+    ]);
+    // Shortest first, each expressed against the camera's own 22.9mm lens.
+    expect(lenses[0].zoomRatio, closeTo(0.59, 0.01));
+    expect(lenses[1].zoomRatio, closeTo(1.0, 0.01));
+    expect(lenses[2].zoomRatio, closeTo(2.9, 0.01));
+    // A camera that is a single sensor has none to report.
+    expect(cameraDescriptions[1].constituentLenses, isEmpty);
+  });
+
+  test('availableCameras gives a lens with no camera of its own one', () async {
+    // The S22 again: the ultra-wide behind the rear camera is already camera "2" and the 23mm one
+    // is that camera itself, so only the telephoto — which nothing can open — gains a description.
+    final camera = AndroidCameraCameraX();
+    final mockProcessCameraProvider = MockProcessCameraProvider();
+    final mockLogicalCameraInfo = MockCameraInfo();
+    final mockUltraWideCameraInfo = MockCameraInfo();
+
+    setUpOverridesForTestingAvailableCameras(mockProcessCameraProvider, {
+      mockLogicalCameraInfo: (id: '0', focalLength: 22.9),
+      mockUltraWideCameraInfo: (id: '2', focalLength: 13.5),
+    }, sensorRotationDegrees: 270);
+    when(
+      mockLogicalCameraInfo.getPhysicalCameraFocalLengths(),
+    ).thenAnswer((_) async => <double>[13.5, 66.4, 22.9]);
+
+    final List<CameraDescription> cameraDescriptions = await camera.availableCameras();
+
+    expect(cameraDescriptions.map((CameraDescription d) => d.name), <String>['0', '2', '0@2.90x']);
+    final CameraDescription telephoto = cameraDescriptions.last;
+    expect(telephoto.equivalentFocalLength, 66.4);
+    expect(telephoto.lensDirection, CameraLensDirection.back);
+    // Its frames come through the camera it sits behind, mounted as that one is.
+    expect(telephoto.sensorOrientation, 270);
+    // A lens that stands for a whole camera does not carry lenses of its own.
+    expect(telephoto.constituentLenses, isEmpty);
+  });
+
+  test('availableCameras reports no lenses for a camera with no focal length of its own', () async {
+    // Without the camera's own focal length there is nothing to express a ratio against, and a
+    // ratio is the whole point: a lens nobody can open is reachable only by zooming to it.
+    final camera = AndroidCameraCameraX();
+    final mockProcessCameraProvider = MockProcessCameraProvider();
+    final mockLogicalCameraInfo = MockCameraInfo();
+
+    setUpOverridesForTestingAvailableCameras(mockProcessCameraProvider, {
+      mockLogicalCameraInfo: (id: '0', focalLength: null),
+    });
+    when(
+      mockLogicalCameraInfo.getPhysicalCameraFocalLengths(),
+    ).thenAnswer((_) async => <double>[66.4]);
+
+    final List<CameraDescription> cameraDescriptions = await camera.availableCameras();
+
+    expect(cameraDescriptions.single.constituentLenses, isEmpty);
+  });
+
+  test('availableCameras survives a camera that will not talk about its lenses', () async {
+    // The lenses are a detail on top of a camera list the whole plugin starts from, and a device
+    // that answers awkwardly about one must not cost the app every camera it has. This is what a
+    // physical camera that refuses the call looks like from Dart.
+    final camera = AndroidCameraCameraX();
+    final mockProcessCameraProvider = MockProcessCameraProvider();
+    final mockCameraInfo = MockCameraInfo();
+
+    setUpOverridesForTestingAvailableCameras(mockProcessCameraProvider, {
+      mockCameraInfo: (id: '0', focalLength: 22.9),
+    });
+    when(mockCameraInfo.getPhysicalCameraFocalLengths()).thenThrow(
+      PlatformException(code: 'channel-error', message: 'Unable to establish connection'),
+    );
+
+    final List<CameraDescription> cameraDescriptions = await camera.availableCameras();
+
+    expect(cameraDescriptions.single.name, '0');
+    expect(cameraDescriptions.single.constituentLenses, isEmpty);
+  });
+
+  test('availableCameras says which lens each camera has', () async {
+    // A caller opening a camera by default wants the 1x one, and on a list where every entry says
+    // `unknown` it has no way to ask for it. The S22's four cameras and the lens camera built from
+    // its telephoto, measured against the first camera facing each way.
+    final camera = AndroidCameraCameraX();
+    final mockProcessCameraProvider = MockProcessCameraProvider();
+    final mockWideCameraInfo = MockCameraInfo();
+    final mockFrontCameraInfo = MockCameraInfo();
+    final mockUltraWideCameraInfo = MockCameraInfo();
+    final mockFrontFullFovCameraInfo = MockCameraInfo();
+
+    setUpOverridesForTestingAvailableCameras(mockProcessCameraProvider, {
+      mockWideCameraInfo: (id: '0', focalLength: 22.9),
+      mockFrontCameraInfo: (id: '1', focalLength: 25.7),
+      mockUltraWideCameraInfo: (id: '2', focalLength: 13.5),
+      mockFrontFullFovCameraInfo: (id: '3', focalLength: 30.0),
+    });
+    when(mockFrontCameraInfo.lensFacing).thenReturn(LensFacing.front);
+    when(mockFrontFullFovCameraInfo.lensFacing).thenReturn(LensFacing.front);
+    when(
+      mockWideCameraInfo.getPhysicalCameraFocalLengths(),
+    ).thenAnswer((_) async => <double>[13.5, 22.9, 66.4]);
+
+    final List<CameraDescription> cameras = await camera.availableCameras();
+
+    expect(
+      <String, CameraLensType>{
+        for (final CameraDescription camera in cameras) camera.name: camera.lensType,
+      },
+      <String, CameraLensType>{
+        '0': CameraLensType.wide,
+        '1': CameraLensType.wide,
+        '2': CameraLensType.ultraWide,
+        // The same front sensor at a wider field of view is still a wide camera.
+        '3': CameraLensType.wide,
+        '0@2.90x': CameraLensType.telephoto,
+      },
+    );
+  });
+
+  test('availableCameras leaves the lens unknown when the device will not measure it', () async {
+    // A guess here would be acted on by a picker choosing what to open. Saying nothing is what
+    // lets it fall back to the camera the platform lists first.
+    final camera = AndroidCameraCameraX();
+    final mockProcessCameraProvider = MockProcessCameraProvider();
+    final mockCameraInfo = MockCameraInfo();
+
+    setUpOverridesForTestingAvailableCameras(mockProcessCameraProvider, {
+      mockCameraInfo: (id: '0', focalLength: null),
+    });
+
+    final List<CameraDescription> cameras = await camera.availableCameras();
+
+    expect(cameras.single.lensType, CameraLensType.unknown);
+  });
+
+  test('a camera created from a lens description binds its camera and zooms to the lens', () async {
+    // The whole point of handing out a description for a lens that is not a camera: creating a
+    // camera from it has to open the camera that lens sits behind and zoom to where the device
+    // switches over, or the caller gets the wrong lens with no way to tell.
+    final camera = AndroidCameraCameraX();
+    const testSurfaceTextureId = 7;
+    final mockProcessCameraProvider = MockProcessCameraProvider();
+    final mockLogicalCameraInfo = MockCameraInfo();
+    final mockCamera = MockCamera();
+    final mockCameraControl = MockCameraControl();
+    final mockPreview = MockPreview();
+    final mockLensCameraSelector = MockCameraSelector();
+    final mockZoomState = MockZoomState();
+    final mockLiveZoomState = MockLiveZoomState();
+    CameraInfo? selectorBuiltFrom;
+
+    setUpOverridesForTestingAvailableCameras(mockProcessCameraProvider, {
+      mockLogicalCameraInfo: (id: '0', focalLength: 22.9),
+    });
+    when(
+      mockLogicalCameraInfo.getPhysicalCameraFocalLengths(),
+    ).thenAnswer((_) async => <double>[66.4]);
+
+    final List<CameraDescription> cameraDescriptions = await camera.availableCameras();
+    final CameraDescription telephoto = cameraDescriptions.last;
+    expect(telephoto.name, '0@2.90x');
+
+    // Now create a camera from that description.
+    setUpOverridesForTestingUseCaseConfiguration(
+      mockProcessCameraProvider,
+      newPreview:
+          ({
+            ResolutionSelector? resolutionSelector,
+            int? targetRotation,
+            CameraIntegerRange? targetFpsRange,
+            WhiteBalanceManager? whiteBalanceManager,
+          }) => mockPreview,
+    );
+    PigeonOverrides.cameraSelector_new =
+        ({LensFacing? requireLensFacing, dynamic cameraInfoForFilter}) {
+          selectorBuiltFrom = cameraInfoForFilter as CameraInfo?;
+          return mockLensCameraSelector;
+        };
+    when(
+      mockProcessCameraProvider.bindToLifecycle(any, any, any, any),
+    ).thenAnswer((_) async => mockCamera);
+    when(mockCamera.getCameraInfo()).thenAnswer((_) async => mockLogicalCameraInfo);
+    when(mockCamera.cameraControl).thenReturn(mockCameraControl);
+    when(mockLogicalCameraInfo.getCameraState()).thenAnswer((_) async => MockLiveCameraState());
+    when(mockLogicalCameraInfo.getZoomState()).thenAnswer((_) async => mockLiveZoomState);
+    when(mockLiveZoomState.getValue()).thenAnswer((_) async => mockZoomState);
+    when(mockZoomState.minZoomRatio).thenReturn(0.6);
+    when(mockZoomState.maxZoomRatio).thenReturn(10.0);
+    when(mockPreview.setSurfaceProvider(any)).thenAnswer((_) async => testSurfaceTextureId);
+    when(
+      mockPreview.getResolutionInfo(),
+    ).thenAnswer((_) async => ResolutionInfo.pigeon_detached(resolution: MockCameraSize()));
+    camera.processCameraProvider = mockProcessCameraProvider;
+    camera.effectsManager = MockCameraEffectsManager();
+    camera.cameraEffect = MockCameraEffect();
+
+    await camera.createCameraWithSettings(telephoto, const MediaSettings());
+    await camera.initializeCamera(testSurfaceTextureId);
+    await pumpEventQueue();
+
+    // The camera opened is the one the lens sits behind, not some camera named after the lens.
+    expect(selectorBuiltFrom, mockLogicalCameraInfo);
+    final zoomRatio = verify(mockCameraControl.setZoomRatio(captureAny)).captured.last as double;
+    expect(zoomRatio, closeTo(2.9, 0.01));
+  });
+
+  test('the zoom a caller set is restored when the use cases are re-bound', () async {
+    // A rebind builds a new camera adapter, which starts back at 1.0 — on a camera created for a
+    // lens that would silently land the caller on a different lens than the one it asked for.
+    final camera = AndroidCameraCameraX();
+    final mockCameraInfo = MockCameraInfo();
+    final mockCamera = MockCamera();
+    final mockCameraControl = MockCameraControl();
+    final mockZoomState = MockZoomState();
+    final mockLiveZoomState = MockLiveZoomState();
+
+    final mockPreview = MockPreview();
+    final mockProcessCameraProvider = MockProcessCameraProvider();
+
+    camera.camera = mockCamera;
+    camera.cameraInfo = mockCameraInfo;
+    camera.cameraControl = mockCameraControl;
+    camera.preview = mockPreview;
+    camera.processCameraProvider = mockProcessCameraProvider;
+    camera.cameraSelector = MockCameraSelector();
+    GenericsPigeonOverrides.observerNew = <T>({required void Function(Observer<T>, T) onChanged}) =>
+        Observer<T>.detached(onChanged: onChanged);
+    when(mockProcessCameraProvider.isBound(mockPreview)).thenAnswer((_) async => false);
+    when(
+      mockProcessCameraProvider.bindToLifecycle(any, any, any, any),
+    ).thenAnswer((_) async => mockCamera);
+    when(mockCamera.getCameraInfo()).thenAnswer((_) async => mockCameraInfo);
+    when(mockCamera.cameraControl).thenReturn(mockCameraControl);
+    when(mockCameraInfo.getCameraState()).thenAnswer((_) async => MockLiveCameraState());
+    when(mockCameraInfo.getZoomState()).thenAnswer((_) async => mockLiveZoomState);
+    when(mockLiveZoomState.getValue()).thenAnswer((_) async => mockZoomState);
+    when(mockZoomState.minZoomRatio).thenReturn(1.0);
+    when(mockZoomState.maxZoomRatio).thenReturn(8.0);
+
+    await camera.setZoomLevel(4, 3.5);
+    // Stands in for the rebind an aspect ratio change or a lens switch performs.
+    await camera.resumePreview(4);
+    await pumpEventQueue();
+
+    verify(mockCameraControl.setZoomRatio(3.5)).called(2);
+  });
+
+  test('registerWith drops auto white balance readings that nothing is listening for', () async {
+    // The camera survives a hot restart and goes on reporting readings into a channel whose
+    // handler belongs to an isolate that is gone. Buffering one of those means handing the next
+    // isolate an instance identifier it cannot resolve, which is a null check away from a crash.
+    const channel =
+        'dev.flutter.pigeon.camera_android_camerax.WhiteBalanceManager.onAutoWhiteBalanceChanged';
+    final CameraPlatform previousInstance = CameraPlatform.instance;
+    addTearDown(() {
+      CameraPlatform.instance = previousInstance;
+      ui.channelBuffers.resize(channel, 1);
+      ui.channelBuffers.clearListener(channel);
+    });
+
+    AndroidCameraCameraX.registerWith();
+
+    // Sent while no handler is installed, exactly as during a restart.
+    ui.channelBuffers.push(channel, ByteData(0), (ByteData? _) {});
+
+    final delivered = <ByteData?>[];
+    ui.channelBuffers.setListener(channel, (
+      ByteData? data,
+      ui.PlatformMessageResponseCallback ack,
+    ) {
+      delivered.add(data);
+      ack(null);
+    });
+    await pumpEventQueue();
+
+    expect(delivered, isEmpty);
   });
 
   test('onAutoWhiteBalanceChanged emits the events for its own camera only', () async {

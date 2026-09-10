@@ -244,6 +244,20 @@ abstract class CameraInfo {
 
   /// Whether this camera has a flash unit.
   bool hasFlashUnit();
+
+  /// The approximate 35mm-equivalent focal lengths, in millimetres, of the
+  /// cameras this one is made of, when it is a logical multi-camera.
+  ///
+  /// A logical camera stands for several physical ones and picks between them
+  /// by zoom ratio; the physical ones it is made of are not in
+  /// `ProcessCameraProvider.getAvailableCameraInfos` and cannot be opened on
+  /// their own. Empty for a camera that is a single sensor.
+  ///
+  /// The focal lengths rather than the cameras themselves: a physical camera
+  /// answers questions about its characteristics and throws
+  /// `UnsupportedOperationException` on most of the rest, including the
+  /// exposure state every `CameraInfo` handed to Dart is built from.
+  List<double> getPhysicalCameraFocalLengths();
 }
 
 /// Direction of lens of a camera.

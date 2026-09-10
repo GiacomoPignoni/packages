@@ -170,8 +170,45 @@ void main() {
 
       expect(
         description.toString(),
-        'CameraDescription(Test, CameraLensDirection.front, 90, CameraLensType.ultraWide, 26.0)',
+        'CameraDescription(Test, CameraLensDirection.front, 90, CameraLensType.ultraWide, 26.0, [])',
       );
+    });
+
+    test('constituent lenses default to none and stay out of equality', () {
+      // A camera that lists the lenses it switches between is the same camera as one described
+      // without them: the lenses say more about it, they do not make it a different device.
+      const description = CameraDescription(
+        name: 'Test',
+        lensDirection: CameraLensDirection.back,
+        sensorOrientation: 90,
+      );
+      const withLenses = CameraDescription(
+        name: 'Test',
+        lensDirection: CameraLensDirection.back,
+        sensorOrientation: 90,
+        constituentLenses: <ConstituentLens>[
+          ConstituentLens(zoomRatio: 0.59, equivalentFocalLength: 13.5),
+          ConstituentLens(zoomRatio: 2.9, equivalentFocalLength: 66.4),
+        ],
+      );
+
+      expect(description.constituentLenses, isEmpty);
+      expect(withLenses, description);
+      expect(withLenses.hashCode, description.hashCode);
+      expect(withLenses.constituentLenses.first.zoomRatio, 0.59);
+    });
+
+    test('ConstituentLens equality is by ratio and focal length', () {
+      const lens = ConstituentLens(zoomRatio: 2.9, equivalentFocalLength: 66.4);
+
+      expect(lens, const ConstituentLens(zoomRatio: 2.9, equivalentFocalLength: 66.4));
+      expect(
+        lens.hashCode,
+        const ConstituentLens(zoomRatio: 2.9, equivalentFocalLength: 66.4).hashCode,
+      );
+      expect(lens, isNot(const ConstituentLens(zoomRatio: 3.0, equivalentFocalLength: 66.4)));
+      expect(lens.toString(), 'ConstituentLens(2.9, 66.4)');
+      expect(const ConstituentLens(zoomRatio: 1.0).equivalentFocalLength, isNull);
     });
 
     test('toString should show null when equivalentFocalLength is not set', () {
@@ -183,7 +220,7 @@ void main() {
 
       expect(
         description.toString(),
-        'CameraDescription(Test, CameraLensDirection.front, 90, CameraLensType.unknown, null)',
+        'CameraDescription(Test, CameraLensDirection.front, 90, CameraLensType.unknown, null, [])',
       );
     });
   });

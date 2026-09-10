@@ -78,6 +78,19 @@ class Camera2CameraInfoProxyApi extends PigeonApiCamera2CameraInfo {
   @Nullable
   @Override
   public Double getEquivalentFocalLength(Camera2CameraInfo pigeonInstance) {
+    return equivalentFocalLength(pigeonInstance);
+  }
+
+  /**
+   * The 35mm-equivalent focal length of the camera {@code cameraInfo} describes, in millimetres, or
+   * null when it does not report both characteristics that is derived from.
+   *
+   * <p>Static so that a camera which cannot be handed to Dart as a {@link Camera2CameraInfo} of its
+   * own — a physical camera inside a logical one, which supports characteristics and little else —
+   * can still be measured. See {@code CameraInfoProxyApi.getPhysicalCameraFocalLengths}.
+   */
+  @Nullable
+  static Double equivalentFocalLength(@NonNull Camera2CameraInfo pigeonInstance) {
     final float[] focalLengths =
         pigeonInstance.getCameraCharacteristic(
             CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS);
