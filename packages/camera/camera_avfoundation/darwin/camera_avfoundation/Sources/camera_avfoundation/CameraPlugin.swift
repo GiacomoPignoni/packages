@@ -67,6 +67,12 @@ public final class CameraPlugin: NSObject, FlutterPlugin {
     captureSessionQueue.setSpecific(
       key: captureSessionQueueSpecificKey, value: captureSessionQueueSpecificValue)
 
+    // Read the screen geometry the renderer sizes its preview pool from while
+    // we are still on the main thread. Left unprimed it would be fetched from
+    // `captureSessionQueue` on the first sample buffer, blocking the first
+    // preview frame behind whatever the main thread is doing at launch.
+    DefaultCamera.primeScreenShorterSidePixels()
+
     UIDevice.current.beginGeneratingDeviceOrientationNotifications()
     NotificationCenter.default.addObserver(
       forName: UIDevice.orientationDidChangeNotification,

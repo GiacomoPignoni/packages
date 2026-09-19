@@ -3,7 +3,6 @@
 // found in the LICENSE file.
 
 import AVFoundation
-import CoreMotion
 import Flutter
 
 /// A class that manages camera's state and performs camera operations.

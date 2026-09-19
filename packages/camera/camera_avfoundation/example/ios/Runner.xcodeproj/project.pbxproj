@@ -22,6 +22,7 @@
 		335A7B0E2F6B061D005902FE /* CameraOrientationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 335A7ADA2F6B061D005902FE /* CameraOrientationTests.swift */; };
 		335A7B0F2F6B061D005902FE /* CameraSetFlashModeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 335A7AE72F6B061D005902FE /* CameraSetFlashModeTests.swift */; };
 		335A7B102F6B061D005902FE /* CameraSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 335A7AE22F6B061D005902FE /* CameraSettingsTests.swift */; };
+		335A7D022F6B061D005902FE /* CameraDeferredStartTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 335A7D012F6B061D005902FE /* CameraDeferredStartTests.swift */; };
 		335A7B112F6B061D005902FE /* CameraExposureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 335A7AE42F6B061D005902FE /* CameraExposureTests.swift */; };
 		335A7B122F6B061D005902FE /* CameraMethodChannelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 335A7AD92F6B061D005902FE /* CameraMethodChannelTests.swift */; };
 		335A7B132F6B061D005902FE /* MockGlobalEventApi.swift in Sources */ = {isa = PBXBuildFile; fileRef = 335A7AFB2F6B061D005902FE /* MockGlobalEventApi.swift */; };
@@ -103,6 +104,7 @@
 		335A7AE12F6B061D005902FE /* CameraSessionPresetsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraSessionPresetsTests.swift; sourceTree = "<group>"; };
 		335A7AE22F6B061D005902FE /* CameraSettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraSettingsTests.swift; sourceTree = "<group>"; };
 		335A7AE32F6B061D005902FE /* CameraTestUtils.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraTestUtils.swift; sourceTree = "<group>"; };
+		335A7D012F6B061D005902FE /* CameraDeferredStartTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraDeferredStartTests.swift; sourceTree = "<group>"; };
 		335A7AE42F6B061D005902FE /* CameraExposureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraExposureTests.swift; sourceTree = "<group>"; };
 		335A7AE52F6B061D005902FE /* CameraSetFocusModeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraSetFocusModeTests.swift; sourceTree = "<group>"; };
 		335A7AE62F6B061D005902FE /* CameraSetDeviceOrientationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraSetDeviceOrientationTests.swift; sourceTree = "<group>"; };
@@ -169,6 +171,7 @@
 			isa = PBXGroup;
 			children = (
 				335A7AD72F6B061D005902FE /* AvailableCamerasTests.swift */,
+				335A7D012F6B061D005902FE /* CameraDeferredStartTests.swift */,
 				335A7AE42F6B061D005902FE /* CameraExposureTests.swift */,
 				335A7AD82F6B061D005902FE /* CameraInitRaceConditionsTests.swift */,
 				335A7AE52F6B061D005902FE /* CameraSetFocusModeTests.swift */,
@@ -435,6 +438,7 @@
 				335A7B0E2F6B061D005902FE /* CameraOrientationTests.swift in Sources */,
 				335A7B0F2F6B061D005902FE /* CameraSetFlashModeTests.swift in Sources */,
 				335A7B102F6B061D005902FE /* CameraSettingsTests.swift in Sources */,
+				335A7D022F6B061D005902FE /* CameraDeferredStartTests.swift in Sources */,
 				335A7B112F6B061D005902FE /* CameraExposureTests.swift in Sources */,
 				335A7B122F6B061D005902FE /* CameraMethodChannelTests.swift in Sources */,
 				335A7B132F6B061D005902FE /* MockGlobalEventApi.swift in Sources */,

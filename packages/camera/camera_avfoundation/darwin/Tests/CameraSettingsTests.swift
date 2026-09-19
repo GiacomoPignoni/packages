@@ -18,8 +18,6 @@ private final class TestMediaSettingsAVWrapper: FLTCamMediaSettingsAVWrapper {
   let unlockExpectation: XCTestExpectation
   let minFrameDurationExpectation: XCTestExpectation
   let maxFrameDurationExpectation: XCTestExpectation
-  let beginConfigurationExpectation: XCTestExpectation
-  let commitConfigurationExpectation: XCTestExpectation
   let audioSettingsExpectation: XCTestExpectation
   let videoSettingsExpectation: XCTestExpectation
 
@@ -28,8 +26,6 @@ private final class TestMediaSettingsAVWrapper: FLTCamMediaSettingsAVWrapper {
     unlockExpectation = test.expectation(description: "unlockExpectation")
     minFrameDurationExpectation = test.expectation(description: "minFrameDurationExpectation")
     maxFrameDurationExpectation = test.expectation(description: "maxFrameDurationExpectation")
-    beginConfigurationExpectation = test.expectation(description: "beginConfigurationExpectation")
-    commitConfigurationExpectation = test.expectation(description: "commitConfigurationExpectation")
     audioSettingsExpectation = test.expectation(description: "audioSettingsExpectation")
     audioSettingsExpectation.isInverted = !expectAudio
     videoSettingsExpectation = test.expectation(description: "videoSettingsExpectation")
@@ -41,14 +37,6 @@ private final class TestMediaSettingsAVWrapper: FLTCamMediaSettingsAVWrapper {
 
   override func unlockDevice(_ captureDevice: CaptureDevice) {
     unlockExpectation.fulfill()
-  }
-
-  override func beginConfiguration(for videoCaptureSession: CaptureSession) {
-    beginConfigurationExpectation.fulfill()
-  }
-
-  override func commitConfiguration(for videoCaptureSession: CaptureSession) {
-    commitConfigurationExpectation.fulfill()
   }
 
   override func setMinFrameDuration(_ duration: CMTime, on captureDevice: CaptureDevice) {
@@ -110,6 +98,21 @@ private final class TestMediaSettingsAVWrapper: FLTCamMediaSettingsAVWrapper {
 }
 
 final class CameraSettingsTests: XCTestCase {
+  /// Observes the single configuration block `DefaultCamera.init` opens around
+  /// the whole session graph. Must be called before the camera is created, and
+  /// over-fulfilment fails the test — which is the point: the pair is expected
+  /// exactly once per launch.
+  private func expectSessionConfiguration(
+    on configuration: CameraConfiguration
+  ) -> (begin: XCTestExpectation, commit: XCTestExpectation) {
+    let session = configuration.videoCaptureSession as! MockCaptureSession
+    let begin = expectation(description: "beginConfigurationExpectation")
+    let commit = expectation(description: "commitConfigurationExpectation")
+    session.beginConfigurationStub = { begin.fulfill() }
+    session.commitConfigurationStub = { commit.fulfill() }
+    return (begin, commit)
+  }
+
   func testSettings_shouldPassConfigurationToCameraDeviceAndWriter() {
     let enableAudio: Bool = true
     let settings = PlatformMediaSettings(
@@ -124,17 +127,18 @@ final class CameraSettingsTests: XCTestCase {
     let configuration = CameraTestUtils.createTestCameraConfiguration()
     configuration.mediaSettingsWrapper = injectedWrapper
     configuration.mediaSettings = settings
+    let sessionConfiguration = expectSessionConfiguration(on: configuration)
     let camera = CameraTestUtils.createTestCamera(configuration)
 
     // Expect FPS configuration is passed to camera device.
     wait(
       for: [
+        sessionConfiguration.begin,
         injectedWrapper.lockExpectation,
-        injectedWrapper.beginConfigurationExpectation,
         injectedWrapper.minFrameDurationExpectation,
         injectedWrapper.maxFrameDurationExpectation,
-        injectedWrapper.commitConfigurationExpectation,
         injectedWrapper.unlockExpectation,
+        sessionConfiguration.commit,
       ], timeout: 1, enforceOrder: true)
 
     camera.startVideoRecording(
@@ -220,16 +224,17 @@ final class CameraSettingsTests: XCTestCase {
     configuration.mediaSettingsWrapper = wrapper
     configuration.mediaSettings = settings
     configuration.audioCaptureSession = mockAudioSession
+    let sessionConfiguration = expectSessionConfiguration(on: configuration)
     let camera = CameraTestUtils.createTestCamera(configuration)
 
     wait(
       for: [
+        sessionConfiguration.begin,
         wrapper.lockExpectation,
-        wrapper.beginConfigurationExpectation,
         wrapper.minFrameDurationExpectation,
         wrapper.maxFrameDurationExpectation,
-        wrapper.commitConfigurationExpectation,
         wrapper.unlockExpectation,
+        sessionConfiguration.commit,
       ],
       timeout: 1,
       enforceOrder: true
@@ -267,16 +272,17 @@ final class CameraSettingsTests: XCTestCase {
     configuration.mediaSettingsWrapper = wrapper
     configuration.mediaSettings = settings
     configuration.audioCaptureSession = mockAudioSession
+    let sessionConfiguration = expectSessionConfiguration(on: configuration)
     let camera = CameraTestUtils.createTestCamera(configuration)
 
     wait(
       for: [
+        sessionConfiguration.begin,
         wrapper.lockExpectation,
-        wrapper.beginConfigurationExpectation,
         wrapper.minFrameDurationExpectation,
         wrapper.maxFrameDurationExpectation,
-        wrapper.commitConfigurationExpectation,
         wrapper.unlockExpectation,
+        sessionConfiguration.commit,
       ],
       timeout: 1,
       enforceOrder: true

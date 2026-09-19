@@ -3,7 +3,6 @@
 // found in the LICENSE file.
 
 import AVFoundation
-import CoreMotion
 import Flutter
 import os
 
@@ -72,6 +71,29 @@ final class DefaultCamera: NSObject, Camera {
 
   private(set) var isPreviewPaused = false
 
+  /// True once the session has been switched out of automatic deferred start,
+  /// which is the only state in which `requestDeferredStart()` is legal —
+  /// AVFoundation throws if it is called while the session runs deferred
+  /// start automatically. Stays false on iOS < 26 and wherever the feature is
+  /// unsupported, in which case nothing is deferred to begin with.
+  // Setter exposed for tests.
+  var usesManualDeferredStart = false
+
+  /// Guarded by `pixelBufferSynchronizationQueue`. Flips on the first buffer
+  /// Flutter actually takes for compositing — our stand-in for "the first
+  /// preview frame is on screen", which is when Apple says to release the
+  /// deferred outputs. Cleared by `armDeferredStartRequest` so a later
+  /// configuration commit gets its own first frame.
+  private var didPublishFirstFrame = false
+
+  /// Owned by `captureSessionQueue`. True while the current configuration
+  /// commit still has deferred outputs waiting on `requestDeferredStart()`.
+  ///
+  /// AVFoundation ignores more than one request per commit, but each *new*
+  /// commit re-defers the outputs and wants its own — so this is re-armed
+  /// after every commit rather than latched once for the camera's lifetime.
+  private var needsDeferredStartRequest = false
+
   var minimumExposureOffset: CGFloat { CGFloat(captureDevice.minExposureTargetBias) }
   var maximumExposureOffset: CGFloat { CGFloat(captureDevice.maxExposureTargetBias) }
   var minimumAvailableZoomFactor: CGFloat { captureDevice.minAvailableVideoZoomFactor }
@@ -116,7 +138,6 @@ final class DefaultCamera: NSObject, Camera {
   private let videoDimensionsConverter: VideoDimensionsConverter
 
   private let deviceOrientationProvider: DeviceOrientationProvider
-  private let motionManager = CMMotionManager()
 
   private(set) var captureDevice: CaptureDevice
   // Setter exposed for tests.
@@ -298,41 +319,67 @@ final class DefaultCamera: NSObject, Camera {
     return CGSize(width: CGFloat(longer), height: CGFloat(shorter))
   }
 
-  /// Cached device-screen shorter side in *native pixels*. Used to size the
+  /// Device-screen shorter side in *native pixels*. Used to size the
   /// renderer's preview pool: on-screen preview is sampled by Flutter into a
   /// FlutterView that never exceeds the screen, so rendering the shader at a
   /// larger size is wasted GPU work — and on heavy effects (49-tap blur,
   /// mist) shader cost is dominated by output fragment count.
   ///
-  /// First access reads `UIScreen.main.nativeBounds`. UIScreen geometric
-  /// properties are supposed to be read from the main thread; if we're not
-  /// on it we hop with `sync`. Result is cached for the process lifetime —
-  /// screen geometry doesn't change on iOS (split-screen on iPad changes
-  /// the *window*, not the screen).
-  private static let _screenShorterSidePixelsLock = NSLock()
-  private static var _screenShorterSidePixelsCache: Int?
+  /// Cached for the process lifetime — screen geometry doesn't change on iOS
+  /// (split-screen on iPad changes the *window*, not the screen).
+  ///
+  /// `UIScreen` is documented as main-thread-only, but the sole reader
+  /// (`buildRendererIfPossible`) runs on `captureSessionQueue` and first does
+  /// so on the very first sample buffer. Blocking that queue on a main-thread
+  /// hop there holds up the first preview frame for as long as the main
+  /// thread is busy bringing the app up — the one moment launch latency is
+  /// most visible. `CameraPlugin.init` primes this from the main thread
+  /// instead, well before any camera exists, so the read below is a cache hit.
+  private static let screenShorterSidePixelsLock = NSLock()
+  private static var screenShorterSidePixelsCache: Int?
+
+  /// Last-resort value for a screen that reports no usable bounds. 1280 ≈
+  /// shorter side of mid-range iPhones; keeps preview rendering bounded but
+  /// doesn't downscale aggressively.
+  private static let fallbackScreenShorterSidePixels = 1280
+
+  /// Reads `UIScreen.main.nativeBounds` into the cache, hopping to the main
+  /// thread *asynchronously* when called from anywhere else so no caller ever
+  /// blocks. Idempotent.
+  static func primeScreenShorterSidePixels() {
+    guard Thread.isMainThread else {
+      DispatchQueue.main.async { DefaultCamera.primeScreenShorterSidePixels() }
+      return
+    }
+    let bounds = UIScreen.main.nativeBounds
+    let shorter = min(Int(bounds.width), Int(bounds.height))
+    screenShorterSidePixelsLock.lock()
+    defer { screenShorterSidePixelsLock.unlock() }
+    guard screenShorterSidePixelsCache == nil else { return }
+    screenShorterSidePixelsCache = shorter > 0 ? shorter : fallbackScreenShorterSidePixels
+  }
+
+  /// Does not block once primed, which `CameraPlugin.init` guarantees before
+  /// any camera exists.
   static func screenShorterSidePixels() -> Int {
-    // Lock is held across the (possibly blocking) main-thread hop so two
-    // racing callers cannot both compute the value and both write the
-    // cache. UIScreen access only touches `main`, never this lock, so the
-    // `sync` hop cannot deadlock on it.
-    _screenShorterSidePixelsLock.lock()
-    defer { _screenShorterSidePixelsLock.unlock() }
-    if let cached = _screenShorterSidePixelsCache {
-      return cached
+    screenShorterSidePixelsLock.lock()
+    let cached = screenShorterSidePixelsCache
+    screenShorterSidePixelsLock.unlock()
+    if let cached = cached { return cached }
+
+    // Unprimed — a `DefaultCamera` built without going through `CameraPlugin`
+    // (tests). Take the main-thread hop rather than answer with the fallback:
+    // the renderer sizes its pool from this once and keeps it, so a guess here
+    // is a wrong-sized preview for the life of the camera, not a slow frame.
+    if Thread.isMainThread {
+      primeScreenShorterSidePixels()
+    } else {
+      DispatchQueue.main.sync { primeScreenShorterSidePixels() }
     }
 
-    let compute: () -> Int = {
-      let bounds = UIScreen.main.nativeBounds
-      let shorter = min(Int(bounds.width), Int(bounds.height))
-      // Fallback for headless / very-early-init scenarios. 1280 ≈ shorter
-      // side of mid-range iPhones; keeps preview rendering bounded but
-      // doesn't downscale aggressively.
-      return shorter > 0 ? shorter : 1280
-    }
-    let value = Thread.isMainThread ? compute() : DispatchQueue.main.sync(execute: compute)
-    _screenShorterSidePixelsCache = value
-    return value
+    screenShorterSidePixelsLock.lock()
+    defer { screenShorterSidePixelsLock.unlock() }
+    return screenShorterSidePixelsCache ?? fallbackScreenShorterSidePixels
   }
 
   private static func createConnection(
@@ -377,15 +424,26 @@ final class DefaultCamera: NSObject, Camera {
     deviceOrientationProvider = configuration.deviceOrientationProvider
     aspectRatio = configuration.aspectRatio
 
-    // Compile the Metal pipeline ahead of the first frame so the
-    // sample-buffer callback doesn't pay for it.
-    VideoFrameRenderer.warmUp()
+    // Compile the Metal pipelines ahead of the first frame so the
+    // sample-buffer callback doesn't pay for it. Off this queue, because
+    // it is a dozen pipeline states and running it inline would serialise
+    // that compile in front of session configuration rather than alongside
+    // it. `sharedSetup` is lock-guarded and idempotent, so a first frame
+    // that beats the compile simply waits on it — same work, overlapped.
+    DispatchQueue.global(qos: .userInitiated).async {
+      VideoFrameRenderer.warmUp()
+    }
 
     captureDevice = videoCaptureDeviceFactory(configuration.initialCameraName)
     flashMode = captureDevice.hasFlash ? .auto : .off
 
     capturePhotoOutput = AVCapturePhotoOutput()
-    capturePhotoOutput.isHighResolutionCaptureEnabled = true
+    // Only `.max` ever asks for a high-resolution still (see
+    // `makePhotoSettings`), and the per-photo flag requires this one. Left
+    // on for every preset it makes the photo output prepare for a
+    // max-resolution capture nothing will request — and output preparation
+    // is the most expensive part of bringing a session up.
+    capturePhotoOutput.isHighResolutionCaptureEnabled = mediaSettings.resolutionPreset == .max
 
     videoCaptureSession.automaticallyConfiguresApplicationAudioSession = false
     audioCaptureSession.automaticallyConfiguresApplicationAudioSession = false
@@ -402,23 +460,54 @@ final class DefaultCamera: NSObject, Camera {
 
     captureVideoOutput.setSampleBufferDelegate(self, queue: captureSessionQueue)
 
+    // One configuration block for the whole graph. Every add and every
+    // `sessionPreset` assignment made outside a block commits a reconfiguration
+    // of its own, and all of them land ahead of the first preview frame.
+    // `didCommitConfiguration` keeps the pair balanced when a `try` below
+    // escapes — an uncommitted session stalls every later configuration change.
+    videoCaptureSession.beginConfiguration()
+    var didCommitConfiguration = false
+    defer {
+      if !didCommitConfiguration {
+        videoCaptureSession.commitConfiguration()
+      }
+    }
+
     videoCaptureSession.addInputWithNoConnections(captureVideoInput)
     videoCaptureSession.addOutputWithNoConnections(captureVideoOutput.avOutput)
     videoCaptureSession.addConnection(connection)
-
-    // Pinned for the life of the session. This connection feeds both the preview texture and the
-    // recorder; re-orienting it transposes the buffer dimensions mid-stream, which rebuilds the
-    // render pipeline on every turn. Pinned, the preview is a fixed window onto the scene — the
-    // phone and the image turn together, so nothing on screen moves. Device rotation rides on the
-    // photo's EXIF tag (`updateOrientation`) and the video track transform (`setupWriter`) instead.
-    //
-    // Must follow `addConnection`: `isVideoOrientationSupported` is false while detached, so
-    // pinning any earlier silently does nothing.
-    if connection.isVideoOrientationSupported {
-      connection.videoOrientation = .portrait
-    }
-
     videoCaptureSession.addOutput(capturePhotoOutput.avOutput)
+
+    // Deferred start (iOS 26+): hold the photo output back until preview is on
+    // screen. Initializing outputs is the most expensive stage of bringing a
+    // session up, and the photo output contributes nothing to the first frame.
+    //
+    // Manual mode, because preview here is an `AVCaptureVideoDataOutput`
+    // feeding a Flutter texture. Automatic mode releases the deferred outputs
+    // as soon as that output delivers its first sample buffer — and that is
+    // the same frame that builds the Metal renderer and primes the pools.
+    // Driving it by hand lets us wait until Flutter has actually taken a
+    // frame, keeping the two pieces of work apart.
+    //
+    // Each capability flag below throws `NSInvalidArgumentException` when the
+    // feature is unsupported, hence the checks. Each one failing costs the
+    // optimization and nothing else: an undeferred photo output just goes back
+    // to initializing at launch, and staying in automatic mode still defers
+    // it, only on AVFoundation's schedule rather than ours.
+    if #available(iOS 26.0, *) {
+      // Never defer the output preview is drawn from. Already the default;
+      // stated so the intent survives a future edit.
+      captureVideoOutput.avOutput.isDeferredStartEnabled = false
+
+      let canDeferPhotoOutput = capturePhotoOutput.avOutput.isDeferredStartSupported
+      if canDeferPhotoOutput {
+        capturePhotoOutput.avOutput.isDeferredStartEnabled = true
+      }
+      if canDeferPhotoOutput, videoCaptureSession.manualDeferredStartSupported {
+        videoCaptureSession.automaticDeferredStartEnabled = false
+        usesManualDeferredStart = true
+      }
+    }
 
     // Keep the camera alive while the app shares the foreground with another
     // app on iPad (Split View / Slide Over / Stage Manager). Without this,
@@ -427,22 +516,15 @@ final class DefaultCamera: NSObject, Camera {
     // preview and failing capture with AVErrorSessionNotRunning (-11803).
     // Supported only on iOS 16+ and on capable hardware; a no-op otherwise.
     // Must be set inside a configuration block, after the camera input and
-    // outputs have been attached.
+    // outputs have been attached — the block opened above satisfies both.
     if videoCaptureSession.multitaskingCameraAccessSupported {
-      videoCaptureSession.beginConfiguration()
       videoCaptureSession.multitaskingCameraAccessEnabled = true
-      videoCaptureSession.commitConfiguration()
     }
-
-    motionManager.startAccelerometerUpdates()
 
     if configuration.mediaSettings.framesPerSecond != nil {
       // The frame rate can be changed only on a locked for configuration device.
       try mediaSettingsAVWrapper.lockDevice(captureDevice)
       defer { mediaSettingsAVWrapper.unlockDevice(captureDevice) }
-
-      mediaSettingsAVWrapper.beginConfiguration(for: videoCaptureSession)
-      defer { mediaSettingsAVWrapper.commitConfiguration(for: videoCaptureSession) }
 
       try setCaptureSessionPreset(mediaSettings.resolutionPreset)
 
@@ -463,6 +545,23 @@ final class DefaultCamera: NSObject, Camera {
       // If the frame rate is not important fall to a less restrictive
       // behavior (no configuration locking).
       try setCaptureSessionPreset(mediaSettings.resolutionPreset)
+    }
+
+    commitVideoConfiguration()
+    didCommitConfiguration = true
+
+    // Pinned for the life of the session. This connection feeds both the preview texture and the
+    // recorder; re-orienting it transposes the buffer dimensions mid-stream, which rebuilds the
+    // render pipeline on every turn. Pinned, the preview is a fixed window onto the scene — the
+    // phone and the image turn together, so nothing on screen moves. Device rotation rides on the
+    // photo's EXIF tag (`updateOrientation`) and the video track transform (`setupWriter`) instead.
+    //
+    // Must follow `commitConfiguration`: `isVideoOrientationSupported` is false while the
+    // connection is detached and it only attaches on commit, so pinning any earlier silently does
+    // nothing. `updateOrientation` below needs the committed session for the same reason — the
+    // photo output has no connection to reach until then.
+    if connection.isVideoOrientationSupported {
+      connection.videoOrientation = .portrait
     }
 
     updateOrientation()
@@ -760,9 +859,56 @@ final class DefaultCamera: NSObject, Camera {
     streamingPendingFramesCount -= 1
   }
 
+  /// Marks the outputs deferred by the configuration commit that just landed
+  /// as still owing a `requestDeferredStart()`, and puts the first-frame latch
+  /// back so the preview path can supply one.
+  ///
+  /// Must be called after every commit that can leave outputs deferred — init
+  /// and the device swap in `setDescriptionWhileRecording`. Not asserted onto
+  /// `captureSessionQueue` because `init` reaches it before the camera is
+  /// reachable from anywhere else, and the test utils build cameras off-queue.
+  ///
+  /// Arms regardless of the session's mode; whether a request is legal at all
+  /// is `requestDeferredStartIfNeeded`'s business.
+  /// Commits the video session's configuration and re-arms deferred start.
+  /// Every commit re-defers the outputs, so each one needs its own request —
+  /// including the ones that unwind a half-applied device swap.
+  // Not private so tests can commit without a real `AVCaptureDevice`.
+  func commitVideoConfiguration() {
+    videoCaptureSession.commitConfiguration()
+    armDeferredStartRequest()
+  }
+
+  private func armDeferredStartRequest() {
+    needsDeferredStartRequest = true
+    pixelBufferSynchronizationQueue.sync {
+      didPublishFirstFrame = false
+    }
+  }
+
+  /// Releases the outputs held back by the current configuration commit, once.
+  ///
+  /// Driven by the preview path, as soon as Flutter takes a frame. A camera
+  /// that never publishes one — image-stream-only use, or a preview paused
+  /// before the first buffer — simply leaves the outputs deferred: a capture
+  /// that needs one makes AVFoundation run the deferred start itself.
+  private func requestDeferredStartIfNeeded() {
+    assertOnCaptureSessionQueue()
+    guard usesManualDeferredStart, needsDeferredStartRequest else { return }
+    needsDeferredStartRequest = false
+    videoCaptureSession.requestDeferredStart()
+  }
+
   func start() {
     videoCaptureSession.startRunning()
-    audioCaptureSession.startRunning()
+    // With audio disabled nothing is ever attached to this session —
+    // `setUpCaptureSessionForAudioIfNeeded` returns early — so starting it
+    // only adds a blocking call to the launch path for a session that can
+    // never deliver a sample. The recording gate in `captureOutput`
+    // accounts for it staying stopped.
+    if mediaSettings.enableAudio {
+      audioCaptureSession.startRunning()
+    }
   }
 
   func stop() {
@@ -2377,7 +2523,7 @@ final class DefaultCamera: NSObject, Camera {
       // Balance the `beginConfiguration()` above — leaving the session in a
       // begun-configuration state would stall every later configuration
       // change (session preset, orientation, the next device switch).
-      videoCaptureSession.commitConfiguration()
+      commitVideoConfiguration()
       completion(
         .failure(
           PigeonError(
@@ -2397,7 +2543,7 @@ final class DefaultCamera: NSObject, Camera {
     // success and keep mutating the half-broken session) and must commit the
     // configuration first so the `beginConfiguration()` above stays balanced.
     if !videoCaptureSession.canAddInput(captureVideoInput) {
-      videoCaptureSession.commitConfiguration()
+      commitVideoConfiguration()
       completion(
         .failure(
           PigeonError(
@@ -2409,7 +2555,7 @@ final class DefaultCamera: NSObject, Camera {
     videoCaptureSession.addInputWithNoConnections(captureVideoInput)
 
     if !videoCaptureSession.canAddOutput(captureVideoOutput.avOutput) {
-      videoCaptureSession.commitConfiguration()
+      commitVideoConfiguration()
       completion(
         .failure(
           PigeonError(
@@ -2421,7 +2567,7 @@ final class DefaultCamera: NSObject, Camera {
     videoCaptureSession.addOutputWithNoConnections(captureVideoOutput.avOutput)
 
     if !videoCaptureSession.canAddConnection(newConnection) {
-      videoCaptureSession.commitConfiguration()
+      commitVideoConfiguration()
       completion(
         .failure(
           PigeonError(
@@ -2431,7 +2577,7 @@ final class DefaultCamera: NSObject, Camera {
       return
     }
     videoCaptureSession.addConnection(newConnection)
-    videoCaptureSession.commitConfiguration()
+    commitVideoConfiguration()
 
     // The new sensor may report different dimensions/format. If we're not
     // recording, park the renderer so the next frame rebuilds it at the new
@@ -2568,7 +2714,7 @@ final class DefaultCamera: NSObject, Camera {
     handleSampleBufferStreaming(sampleBuffer)
 
     if isRecording && !isRecordingPaused && videoCaptureSession.isRunning
-      && audioCaptureSession.isRunning
+      && (!mediaSettings.enableAudio || audioCaptureSession.isRunning)
     {
       if videoWriter?.status == .failed, let error = videoWriter?.error {
         reportErrorMessage("\(error)")
@@ -2823,9 +2969,23 @@ final class DefaultCamera: NSObject, Camera {
   func copyPixelBuffer() -> Unmanaged<CVPixelBuffer>? {
     guard !isPreviewPaused else { return nil }
     var pixelBuffer: CVPixelBuffer?
+    var isFirstFrame = false
     pixelBufferSynchronizationQueue.sync {
       pixelBuffer = latestPixelBuffer
       latestPixelBuffer = nil
+      if pixelBuffer != nil, !didPublishFirstFrame {
+        didPublishFirstFrame = true
+        isFirstFrame = true
+      }
+    }
+
+    if isFirstFrame {
+      // Preview has reached the compositor, so the outputs held back at launch
+      // can initialize now. Hopped because session state belongs to
+      // `captureSessionQueue` while this runs on Flutter's raster thread.
+      captureSessionQueue.async { [weak self] in
+        self?.requestDeferredStartIfNeeded()
+      }
     }
 
     if let buffer = pixelBuffer {
@@ -2860,7 +3020,6 @@ final class DefaultCamera: NSObject, Camera {
   }
 
   deinit {
-    motionManager.stopAccelerometerUpdates()
     whiteBalanceObservation?.invalidate()
   }
 }

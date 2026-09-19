@@ -22,14 +22,6 @@ private class FakeMediaSettingsAVWrapper: FLTCamMediaSettingsAVWrapper {
     // No-op.
   }
 
-  override func beginConfiguration(for videoCaptureSession: CaptureSession) {
-    // No-op.
-  }
-
-  override func commitConfiguration(for videoCaptureSession: CaptureSession) {
-    // No-op.
-  }
-
   override func setMinFrameDuration(_ duration: CMTime, on captureDevice: CaptureDevice) {
     // No-op.
   }

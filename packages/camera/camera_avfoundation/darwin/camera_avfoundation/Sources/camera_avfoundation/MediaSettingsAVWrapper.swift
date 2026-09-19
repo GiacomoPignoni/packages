@@ -26,20 +26,6 @@ class FLTCamMediaSettingsAVWrapper {
     captureDevice.unlockForConfiguration()
   }
 
-  /// When paired with commitConfiguration, allows a client to batch multiple configuration
-  /// operations on a running session into atomic updates.
-  /// - Parameter videoCaptureSession: The video capture session.
-  func beginConfiguration(for videoCaptureSession: CaptureSession) {
-    videoCaptureSession.beginConfiguration()
-  }
-
-  /// When preceded by beginConfiguration, allows a client to batch multiple configuration
-  /// operations on a running session into atomic updates.
-  /// - Parameter videoCaptureSession: The video capture session.
-  func commitConfiguration(for videoCaptureSession: CaptureSession) {
-    videoCaptureSession.commitConfiguration()
-  }
-
   /// Set receiver's current active minimum frame duration (the reciprocal of its max frame rate).
   /// - Parameters:
   ///   - duration: The frame duration.

@@ -28,6 +28,10 @@ final class MockCaptureSession: NSObject, CaptureSession {
   var multitaskingCameraAccessSupported = false
   var multitaskingCameraAccessEnabled = false
 
+  var manualDeferredStartSupported = false
+  var automaticDeferredStartEnabled = true
+  private(set) var requestDeferredStartCallCount = 0
+
   var sessionPreset: AVCaptureSession.Preset {
     get {
       return _sessionPreset
@@ -35,6 +39,10 @@ final class MockCaptureSession: NSObject, CaptureSession {
     set {
       setSessionPresetStub?(newValue)
     }
+  }
+
+  func requestDeferredStart() {
+    requestDeferredStartCallCount += 1
   }
 
   func beginConfiguration() {

@@ -25,6 +25,16 @@ enum CameraTestUtils {
   /// Creates a test `CameraConfiguration` with a default mock setup.
   static func createTestCameraConfiguration() -> CameraConfiguration {
     let captureSessionQueue = DispatchQueue(label: "capture_session_queue")
+    // `CameraPlugin.init` stamps this on the real queue, and
+    // `DefaultCamera.assertOnCaptureSessionQueue` reads it back. A camera
+    // built directly by these utils skips the plugin, so without the stamp
+    // every queue-confined setter trips its assertion even when correctly
+    // dispatched.
+    markAsCaptureSessionQueue(captureSessionQueue)
+    // Also `CameraPlugin.init`'s job. Unprimed, the first renderer build hops
+    // to the main thread for it, which deadlocks any test driving the camera
+    // through `captureSessionQueue.sync` from the main thread.
+    DefaultCamera.primeScreenShorterSidePixels()
 
     let videoSessionMock = MockCaptureSession()
     videoSessionMock.canSetSessionPresetStub = { _ in true }
@@ -89,8 +99,16 @@ enum CameraTestUtils {
     -> DefaultCamera
   {
     let configuration = createTestCameraConfiguration()
+    markAsCaptureSessionQueue(captureSessionQueue)
     configuration.captureSessionQueue = captureSessionQueue
     return createTestCamera(configuration)
+  }
+
+  /// Stamps the queue-specific value `assertOnCaptureSessionQueue` looks for.
+  /// Idempotent, so a queue shared between helpers can be passed twice.
+  static func markAsCaptureSessionQueue(_ queue: DispatchQueue) {
+    queue.setSpecific(
+      key: captureSessionQueueSpecificKey, value: captureSessionQueueSpecificValue)
   }
 
   /// Creates a test sample buffer.
