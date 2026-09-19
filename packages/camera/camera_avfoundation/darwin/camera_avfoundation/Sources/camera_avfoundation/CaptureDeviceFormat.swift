@@ -9,6 +9,10 @@ import AVFoundation
 protocol FrameRateRange: NSObjectProtocol {
   var minFrameRate: Float64 { get }
   var maxFrameRate: Float64 { get }
+  /// Shortest duration the range allows — the reciprocal of `maxFrameRate`.
+  var minFrameDuration: CMTime { get }
+  /// Longest duration the range allows — the reciprocal of `minFrameRate`.
+  var maxFrameDuration: CMTime { get }
 }
 
 /// A protocol which is a direct passthrough to `AVCaptureDeviceFormat`. It exists to allow

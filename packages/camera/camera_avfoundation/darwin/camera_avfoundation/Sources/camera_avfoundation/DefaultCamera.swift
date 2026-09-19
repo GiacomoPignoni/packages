@@ -261,6 +261,33 @@ final class DefaultCamera: NSObject, Camera {
   private var currentWhiteBalanceValues: PlatformWhiteBalanceValues?
   private var flashMode: PlatformFlashMode
 
+  /// KVO token for `AVCaptureDevice.systemPressureState`. Bound to the
+  /// *current* `captureDevice` and rebound on device swaps, like
+  /// `whiteBalanceObservation`.
+  private var systemPressureObservation: NSKeyValueObservation?
+
+  /// Pressure level last acted on. A repeated notification at the same level
+  /// does no work.
+  private(set) var systemPressureLevel: AVCaptureDevice.SystemPressureState.Level = .nominal
+
+  /// Render one preview frame in every `previewFrameDivisor`. Raised under
+  /// system pressure: the Metal pass is the largest discretionary load this
+  /// plugin adds, and it is the one that can be shed without touching what
+  /// gets recorded.
+  private(set) var previewFrameDivisor = 1
+  private var previewFrameCounter = 0
+
+  /// Minimum frame duration as configured before pressure first throttled it,
+  /// restored verbatim when pressure abates. Nil while the device is running
+  /// at its configured rate.
+  private var preThrottleMinFrameDuration: CMTime?
+
+  /// The ceiling the current pressure level calls for, whether or not it has
+  /// been applied yet. Nil means "no ceiling". Kept separate from the live
+  /// device state so a ceiling that arrived mid-recording — and was therefore
+  /// withheld — can be applied when the recording stops.
+  private var pendingFrameRateCeiling: Double?
+
   /// KVO token for `AVCaptureDevice.deviceWhiteBalanceGains` while the
   /// camera is in auto white balance. Nil when not observing. Always bound
   /// to the *current* `captureDevice`; rebound on device swaps.
@@ -287,6 +314,10 @@ final class DefaultCamera: NSObject, Camera {
   /// `os_log` writes through a per-process ring buffer instead.
   private static let recordingLog = OSLog(
     subsystem: "io.flutter.camera_avfoundation", category: "recording")
+  /// `os_log` subsystem for thermal/power adaptation. Separate category so a
+  /// device trace can be filtered down to pressure transitions alone.
+  private static let performanceLog = OSLog(
+    subsystem: "io.flutter.camera_avfoundation", category: "performance")
   /// Earliest time at which the next recording-failure log may be emitted.
   /// Bounds the cost of a stuck writer (e.g. disk full) where every video
   /// sample would otherwise format and log four hex/integer fields.
@@ -853,10 +884,182 @@ final class DefaultCamera: NSObject, Camera {
     if !isWhiteBalanceLocked {
       startObservingAutoWhiteBalance()
     }
+    // Paired with the observation above rather than placed in `start()`: both
+    // reach through to the real `AVCaptureDevice`, and `CameraPlugin` calls
+    // this immediately before starting the session anyway.
+    startObservingSystemPressure()
   }
 
   func receivedImageStreamData() {
     streamingPendingFramesCount -= 1
+  }
+
+  /// Starts watching the current device's thermal/power pressure. Apple's
+  /// own guidance on `systemPressureState` is to throttle the frame rate; on
+  /// top of that we thin out the shader pass, which is the biggest load this
+  /// plugin adds beyond a plain capture session. No-op if already observing.
+  ///
+  /// `.initial` delivers the level that is already in effect, so a camera
+  /// opened on an already-hot device adapts on its first callback rather than
+  /// waiting for a transition.
+  private func startObservingSystemPressure() {
+    guard systemPressureObservation == nil else { return }
+    systemPressureObservation = captureDevice.avDevice.observe(
+      \.systemPressureState, options: [.initial, .new]
+    ) { [weak self] device, _ in
+      // KVO fires on whatever thread AVFoundation mutates the property from;
+      // every lever below is owned by `captureSessionQueue`.
+      let level = device.systemPressureState.level
+      self?.captureSessionQueue.async { [weak self] in
+        self?.applySystemPressureLevel(level)
+      }
+    }
+  }
+
+  private func stopObservingSystemPressure() {
+    systemPressureObservation?.invalidate()
+    systemPressureObservation = nil
+  }
+
+  /// Maps a pressure level onto the two levers available here: the capture
+  /// device's frame rate, and how often the Metal preview pass runs.
+  ///
+  /// Neither lever touches a recording in progress. Thinning the preview never
+  /// could — a dropped preview frame is one stale frame on screen, where a
+  /// dropped recording frame is a hole in the file. The frame-rate ceiling is a
+  /// different matter: it is set on the capture device, so applying it mid-take
+  /// would quietly turn a 60 fps recording into a 30 fps one partway through.
+  /// So while `isRecording`, the ceiling is remembered and withheld, then
+  /// applied by `applyPendingFrameRateCeiling` once the recording stops. A
+  /// recording *started* under pressure still runs at the capped rate — it is
+  /// consistent for the whole file, which is the part that matters.
+  func applySystemPressureLevel(_ level: AVCaptureDevice.SystemPressureState.Level) {
+    assertOnCaptureSessionQueue()
+    guard level != systemPressureLevel else { return }
+    systemPressureLevel = level
+
+    let frameRateCeiling: Double?
+    switch level {
+    case .nominal, .fair:
+      previewFrameDivisor = 1
+      frameRateCeiling = nil
+    case .serious:
+      previewFrameDivisor = 2
+      frameRateCeiling = 30
+    case .critical, .shutdown:
+      previewFrameDivisor = 3
+      frameRateCeiling = 24
+    default:
+      // A level a future OS adds: run unthrottled rather than guess at where
+      // it sits on the scale.
+      previewFrameDivisor = 1
+      frameRateCeiling = nil
+    }
+    previewFrameCounter = 0
+    pendingFrameRateCeiling = frameRateCeiling
+    if !isRecording {
+      applyFrameRateCeiling(frameRateCeiling)
+    }
+
+    os_log(
+      "system pressure %{public}@ — preview 1/%d, frame-rate ceiling %{public}@%{public}@",
+      log: DefaultCamera.performanceLog, type: .info,
+      level.rawValue, previewFrameDivisor,
+      frameRateCeiling.map { String(Int($0)) } ?? "none",
+      isRecording ? " (withheld until recording ends)" : "")
+  }
+
+  /// Applies whatever ceiling pressure asked for while a recording held it
+  /// back. Called from `stopVideoRecording` once `isRecording` is false again,
+  /// alongside `applyPendingAspectRatioIfNeeded`, and on the same queue those
+  /// run on. A no-op when nothing was withheld and nothing is throttled.
+  private func applyPendingFrameRateCeiling() {
+    applyFrameRateCeiling(pendingFrameRateCeiling)
+  }
+
+  /// Applies, relaxes, or lifts a maximum frame rate on the capture device.
+  ///
+  /// Only the *minimum* frame duration moves. Its counterpart is the device's
+  /// minimum frame rate, and pinning the two together would stop the sensor
+  /// lengthening its exposure in low light — a darker, noisier image on top of
+  /// a slower one.
+  ///
+  /// The rate configured before pressure first intervened is saved and put
+  /// back verbatim, so an app that pinned its own frame rate gets exactly
+  /// that back. Every decision is made against that saved value rather than
+  /// the live one, which is what lets a step back down from critical to
+  /// serious relax the ceiling instead of latching at the lowest rate seen.
+  private func applyFrameRateCeiling(_ ceiling: Double?) {
+    if ceiling != nil, preThrottleMinFrameDuration == nil {
+      preThrottleMinFrameDuration = captureDevice.activeVideoMinFrameDuration
+    }
+    guard let original = preThrottleMinFrameDuration else { return }
+
+    guard let ceiling = ceiling else {
+      preThrottleMinFrameDuration = nil
+      setMinFrameDuration(original)
+      return
+    }
+
+    let target = supportedFrameDuration(
+      nearest: CMTimeMake(value: 1, timescale: Int32(ceiling.rounded())))
+
+    // A longer min frame duration is a lower frame rate, so throttling may
+    // only lengthen it: pressure must never run the device faster than the
+    // app asked for, and a format that cannot reach the ceiling keeps the
+    // rate it has.
+    let originalSeconds = CMTimeGetSeconds(original)
+    guard let target = target, originalSeconds.isFinite, originalSeconds > 0,
+      CMTimeGetSeconds(target) > originalSeconds
+    else {
+      setMinFrameDuration(original)
+      return
+    }
+
+    setMinFrameDuration(target)
+  }
+
+  /// Clamps `duration` into the frame durations the active format actually
+  /// supports, picking the closest reachable one. Nil when the format reports
+  /// no ranges.
+  ///
+  /// `activeVideoMinFrameDuration` throws `NSInvalidArgumentException` for any
+  /// value outside those ranges. High-frame-rate formats, whose floor can sit
+  /// above the ceiling pressure asks for, are exactly the ones that would
+  /// otherwise take the app down.
+  private func supportedFrameDuration(nearest duration: CMTime) -> CMTime? {
+    return captureDevice.flutterActiveFormat.flutterVideoSupportedFrameRateRanges
+      .map { CMTimeMaximum(CMTimeMinimum(duration, $0.maxFrameDuration), $0.minFrameDuration) }
+      .min {
+        abs(CMTimeGetSeconds($0) - CMTimeGetSeconds(duration))
+          < abs(CMTimeGetSeconds($1) - CMTimeGetSeconds(duration))
+      }
+  }
+
+  /// Puts the pre-pressure frame rate back on the *current* device and forgets
+  /// it.
+  ///
+  /// Called before the device is swapped out and on close. `AVCaptureDevice`
+  /// instances are process-wide singletons, so a device left throttled keeps
+  /// the ceiling after it stops being ours — until something happens to reset
+  /// its `activeFormat`, which is not a thing to rely on.
+  private func restoreFrameRate() {
+    guard let original = preThrottleMinFrameDuration else { return }
+    preThrottleMinFrameDuration = nil
+    setMinFrameDuration(original)
+  }
+
+  private func setMinFrameDuration(_ duration: CMTime) {
+    do {
+      try captureDevice.lockForConfiguration()
+    } catch {
+      os_log(
+        "could not lock device to change frame rate", log: DefaultCamera.performanceLog,
+        type: .error)
+      return
+    }
+    defer { captureDevice.unlockForConfiguration() }
+    captureDevice.activeVideoMinFrameDuration = duration
   }
 
   /// Marks the outputs deferred by the configuration commit that just landed
@@ -897,6 +1100,18 @@ final class DefaultCamera: NSObject, Camera {
     guard usesManualDeferredStart, needsDeferredStartRequest else { return }
     needsDeferredStartRequest = false
     videoCaptureSession.requestDeferredStart()
+  }
+
+  /// Whether this frame's preview pass should run. Only consulted once the
+  /// bypass check has confirmed there is real shader work to skip.
+  private func shouldRenderPreviewFrame() -> Bool {
+    guard previewFrameDivisor > 1 else { return true }
+    previewFrameCounter += 1
+    if previewFrameCounter >= previewFrameDivisor {
+      previewFrameCounter = 0
+      return true
+    }
+    return false
   }
 
   func start() {
@@ -1201,6 +1416,8 @@ final class DefaultCamera: NSObject, Camera {
     // genuinely unsupported.
     applyPendingAspectRatioIfNeeded()
     applyPendingCaptureScaleIfNeeded()
+    // The file is closed, so the device's frame rate is free to move again.
+    applyPendingFrameRateCeiling()
 
     // When `isRecording` is true `startWriting` was already called so `videoWriter.status`
     // is always either `.writing` or `.failed` and `finishWriting` does not throw exceptions so
@@ -2059,6 +2276,9 @@ final class DefaultCamera: NSObject, Camera {
     {
       return newBuffer
     }
+    // Only skip frames that would cost a real GPU pass — thinning the bypass
+    // path would make preview choppier and save nothing.
+    guard shouldRenderPreviewFrame() else { return nil }
     return renderer.render(newBuffer, blocking: false)
   }
 
@@ -2497,6 +2717,15 @@ final class DefaultCamera: NSObject, Camera {
     // device. `isWhiteBalanceLocked` and `currentWhiteBalanceValues` are
     // preserved across the swap so the new device can be re-locked below.
     stopObservingAutoWhiteBalance()
+    // Hand the outgoing device back its configured frame rate before letting
+    // go of it — the saved durations describe that device and must not follow
+    // us onto the incoming one. The level resets so the new observation's
+    // `.initial` callback is acted on rather than deduplicated away; if the
+    // system is still hot, the new device gets its own snapshot and ceiling.
+    stopObservingSystemPressure()
+    restoreFrameRate()
+    pendingFrameRateCeiling = nil
+    systemPressureLevel = .nominal
 
     captureDevice = videoCaptureDeviceFactory(cameraName)
 
@@ -2612,6 +2841,8 @@ final class DefaultCamera: NSObject, Camera {
     // one. If `applyWhiteBalance` fails we report it as a non-fatal error
     // and leave the new device in its default mode — the camera-switch
     // itself succeeded, which is what `completion` reports.
+    startObservingSystemPressure()
+
     do {
       try applyWhiteBalance(isWhiteBalanceLocked ? currentWhiteBalanceValues : nil)
     } catch let error as PigeonError {
@@ -2957,6 +3188,11 @@ final class DefaultCamera: NSObject, Camera {
     // can keep the live renderer alive past this point; the parked previous
     // renderer's timer was already stopped when it was parked.
     stopObservingAutoWhiteBalance()
+    stopObservingSystemPressure()
+    // Same reasoning as the device swap: don't leave a shared `AVCaptureDevice`
+    // pinned to a thermal ceiling after this camera is gone.
+    restoreFrameRate()
+    pendingFrameRateCeiling = nil
     videoFrameRenderer?.stopGrainAnimation()
     videoFrameRenderer = nil
     previousVideoFrameRenderer = nil
@@ -3021,5 +3257,6 @@ final class DefaultCamera: NSObject, Camera {
 
   deinit {
     whiteBalanceObservation?.invalidate()
+    systemPressureObservation?.invalidate()
   }
 }
