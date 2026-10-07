@@ -145,6 +145,22 @@ final class VideoFrameRenderer {
     return max(2, r - (r % 2))
   }
 
+  /// Pixel budget of a saved photo (4032x3024). Sensors that can shoot 48MP stills
+  /// are sampled at full size, then the result is brought down to this.
+  static let maxPhotoOutputPixels = 4032 * 3024
+
+  /// Shrinks `(width, height)` uniformly to fit `maxPixels`, never enlarging.
+  static func dimensions(
+    fitting width: Int, _ height: Int, maxPixels: Int = maxPhotoOutputPixels
+  ) -> (width: Int, height: Int) {
+    let pixels = width * height
+    guard pixels > maxPixels else { return (width, height) }
+    let scale = (Double(maxPixels) / Double(pixels)).squareRoot()
+    return (
+      evenRound(Float(Double(width) * scale)), evenRound(Float(Double(height) * scale))
+    )
+  }
+
   // ---------------------------------------------------------------------------
   // MARK: - Shared Metal setup
   // ---------------------------------------------------------------------------
@@ -983,16 +999,21 @@ final class VideoFrameRenderer {
   /// converts the user's orientation-agnostic shape into sensor space via
   /// `sensorSpaceAspectRatio()`.
   ///
-  /// `needsResample` is gated on `captureScale < 1` so a `1.0` scale never
-  /// triggers an upscale pass — an odd crop dimension could otherwise round
-  /// up via `evenRound` and make `scaledWidth == crop.width` at exactly 1.0.
+  /// `scaledWidth/Height` is the center region of real source pixels that
+  /// `captureScale` keeps. `outputWidth/Height` is what gets saved: the aspect
+  /// crop fitted to `maxPhotoOutputPixels`. The region is resampled to the
+  /// output directly; only a region smaller than the output (`needsUpscale`)
+  /// needs a Lanczos pass, which is gated on `captureScale < 1` so a `1.0`
+  /// scale never triggers one.
   private func photoCropPlan(
     sourceWidth: Int, sourceHeight: Int
   ) -> (
     crop: (width: Int, height: Int, uvScale: SIMD2<Float>),
     scaledWidth: Int,
     scaledHeight: Int,
-    needsResample: Bool,
+    outputWidth: Int,
+    outputHeight: Int,
+    needsUpscale: Bool,
     captureScale: Float
   ) {
     let crop = VideoFrameRenderer.croppedDimensions(
@@ -1002,9 +1023,12 @@ final class VideoFrameRenderer {
     let captureScale = snapshotUniforms().captureScale
     let scaledWidth = VideoFrameRenderer.evenRound(Float(crop.width) * captureScale)
     let scaledHeight = VideoFrameRenderer.evenRound(Float(crop.height) * captureScale)
-    let needsResample =
-      captureScale < 1.0 && (scaledWidth < crop.width || scaledHeight < crop.height)
-    return (crop, scaledWidth, scaledHeight, needsResample, captureScale)
+    let output = VideoFrameRenderer.dimensions(fitting: crop.width, crop.height)
+    let needsUpscale =
+      captureScale < 1.0 && (scaledWidth < output.width || scaledHeight < output.height)
+    return (
+      crop, scaledWidth, scaledHeight, output.width, output.height, needsUpscale, captureScale
+    )
   }
 
   /// True iff `renderOriginalImageData` would actually modify the source —
@@ -1014,9 +1038,10 @@ final class VideoFrameRenderer {
   /// directly in the common case.
   func photoOriginalRequiresProcessing(sourceWidth: Int, sourceHeight: Int) -> Bool {
     let plan = photoCropPlan(sourceWidth: sourceWidth, sourceHeight: sourceHeight)
-    return plan.crop.width != sourceWidth
-      || plan.crop.height != sourceHeight
-      || plan.needsResample
+    return plan.scaledWidth != sourceWidth
+      || plan.scaledHeight != sourceHeight
+      || plan.outputWidth != sourceWidth
+      || plan.outputHeight != sourceHeight
   }
 
   /// Output dimensions of buffers produced by `renderForRecording(_:)` for
@@ -1094,8 +1119,8 @@ final class VideoFrameRenderer {
   }
 
   /// Renders into a freshly allocated buffer cropped to the renderer's
-  /// configured target aspect ratio **and** the current capture scale,
-  /// preserving the source photo's full resolution along each axis.
+  /// configured target aspect ratio **and** the current capture scale, at the
+  /// source's resolution up to `maxPhotoOutputPixels`.
   /// **Waits for the GPU to finish.** Uses a separate command queue so it
   /// doesn't stall the live preview.
   func renderImage(_ source: CVPixelBuffer) -> CVPixelBuffer? {
@@ -1105,8 +1130,13 @@ final class VideoFrameRenderer {
     let plan = photoCropPlan(sourceWidth: sourceWidth, sourceHeight: sourceHeight)
     let crop = plan.crop
     let captureScale = plan.captureScale
-    let scaledWidth = plan.scaledWidth
-    let scaledHeight = plan.scaledHeight
+    let needsUpscale = plan.needsUpscale
+    // The shader samples only the center `captureScale` region whatever the
+    // destination size, so rendering straight to the output size is the
+    // downsample from a 48MP source. Only an undersized region is rendered at
+    // its own size and upscaled afterwards.
+    let renderWidth = needsUpscale ? plan.scaledWidth : plan.outputWidth
+    let renderHeight = needsUpscale ? plan.scaledHeight : plan.outputHeight
 
     let attrs: [String: Any] = [
       kCVPixelBufferMetalCompatibilityKey as String: true,
@@ -1114,7 +1144,7 @@ final class VideoFrameRenderer {
     ]
     var destination: CVPixelBuffer?
     let status = CVPixelBufferCreate(
-      kCFAllocatorDefault, scaledWidth, scaledHeight, kCVPixelFormatType_32BGRA,
+      kCFAllocatorDefault, renderWidth, renderHeight, kCVPixelFormatType_32BGRA,
       attrs as CFDictionary, &destination)
     guard status == kCVReturnSuccess, let dest = destination else {
       NSLog("VideoFrameRenderer: one-off destination buffer allocation failed: \(status)")
@@ -1123,7 +1153,7 @@ final class VideoFrameRenderer {
 
     guard
       let commandBuffer = submitRender(
-        from: source, to: dest, destWidth: scaledWidth, destHeight: scaledHeight,
+        from: source, to: dest, destWidth: renderWidth, destHeight: renderHeight,
         commandQueue: photoCommandQueue,
         overrides: UniformOverrides(
           uvScale: crop.uvScale,
@@ -1135,10 +1165,9 @@ final class VideoFrameRenderer {
       return nil
     }
 
-    // When captureScale < 1 the render produced a smaller buffer. Lanczos-upscale
-    // it back to the full crop dimensions in the same command buffer so the saved
-    // photo always has the maximum resolution for the configured aspect ratio.
-    let needsUpscale = plan.needsResample
+    // The region kept by captureScale holds fewer pixels than the output.
+    // Lanczos-upscale it in the same command buffer so the saved photo has the
+    // same dimensions whatever the scale.
     var finalBuffer: CVPixelBuffer = dest
 
     if needsUpscale {
@@ -1151,7 +1180,7 @@ final class VideoFrameRenderer {
       ]
       var upscaleDest: CVPixelBuffer?
       let upscaleStatus = CVPixelBufferCreate(
-        kCFAllocatorDefault, crop.width, crop.height, kCVPixelFormatType_32BGRA,
+        kCFAllocatorDefault, plan.outputWidth, plan.outputHeight, kCVPixelFormatType_32BGRA,
         upscaleAttrs as CFDictionary, &upscaleDest)
       if upscaleStatus == kCVReturnSuccess, let upscaleBuffer = upscaleDest,
         encodeLanczosUpscale(
@@ -1217,8 +1246,8 @@ final class VideoFrameRenderer {
   /// whose dimensions and resampling character match the processed file.
   ///
   /// Implementation: Core Image graph
-  ///   `CIImage(cvPixelBuffer:) → cropped → CILanczosScaleTransform (down)
-  ///    → CILanczosScaleTransform (up) → cropped to exact size → encode`
+  ///   `CIImage(cvPixelBuffer:) → cropped to the captureScale region
+  ///    → CILanczosScaleTransform → cropped to exact size → encode`
   /// executed by the cached `CIContext`. The custom Metal shader is never
   /// bound.
   func renderOriginalImageData(
@@ -1230,39 +1259,31 @@ final class VideoFrameRenderer {
     let sourceHeight = CVPixelBufferGetHeight(sourceBuffer)
 
     let plan = photoCropPlan(sourceWidth: sourceWidth, sourceHeight: sourceHeight)
-    let crop = plan.crop
 
     var image = CIImage(cvPixelBuffer: sourceBuffer)
 
-    // Center-crop to (crop.width, crop.height) and translate to origin so the
-    // downstream encode uses an extent of exactly the cropped size.
-    if crop.width != sourceWidth || crop.height != sourceHeight {
-      let cropOriginX = (sourceWidth - crop.width) / 2
-      let cropOriginY = (sourceHeight - crop.height) / 2
+    // Center-crop to the `captureScale` region and translate to origin so the
+    // downstream encode uses an extent of exactly that size. This is the same
+    // physical region the shader samples for the processed photo.
+    if plan.scaledWidth != sourceWidth || plan.scaledHeight != sourceHeight {
+      let cropOriginX = (sourceWidth - plan.scaledWidth) / 2
+      let cropOriginY = (sourceHeight - plan.scaledHeight) / 2
       let cropRect = CGRect(
-        x: cropOriginX, y: cropOriginY, width: crop.width, height: crop.height)
+        x: cropOriginX, y: cropOriginY, width: plan.scaledWidth, height: plan.scaledHeight)
       image = image.cropped(to: cropRect).transformed(
         by: CGAffineTransform(
           translationX: -CGFloat(cropOriginX),
           y: -CGFloat(cropOriginY)))
     }
 
-    // Mirror the shader path's "downsample then Lanczos-upscale" so the
-    // saved file shares the same dimensions and resampling character. Both
-    // passes must succeed atomically — applying the upscale to a still-full-
-    // size image would produce an oversized output.
-    if plan.needsResample {
-      // Use the X-dim scale ratio for both passes; aspectRatio = 1 keeps the
-      // Y dimension proportional. The final `cropped(to:)` snaps any
-      // Lanczos-induced extent overshoot back to the exact target.
-      let downScale = Double(plan.scaledWidth) / Double(crop.width)
-      let upScale = Double(crop.width) / Double(plan.scaledWidth)
-
-      if let downsampled = VideoFrameRenderer.lanczosScale(image, scale: downScale),
-        let upsampled = VideoFrameRenderer.lanczosScale(downsampled, scale: upScale)
+    if plan.scaledWidth != plan.outputWidth || plan.scaledHeight != plan.outputHeight {
+      // The final `cropped(to:)` snaps any Lanczos-induced extent overshoot
+      // back to the exact target.
+      if let resampled = VideoFrameRenderer.lanczosScale(
+        image, scale: Double(plan.outputWidth) / Double(plan.scaledWidth))
       {
-        image = upsampled.cropped(
-          to: CGRect(x: 0, y: 0, width: crop.width, height: crop.height))
+        image = resampled.cropped(
+          to: CGRect(x: 0, y: 0, width: plan.outputWidth, height: plan.outputHeight))
       } else {
         NSLog(
           "VideoFrameRenderer: original-path Lanczos resample failed — keeping unscaled image"
@@ -1293,8 +1314,7 @@ final class VideoFrameRenderer {
   }
 
   /// Applies CILanczosScaleTransform with `aspectRatio = 1`. Returns nil if
-  /// the filter can't be instantiated or has no output. Pulled out so the
-  /// original-photo path can chain two calls without duplicating boilerplate.
+  /// the filter can't be instantiated or has no output.
   private static func lanczosScale(_ input: CIImage, scale: Double) -> CIImage? {
     guard let filter = CIFilter(name: "CILanczosScaleTransform") else { return nil }
     filter.setValue(input, forKey: kCIInputImageKey)
@@ -1589,10 +1609,14 @@ final class VideoFrameRenderer {
     // step only activates when `resolution > 0`, so the pre-pass output is
     // only consumed in that case — anything else and we skip the cost.
     let needsPrePass = snapshot.uniforms.resolution > 0
+    // An RGBA16F texture at 48MP is ~390MB; the pre-pass is a blur, so it
+    // loses nothing at the photo output's size.
+    let prePassSize = VideoFrameRenderer.dimensions(fitting: sourceW, sourceH)
     let isPhotoQueue = commandQueue === photoCommandQueue
     let prePassTexture: MTLTexture? =
       needsPrePass
-      ? ensurePrePassTexture(width: sourceW, height: sourceH, isPhotoQueue: isPhotoQueue)
+      ? ensurePrePassTexture(
+        width: prePassSize.width, height: prePassSize.height, isPhotoQueue: isPhotoQueue)
       : nil
 
     // Aux blur working sets, both rendered at quarter source resolution — the

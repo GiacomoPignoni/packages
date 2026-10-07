@@ -581,6 +581,17 @@ final class DefaultCamera: NSObject, Camera {
     commitVideoConfiguration()
     didCommitConfiguration = true
 
+    // `maxPhotoDimensions` is validated against the active format of the device the
+    // output is connected to, so it can only be set once the configuration above is
+    // committed; AVFoundation raises an exception otherwise. Unlike a per-photo
+    // request this makes the output prepare for the larger capture, hence `.photo` only.
+    if mediaSettings.resolutionPreset == .photo,
+      capturePhotoOutput.connection(with: .video) != nil,
+      let largest = largestSupportedPhotoDimensions()
+    {
+      capturePhotoOutput.flutterMaxPhotoDimensions = largest
+    }
+
     // Pinned for the life of the session. This connection feeds both the preview texture and the
     // recorder; re-orienting it transposes the buffer dimensions mid-stream, which rebuilds the
     // render pipeline on every turn. Pinned, the preview is a fixed window onto the scene — the
@@ -1585,6 +1596,11 @@ final class DefaultCamera: NSObject, Camera {
     // `capturePhotoOutput.maxPhotoDimensions` at init; tracked as a follow-up.
     if mediaSettings.resolutionPreset == .max {
       settings.isHighResolutionPhotoEnabled = true
+    } else if #available(iOS 16.0, *), mediaSettings.resolutionPreset == .photo, useShaderPath,
+      let dimensions = largestSupportedPhotoDimensions(
+        notExceeding: capturePhotoOutput.flutterMaxPhotoDimensions)
+    {
+      settings.maxPhotoDimensions = dimensions
     }
 
     if flashMode != .torch {
@@ -1593,6 +1609,19 @@ final class DefaultCamera: NSObject, Camera {
     settings.photoQualityPrioritization = .speed
     disableComputationalFusion(on: settings)
     return settings
+  }
+
+  /// The largest still size the active format can deliver, optionally bounded by `limit`.
+  /// `nil` when the format reports none (before iOS 16) or none fit the bound.
+  private func largestSupportedPhotoDimensions(
+    notExceeding limit: CMVideoDimensions? = nil
+  ) -> CMVideoDimensions? {
+    captureDevice.flutterActiveFormat.flutterSupportedMaxPhotoDimensions
+      .filter { candidate in
+        guard let limit = limit else { return true }
+        return candidate.width <= limit.width && candidate.height <= limit.height
+      }
+      .max { Int64($0.width) * Int64($0.height) < Int64($1.width) * Int64($1.height) }
   }
 
   /// Sibling of `captureToFile` that produces two files for the same shutter

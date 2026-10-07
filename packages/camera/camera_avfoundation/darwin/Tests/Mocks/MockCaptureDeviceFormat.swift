@@ -25,6 +25,8 @@ final class MockCaptureDeviceFormat: NSObject, CaptureDeviceFormat {
   /// The array of frame rate ranges supported by the video format.
   var flutterVideoSupportedFrameRateRanges: [FrameRateRange] = []
 
+  var flutterSupportedMaxPhotoDimensions: [CMVideoDimensions] = []
+
   override init() {
     super.init()
 

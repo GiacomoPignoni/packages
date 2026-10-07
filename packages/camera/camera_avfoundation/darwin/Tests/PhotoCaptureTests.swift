@@ -321,4 +321,114 @@ final class PhotoCaptureTests: XCTestCase {
 
     waitForExpectations(timeout: 30, handler: nil)
   }
+
+  private func capturedSettings(
+    preset: PlatformResolutionPreset,
+    supportedDimensions: [CMVideoDimensions],
+    outputDimensions: CMVideoDimensions
+  ) -> AVCapturePhotoSettings? {
+    let captureSessionQueue = DispatchQueue(label: "capture_session_queue")
+    captureSessionQueue.setSpecific(
+      key: captureSessionQueueSpecificKey, value: captureSessionQueueSpecificValue)
+
+    let format = MockCaptureDeviceFormat()
+    format.flutterSupportedMaxPhotoDimensions = supportedDimensions
+    let device = MockCaptureDevice()
+    device.activeFormatStub = { format }
+
+    let configuration = CameraTestUtils.createTestCameraConfiguration()
+    configuration.captureSessionQueue = captureSessionQueue
+    configuration.videoCaptureDeviceFactory = { _ in device }
+    configuration.mediaSettings = CameraTestUtils.createDefaultMediaSettings(
+      resolutionPreset: preset)
+    let cam = CameraTestUtils.createTestCamera(configuration)
+
+    let settingsExpectation = expectation(description: "Photo captured")
+    var captured: AVCapturePhotoSettings?
+    let mockOutput = MockCapturePhotoOutput()
+    mockOutput.flutterMaxPhotoDimensions = outputDimensions
+    mockOutput.capturePhotoWithSettingsStub = { settings, _ in
+      captured = settings
+      settingsExpectation.fulfill()
+    }
+    cam.capturePhotoOutput = mockOutput
+
+    captureSessionQueue.async {
+      cam.captureToFile { _ in }
+    }
+    waitForExpectations(timeout: 30, handler: nil)
+    return captured
+  }
+
+  func testCaptureToFile_photoPresetRequestsLargestSupportedDimensions() throws {
+    guard #available(iOS 16.0, *) else { throw XCTSkip("maxPhotoDimensions needs iOS 16") }
+    let settings = capturedSettings(
+      preset: .photo,
+      supportedDimensions: [
+        CMVideoDimensions(width: 4032, height: 3024),
+        CMVideoDimensions(width: 8064, height: 6048),
+      ],
+      outputDimensions: CMVideoDimensions(width: 8064, height: 6048))
+
+    XCTAssertEqual(settings?.maxPhotoDimensions.width, 8064)
+    XCTAssertEqual(settings?.maxPhotoDimensions.height, 6048)
+  }
+
+  func testCaptureToFile_photoPresetStaysWithinOutputMaxPhotoDimensions() throws {
+    guard #available(iOS 16.0, *) else { throw XCTSkip("maxPhotoDimensions needs iOS 16") }
+    let settings = capturedSettings(
+      preset: .photo,
+      supportedDimensions: [
+        CMVideoDimensions(width: 4032, height: 3024),
+        CMVideoDimensions(width: 8064, height: 6048),
+      ],
+      outputDimensions: CMVideoDimensions(width: 4032, height: 3024))
+
+    XCTAssertEqual(settings?.maxPhotoDimensions.width, 4032)
+    XCTAssertEqual(settings?.maxPhotoDimensions.height, 3024)
+  }
+
+  func testCaptureToFile_otherPresetsDoNotRequestLargerDimensions() throws {
+    guard #available(iOS 16.0, *) else { throw XCTSkip("maxPhotoDimensions needs iOS 16") }
+    let settings = capturedSettings(
+      preset: .high,
+      supportedDimensions: [CMVideoDimensions(width: 8064, height: 6048)],
+      outputDimensions: CMVideoDimensions(width: 8064, height: 6048))
+
+    XCTAssertEqual(settings?.maxPhotoDimensions.width, 0)
+    XCTAssertEqual(settings?.maxPhotoDimensions.height, 0)
+  }
+}
+
+/// Covers the pixel budget applied to saved photos.
+final class VideoFrameRendererPhotoSizeTests: XCTestCase {
+  func testDimensionsFitting_48MPSourceHalvesEachSide() {
+    let size = VideoFrameRenderer.dimensions(fitting: 8064, 6048)
+
+    XCTAssertEqual(size.width, 4032)
+    XCTAssertEqual(size.height, 3024)
+  }
+
+  func testDimensionsFitting_12MPSourceIsUnchanged() {
+    let size = VideoFrameRenderer.dimensions(fitting: 4032, 3024)
+
+    XCTAssertEqual(size.width, 4032)
+    XCTAssertEqual(size.height, 3024)
+  }
+
+  func testDimensionsFitting_neverEnlarges() {
+    let size = VideoFrameRenderer.dimensions(fitting: 1920, 1080)
+
+    XCTAssertEqual(size.width, 1920)
+    XCTAssertEqual(size.height, 1080)
+  }
+
+  func testDimensionsFitting_keepsAspectRatioOfCroppedSource() {
+    let size = VideoFrameRenderer.dimensions(fitting: 4838, 6048)
+
+    XCTAssertLessThanOrEqual(size.width * size.height, VideoFrameRenderer.maxPhotoOutputPixels)
+    XCTAssertEqual(Double(size.width) / Double(size.height), 4838.0 / 6048.0, accuracy: 0.001)
+    XCTAssertEqual(size.width % 2, 0)
+    XCTAssertEqual(size.height % 2, 0)
+  }
 }

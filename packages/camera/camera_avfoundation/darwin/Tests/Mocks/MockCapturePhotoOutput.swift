@@ -12,6 +12,7 @@ final class MockCapturePhotoOutput: NSObject, CapturePhotoOutput {
   var avOutput = AVCapturePhotoOutput()
   var availablePhotoCodecTypes: [AVVideoCodecType] = []
   var isHighResolutionCaptureEnabled = false
+  var flutterMaxPhotoDimensions = CMVideoDimensions(width: 0, height: 0)
   var supportedFlashModes: [AVCaptureDevice.FlashMode] = []
 
   // Stub that is called when the corresponding public method is called.

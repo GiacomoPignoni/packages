@@ -56,6 +56,10 @@ protocol CapturePhotoOutput: CaptureOutput {
   /// Corresponds to the `isHighResolutionCaptureEnabled` property of `AVCapturePhotoOutput`
   var isHighResolutionCaptureEnabled: Bool { get set }
 
+  /// Corresponds to the `maxPhotoDimensions` property of `AVCapturePhotoOutput`. Reads as zero
+  /// and ignores writes before iOS 16.
+  var flutterMaxPhotoDimensions: CMVideoDimensions { get set }
+
   /// Corresponds to the `supportedFlashModes` property of `AVCapturePhotoOutput`
   var supportedFlashModes: [AVCaptureDevice.FlashMode] { get }
 
@@ -67,6 +71,20 @@ protocol CapturePhotoOutput: CaptureOutput {
 extension AVCapturePhotoOutput: CapturePhotoOutput {
   var avOutput: AVCapturePhotoOutput {
     return self
+  }
+
+  var flutterMaxPhotoDimensions: CMVideoDimensions {
+    get {
+      if #available(iOS 16.0, *) {
+        return maxPhotoDimensions
+      }
+      return CMVideoDimensions(width: 0, height: 0)
+    }
+    set {
+      if #available(iOS 16.0, *) {
+        maxPhotoDimensions = newValue
+      }
+    }
   }
 
   func connection(with mediaType: AVMediaType) -> CaptureConnection? {
