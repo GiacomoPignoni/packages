@@ -6693,6 +6693,44 @@ void main() {
     verify(mockEffectsManager.setEffectsValues(mockPlatformEffectsValues));
   });
 
+  test('setEffectsValues maps every grain behavior', () async {
+    final camera = AndroidCameraCameraX();
+    camera.effectsManager = mockEffectsManager;
+    final forwardedBehaviors = <PlatformGrainBehavior>[];
+    PigeonOverrides.platformEffectsValues_new =
+        ({
+          required double vignetteIntensity,
+          required double grainOpacity,
+          required double grainSize,
+          required PlatformGrainBehavior grainBehavior,
+          required double lutIntensity,
+          required PlatformOverlayBlendMode overlayBlendMode,
+          required double resolution,
+          required double colorShift,
+          required double mist,
+          required double prism,
+          required bool cheapFisheye,
+          required double bloom,
+          required double diffusion,
+          String? grainNoisePath,
+          String? lutFilePath,
+          String? overlayFilePath,
+        }) {
+          forwardedBehaviors.add(grainBehavior);
+          return MockPlatformEffectsValues();
+        };
+
+    for (final GrainBehavior behavior in GrainBehavior.values) {
+      await camera.setEffectsValues(3, EffectsValues(grainBehavior: behavior));
+    }
+
+    expect(forwardedBehaviors, <PlatformGrainBehavior>[
+      PlatformGrainBehavior.overlay,
+      PlatformGrainBehavior.darkOnly,
+      PlatformGrainBehavior.fade,
+    ]);
+  });
+
   test('aspect ratio, capture scale and corner radius reach the effects manager', () async {
     final camera = AndroidCameraCameraX();
     camera.effectsManager = mockEffectsManager;

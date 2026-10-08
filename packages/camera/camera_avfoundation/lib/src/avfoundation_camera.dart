@@ -472,6 +472,7 @@ class AVFoundationCamera extends CameraPlatform {
         grainBehavior: switch (values.grainBehavior) {
           GrainBehavior.overlay => PlatformGrainBehavior.overlay,
           GrainBehavior.darkOnly => PlatformGrainBehavior.darkOnly,
+          GrainBehavior.fade => PlatformGrainBehavior.fade,
         },
         lutFilePath: values.lutFilePath,
         lutIntensity: values.lutIntensity,

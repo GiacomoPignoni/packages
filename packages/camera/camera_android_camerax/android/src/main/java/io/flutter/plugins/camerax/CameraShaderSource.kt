@@ -616,6 +616,10 @@ float ditherTriangular(vec2 fragCoord) {
   return u1 + u2 - 1.0;
 }
 
+const int kGrainOverlay = 0;
+const int kGrainDarkOnly = 1;
+const int kGrainFade = 2;
+
 // Applies grain and dither in one sRGB encode/decode pair. Grain is skipped when grainOpacity is
 // 0, dither when uDither is.
 //
@@ -633,16 +637,20 @@ vec3 applySrgbPerturbations(vec3 rgb, float grainOpacity, vec2 grainUv, vec2 fra
   if (grainOpacity > 0.0) {
     // uGrainTexture is bound with GL_REPEAT, matching Metal's address::repeat sampler.
     vec2 gUv = fract(grainUv * uGrainUVScale + uGrainOffset);
-    vec3 grain = texture(uGrainTexture, gUv).rgb - 0.5;
-    if (uGrainBehavior > 0.5) {
-      // Dark-only: additive grain scaled by inverse sRGB luminance so it fades out on highlights
-      // and is most visible in shadows.
-      float luma = luminance(srgb);
-      float mask = pow(1.0 - luma, 3.25);
-      srgb += grain * grainOpacity * mask;
+    vec3 grain = texture(uGrainTexture, gUv).rgb;
+    int behavior = int(uGrainBehavior + 0.5);
+    if (behavior == kGrainFade) {
+      // Screen blend: the grain's own colour lifts and tints the shadows, highlights stay
+      // untouched.
+      srgb += (1.0 - srgb) * grain * grainOpacity;
+    } else if (behavior == kGrainDarkOnly) {
+      // Additive grain scaled by inverse sRGB luminance so it fades out on highlights and is most
+      // visible in shadows.
+      float mask = pow(1.0 - luminance(srgb), 3.25);
+      srgb += (grain - 0.5) * grainOpacity * mask;
     } else {
       // Overlay (uniform): additive grain visible across all tones.
-      srgb += grain * grainOpacity;
+      srgb += (grain - 0.5) * grainOpacity;
     }
   }
 

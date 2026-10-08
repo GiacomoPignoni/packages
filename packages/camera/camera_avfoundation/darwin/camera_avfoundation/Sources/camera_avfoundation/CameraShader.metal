@@ -671,17 +671,24 @@ static inline float3 applySrgbPerturbations(
         mag_filter::linear, min_filter::linear,
         address::repeat);
     float2 gUv = fract(grainUv * grainUVScale + grainOffset);
-    if (grainBehavior > 0.5) {
-      // Dark-only: additive grain scaled by inverse sRGB luminance so it
-      // fades out on highlights and is most visible in shadows.
-      float3 grain = grainTex.sample(repeatSampler, gUv).rgb - 0.5;
-      float luma = luminance(srgb);
-      float mask = pow(1.0 - luma, 3.25);
-      srgb += grain * grainOpacity * mask;
-    } else {
-      // Overlay (uniform): additive grain visible across all tones.
-      float3 grain = grainTex.sample(repeatSampler, gUv).rgb - 0.5;
-      srgb += grain * grainOpacity;
+    float3 grain = grainTex.sample(repeatSampler, gUv).rgb;
+    switch (int(grainBehavior + 0.5)) {
+      case CameraShaderGrainBehaviorFade:
+        // Screen blend: the grain's own colour lifts and tints the shadows,
+        // highlights stay untouched.
+        srgb += (1.0 - srgb) * grain * grainOpacity;
+        break;
+      case CameraShaderGrainBehaviorDarkOnly: {
+        // Additive grain scaled by inverse sRGB luminance so it fades out on
+        // highlights and is most visible in shadows.
+        float mask = pow(1.0 - luminance(srgb), 3.25);
+        srgb += (grain - 0.5) * grainOpacity * mask;
+        break;
+      }
+      default:
+        // Overlay (uniform): additive grain visible across all tones.
+        srgb += (grain - 0.5) * grainOpacity;
+        break;
     }
   }
 

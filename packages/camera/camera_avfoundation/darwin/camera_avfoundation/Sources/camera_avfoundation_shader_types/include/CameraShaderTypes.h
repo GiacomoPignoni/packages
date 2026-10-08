@@ -56,6 +56,20 @@ typedef enum CameraShaderBlendMode {
   CameraShaderBlendModeExclusion = 11,
 } CameraShaderBlendMode;
 
+// How the grain image is combined with the frame. The raw values are the wire
+// format: `PlatformGrainBehavior` is declared in the same order, so the pigeon
+// enum's index crosses into `grainBehavior` unchanged.
+typedef enum CameraShaderGrainBehavior {
+  // Uniform additive grain across all tones.
+  CameraShaderGrainBehaviorOverlay = 0,
+  // Additive grain scaled by inverse sRGB luminance, so it fades out on
+  // bright areas.
+  CameraShaderGrainBehaviorDarkOnly = 1,
+  // Grain screen-blended, so it lifts and tints shadows and leaves highlights
+  // alone.
+  CameraShaderGrainBehaviorFade = 2,
+} CameraShaderGrainBehavior;
+
 // Per-draw uniforms, bound at buffer index 0 of both shader stages. The
 // declaration order below *is* the buffer ABI — Swift writes the raw bytes
 // with `setVertexBytes`/`setFragmentBytes`.
@@ -103,8 +117,9 @@ typedef struct {
   // wide Gaussian blur with a brightened screen blend and a slight contrast
   // reduction for an atmospheric haze look.
   float mist;
-  // Grain tonal mask: 0 = overlay (uniform), 1 = dark-only (grain scaled by
-  // inverse sRGB luminance so it fades out on bright areas).
+  // Which `CameraShaderGrainBehavior` to combine the grain with, held as a
+  // float like every other discrete field in this struct. Rounded back to an
+  // integer in the shader.
   float grainBehavior;
   // Cheap fisheye lens simulation. 0 = off, 1 = on.
   float cheapFisheye;

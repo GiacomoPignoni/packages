@@ -940,6 +940,24 @@ void main() {
       expect(forwarded.overlayBlendMode, PlatformOverlayBlendMode.srcOver);
     });
 
+    test('Should forward every grain behavior', () async {
+      const expected = <GrainBehavior, PlatformGrainBehavior>{
+        GrainBehavior.overlay: PlatformGrainBehavior.overlay,
+        GrainBehavior.darkOnly: PlatformGrainBehavior.darkOnly,
+        GrainBehavior.fade: PlatformGrainBehavior.fade,
+      };
+
+      for (final MapEntry<GrainBehavior, PlatformGrainBehavior> entry in expected.entries) {
+        clearInteractions(mockApi);
+
+        await camera.setEffectsValues(cameraId, EffectsValues(grainBehavior: entry.key));
+
+        final List<Object?> captured = verify(mockApi.setEffectsValues(captureAny)).captured;
+        final forwarded = captured.single! as PlatformEffectsValues;
+        expect(forwarded.grainBehavior, entry.value);
+      }
+    });
+
     test('Should forward null grainNoisePath when grain is disabled', () async {
       await camera.setEffectsValues(cameraId, const EffectsValues(vignetteIntensity: 0.3));
 

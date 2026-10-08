@@ -306,4 +306,24 @@ final class VideoFrameRendererGrainTests: XCTestCase {
     XCTAssertEqual(preview.y, photoRaw.x, accuracy: 0.001,
       "without swap: preview.y matches photoRaw.x — axes are transposed (the bug)")
   }
+
+  // MARK: - grainBehavior uniform
+
+  private func makeEffectsValues(grainBehavior: PlatformGrainBehavior) -> PlatformEffectsValues {
+    PlatformEffectsValues(
+      vignetteIntensity: 0, grainOpacity: 0.5, grainSize: 0.1, grainBehavior: grainBehavior,
+      lutIntensity: 0, overlayBlendMode: .srcOver, resolution: 0, colorShift: 0, mist: 0,
+      prism: 0, cheapFisheye: false, bloom: 0, diffusion: 0)
+  }
+
+  func testApplyEffectsValues_encodesEachGrainBehavior() throws {
+    let renderer = try makeRenderer()
+    let expectations: [(PlatformGrainBehavior, Float)] = [
+      (.overlay, 0), (.darkOnly, 1), (.fade, 2),
+    ]
+    for (behavior, encoded) in expectations {
+      renderer.updateUniforms { $0.apply(makeEffectsValues(grainBehavior: behavior)) }
+      XCTAssertEqual(renderer.snapshotUniforms().grainBehavior, encoded, "\(behavior)")
+    }
+  }
 }

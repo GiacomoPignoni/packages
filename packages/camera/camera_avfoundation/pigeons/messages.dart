@@ -15,6 +15,7 @@ import 'package:pigeon/pigeon.dart';
 enum PlatformGrainBehavior {
   overlay,
   darkOnly,
+  fade,
 }
 
 // Pigeon version of OverlayBlendMode. Order matches the `CameraShaderBlendMode`

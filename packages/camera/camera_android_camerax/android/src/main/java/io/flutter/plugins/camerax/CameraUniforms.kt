@@ -40,7 +40,7 @@ data class CameraUniforms(
     var resolution: Float = 0f,
     var colorShift: Float = 0f,
     var mist: Float = 0f,
-    /** 0 = overlay grain, 1 = dark-only. */
+    /** Which `kGrain*` mode combines the grain; see `PlatformGrainBehavior`. */
     var grainBehavior: Float = 0f,
     var cheapFisheye: Float = 0f,
     var prism: Float = 0f,
@@ -129,7 +129,7 @@ data class CameraUniforms(
   fun applyEffects(values: PlatformEffectsValues) {
     vignetteIntensity = values.vignetteIntensity.clampedIntensity()
     grainOpacity = if (values.grainNoisePath == null) 0f else values.grainOpacity.clampedIntensity()
-    grainBehavior = if (values.grainBehavior == PlatformGrainBehavior.DARK_ONLY) 1f else 0f
+    grainBehavior = values.grainBehavior.raw.toFloat()
     lutIntensity = if (values.lutFilePath == null) 0f else values.lutIntensity.clampedIntensity()
     resolution = values.resolution.clampedIntensity()
     colorShift = values.colorShift.clampedIntensity()

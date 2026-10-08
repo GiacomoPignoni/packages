@@ -1296,6 +1296,10 @@ enum PlatformGrainBehavior {
   /// Grain is scaled by the inverse luminance of each pixel, so it fades out
   /// on bright areas and is most visible in shadows.
   darkOnly,
+
+  /// The grain is screen-blended: its own color lifts and tints the shadows
+  /// while highlights are left almost untouched.
+  fade,
 }
 
 /// How the overlay image is combined with the camera frame beneath it.

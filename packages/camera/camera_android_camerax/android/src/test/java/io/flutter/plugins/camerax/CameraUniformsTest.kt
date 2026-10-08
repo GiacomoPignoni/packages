@@ -80,7 +80,25 @@ class CameraUniformsTest {
     assertEquals(3f, destination.overlayQuarterTurns, 0f)
   }
 
+  @Test
+  fun applyEffects_encodesEachGrainBehavior() {
+    val expected =
+        mapOf(
+            PlatformGrainBehavior.OVERLAY to 0f,
+            PlatformGrainBehavior.DARK_ONLY to 1f,
+            PlatformGrainBehavior.FADE to 2f,
+        )
+
+    for ((behavior, encoded) in expected) {
+      val uniforms = CameraUniforms()
+      uniforms.applyEffects(effectsValues(grainBehavior = behavior))
+
+      assertEquals(encoded, uniforms.grainBehavior, 0f)
+    }
+  }
+
   private fun effectsValues(
+      grainBehavior: PlatformGrainBehavior = PlatformGrainBehavior.OVERLAY,
       vignetteIntensity: Double = 0.0,
       lutIntensity: Double = 0.0,
       overlayFilePath: String? = null,
@@ -97,7 +115,7 @@ class CameraUniformsTest {
           grainNoisePath = null,
           grainOpacity = 0.0,
           grainSize = 0.1,
-          grainBehavior = PlatformGrainBehavior.OVERLAY,
+          grainBehavior = grainBehavior,
           lutFilePath = null,
           lutIntensity = lutIntensity,
           overlayFilePath = overlayFilePath,

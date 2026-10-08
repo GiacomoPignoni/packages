@@ -108,7 +108,7 @@ int _deepHash(Object? value) {
   return value.hashCode;
 }
 
-enum PlatformGrainBehavior { overlay, darkOnly }
+enum PlatformGrainBehavior { overlay, darkOnly, fade }
 
 enum PlatformOverlayBlendMode {
   srcOver,

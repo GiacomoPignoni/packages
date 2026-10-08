@@ -43,7 +43,7 @@ extension CameraUniforms {
   mutating func apply(_ values: PlatformEffectsValues) {
     vignetteIntensity = Float(values.vignetteIntensity)
     grainOpacity = Float(values.grainOpacity)
-    grainBehavior = values.grainBehavior == .darkOnly ? 1 : 0
+    grainBehavior = Float(values.grainBehavior.rawValue)
     lutIntensity = Float(values.lutIntensity)
     resolution = Float(values.resolution)
     colorShift = Float(values.colorShift)

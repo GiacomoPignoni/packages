@@ -1623,7 +1623,12 @@ enum class PlatformGrainBehavior(val raw: Int) {
    * Grain is scaled by the inverse luminance of each pixel, so it fades out on bright areas and is
    * most visible in shadows.
    */
-  DARK_ONLY(1);
+  DARK_ONLY(1),
+  /**
+   * The grain is screen-blended: its own color lifts and tints the shadows while highlights are
+   * left almost untouched.
+   */
+  FADE(2);
 
   companion object {
     fun ofRaw(raw: Int): PlatformGrainBehavior? {

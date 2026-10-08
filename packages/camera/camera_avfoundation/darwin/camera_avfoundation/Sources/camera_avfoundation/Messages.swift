@@ -195,6 +195,7 @@ private func nilOrValue<T>(_ value: Any?) -> T? {
 enum PlatformGrainBehavior: Int, CaseIterable {
   case overlay = 0
   case darkOnly = 1
+  case fade = 2
 }
 
 enum PlatformOverlayBlendMode: Int, CaseIterable {

@@ -13,6 +13,13 @@ enum GrainBehavior {
   /// Grain is scaled by the inverse luminance of each pixel so it fades out
   /// on bright areas and is most visible in shadows.
   darkOnly,
+
+  /// The grain is screen-blended at [EffectsValues.grainOpacity]: its own
+  /// color lifts and tints the shadows, giving a matte, lower-contrast look,
+  /// while highlights are left almost untouched. Suited to a grain image with
+  /// a dark, tinted background; the image's average color becomes the black
+  /// level.
+  fade,
 }
 
 /// Visual effect parameters applied by the camera shader pipeline.
