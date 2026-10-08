@@ -554,6 +554,12 @@ abstract class CameraApi {
   @async
   @ObjCSelector('setCaptureCornerRadius:')
   void setCaptureCornerRadius(double radius);
+
+  /// Shows or hides the effects in the preview. Saved photos and videos are
+  /// unaffected.
+  @async
+  @ObjCSelector('setPreviewEffectsEnabled:')
+  void setPreviewEffectsEnabled(bool enabled);
 }
 
 @EventChannelApi()

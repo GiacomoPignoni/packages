@@ -113,6 +113,7 @@ class CameraEffectsManager(
 
   private val uniformsLock = Any()
   private val uniforms = CameraUniforms()
+  @Volatile private var previewEffectsEnabled = true
 
   /**
    * Aspect ratio (width/height) of the center-crop, or null for no crop. Guarded by [uniformsLock].
@@ -228,6 +229,7 @@ class CameraEffectsManager(
     // into the file. The preview loses its dimming and rounded border for the length of the
     // recording, which is the cheaper of the two errors.
     if (targets == CameraEffect.PREVIEW) {
+      if (!previewEffectsEnabled) snapshot.clearEffects()
       snapshot.darkenOutside = CameraUniforms.PREVIEW_DARKEN_OUTSIDE
       snapshot.overlayQuarterTurns = PREVIEW_OVERLAY_QUARTER_TURNS
     } else {
@@ -400,6 +402,11 @@ class CameraEffectsManager(
 
   fun setCaptureCornerRadius(radius: Double) {
     synchronized(uniformsLock) { uniforms.captureCornerRadius = radius.toFloat() }
+    processor.redraw()
+  }
+
+  fun setPreviewEffectsEnabled(enabled: Boolean) {
+    previewEffectsEnabled = enabled
     processor.redraw()
   }
 

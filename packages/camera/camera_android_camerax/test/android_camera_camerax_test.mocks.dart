@@ -528,6 +528,15 @@ class MockCameraEffectsManager extends _i1.Mock implements _i2.CameraEffectsMana
           as _i5.Future<void>);
 
   @override
+  _i5.Future<void> setPreviewEffectsEnabled(bool? enabled) =>
+      (super.noSuchMethod(
+            Invocation.method(#setPreviewEffectsEnabled, [enabled]),
+            returnValue: _i5.Future<void>.value(),
+            returnValueForMissingStub: _i5.Future<void>.value(),
+          )
+          as _i5.Future<void>);
+
+  @override
   _i5.Future<void> detachOutputs() =>
       (super.noSuchMethod(
             Invocation.method(#detachOutputs, []),

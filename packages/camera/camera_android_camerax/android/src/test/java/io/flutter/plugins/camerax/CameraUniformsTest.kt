@@ -81,6 +81,26 @@ class CameraUniformsTest {
   }
 
   @Test
+  fun clearEffects_zeroesEveryEffectAndKeepsTheGeometry() {
+    val uniforms =
+        CameraUniforms().apply {
+          applyEffects(effectsValues(vignetteIntensity = 1.0, mist = 1.0, bloom = 1.0))
+          overlayEnabled = 1f
+          captureScale = 0.5f
+          captureCornerRadius = 0.25f
+        }
+
+    uniforms.clearEffects()
+
+    assertEquals(0f, uniforms.vignetteIntensity, 0f)
+    assertEquals(0f, uniforms.mist, 0f)
+    assertEquals(0f, uniforms.bloom, 0f)
+    assertEquals(0f, uniforms.overlayEnabled, 0f)
+    assertEquals(0.5f, uniforms.captureScale, 0f)
+    assertEquals(0.25f, uniforms.captureCornerRadius, 0f)
+  }
+
+  @Test
   fun applyEffects_encodesEachGrainBehavior() {
     val expected =
         mapOf(

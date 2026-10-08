@@ -118,7 +118,10 @@ enum CameraTestUtils {
     duration: CMTime = CMTimeMake(value: 1, timescale: 44100)
   ) -> CMSampleBuffer {
     var pixelBuffer: CVPixelBuffer?
-    CVPixelBufferCreate(kCFAllocatorDefault, 100, 100, kCVPixelFormatType_32BGRA, nil, &pixelBuffer)
+    // IOSurface-backed like a real camera frame, so the shader renderer can wrap it in a texture.
+    CVPixelBufferCreate(
+      kCFAllocatorDefault, 100, 100, kCVPixelFormatType_32BGRA,
+      [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary, &pixelBuffer)
 
     var formatDescription: CMFormatDescription?
     CMVideoFormatDescriptionCreateForImageBuffer(

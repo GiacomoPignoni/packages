@@ -6738,10 +6738,12 @@ void main() {
     await camera.setAspectRatio(3, 1.5);
     await camera.setCaptureScale(3, 0.6);
     await camera.setCaptureCornerRadius(3, 0.25);
+    await camera.setPreviewEffectsEnabled(3, false);
 
     verify(mockEffectsManager.setAspectRatio(1.5));
     verify(mockEffectsManager.setCaptureScale(0.6));
     verify(mockEffectsManager.setCaptureCornerRadius(0.25));
+    verify(mockEffectsManager.setPreviewEffectsEnabled(false));
   });
 
   test('initializeCamera re-reports the preview size after the initialized event', () async {
@@ -7030,6 +7032,7 @@ void main() {
     await camera.setAspectRatio(3, 1.0);
     await camera.setCaptureScale(3, 0.5);
     await camera.setCaptureCornerRadius(3, 0.5);
+    await camera.setPreviewEffectsEnabled(3, false);
 
     verifyZeroInteractions(mockEffectsManager);
   });

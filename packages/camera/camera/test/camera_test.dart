@@ -295,6 +295,29 @@ void main() {
       clearInteractions(CameraPlatform.instance);
     });
 
+    test('a disabled preview effects switch survives setDescription, only when disabled', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      const description = CameraDescription(
+        name: 'cam',
+        lensDirection: CameraLensDirection.back,
+        sensorOrientation: 90,
+      );
+      final cameraController = CameraController(description, ResolutionPreset.max);
+      final mockPlatform = CameraPlatform.instance as MockCameraPlatform;
+      await cameraController.initialize();
+      verifyNever(mockPlatform.setPreviewEffectsEnabled(any, any));
+
+      await cameraController.setPreviewEffectsEnabled(false);
+      clearInteractions(mockPlatform);
+      await cameraController.setDescription(description);
+
+      verifyInOrder(<Object?>[
+        mockPlatform.setPreviewEffectsEnabled(13, false),
+        mockPlatform.initializeCamera(13),
+      ]);
+      clearInteractions(mockPlatform);
+    });
+
     test('a constructed aspect ratio reaches createCamera, so nothing re-binds', () async {
       // A controller replaced to change the resolution preset carries none of
       // the old one's state, so there is no `setAspectRatio` to hoist ahead of
@@ -3846,6 +3869,11 @@ class MockCameraPlatform extends Mock with MockPlatformInterfaceMixin implements
   @override
   Future<void> setAspectRatio(int? cameraId, double? aspectRatio) async =>
       super.noSuchMethod(Invocation.method(#setAspectRatio, <Object?>[cameraId, aspectRatio]));
+
+  @override
+  Future<void> setPreviewEffectsEnabled(int? cameraId, bool? enabled) async => super.noSuchMethod(
+    Invocation.method(#setPreviewEffectsEnabled, <Object?>[cameraId, enabled]),
+  );
 
   @override
   Future<void> initializeCamera(

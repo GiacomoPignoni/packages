@@ -8636,6 +8636,9 @@ abstract class PigeonApiCameraEffectsManager(
   /** Sets the corner radius (0.0-1.0) of the capture-scale rectangle drawn in the preview. */
   abstract fun setCaptureCornerRadius(pigeon_instance: CameraEffectsManager, radius: Double)
 
+  /** Shows or hides the effects in the preview. Photos and videos always get them. */
+  abstract fun setPreviewEffectsEnabled(pigeon_instance: CameraEffectsManager, enabled: Boolean)
+
   /**
    * Detaches the preview and encoder outputs, keeping the pipeline itself.
    *
@@ -8817,6 +8820,30 @@ abstract class PigeonApiCameraEffectsManager(
             val wrapped: List<Any?> =
                 try {
                   api.setCaptureCornerRadius(pigeon_instanceArg, radiusArg)
+                  listOf(null)
+                } catch (exception: Throwable) {
+                  CameraXLibraryPigeonUtils.wrapError(exception)
+                }
+            reply.reply(wrapped)
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel =
+            BasicMessageChannel<Any?>(
+                binaryMessenger,
+                "dev.flutter.pigeon.camera_android_camerax.CameraEffectsManager.setPreviewEffectsEnabled",
+                codec)
+        if (api != null) {
+          channel.setMessageHandler { message, reply ->
+            val args = message as List<Any?>
+            val pigeon_instanceArg = args[0] as CameraEffectsManager
+            val enabledArg = args[1] as Boolean
+            val wrapped: List<Any?> =
+                try {
+                  api.setPreviewEffectsEnabled(pigeon_instanceArg, enabledArg)
                   listOf(null)
                 } catch (exception: Throwable) {
                   CameraXLibraryPigeonUtils.wrapError(exception)

@@ -229,6 +229,23 @@ final class CameraPluginDelegatingMethodTests: XCTestCase {
     XCTAssertTrue(setFocusModeCalled)
   }
 
+  func testSetPreviewEffectsEnabled_callsCameraSetPreviewEffectsEnabled() {
+    let (cameraPlugin, mockCamera) = createCameraPlugin()
+    let expectation = expectation(description: "Call completed")
+
+    var received: Bool?
+    mockCamera.setPreviewEffectsEnabledStub = { received = $0 }
+
+    cameraPlugin.setPreviewEffectsEnabled(enabled: false) { result in
+      let _ = self.assertSuccess(result)
+      expectation.fulfill()
+    }
+
+    waitForExpectations(timeout: 30, handler: nil)
+
+    XCTAssertEqual(received, false)
+  }
+
   func testSetImageFileFormat_callsCameraSetImageFileFormat() {
     let (cameraPlugin, mockCamera) = createCameraPlugin()
     let expectation = expectation(description: "Call completed")

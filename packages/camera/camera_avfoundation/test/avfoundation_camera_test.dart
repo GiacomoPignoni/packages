@@ -899,6 +899,11 @@ void main() {
       verify(mockApi.setAspectRatio(null));
     });
 
+    test('Should forward setPreviewEffectsEnabled to the host API', () async {
+      await camera.setPreviewEffectsEnabled(cameraId, false);
+      verify(mockApi.setPreviewEffectsEnabled(false));
+    });
+
     test('Should forward setCaptureScale to the host API', () async {
       await camera.setCaptureScale(cameraId, 0.7);
       verify(mockApi.setCaptureScale(0.7));

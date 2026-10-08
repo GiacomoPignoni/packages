@@ -142,6 +142,21 @@ data class CameraUniforms(
     overlayBlendMode = values.overlayBlendMode.raw.toFloat()
   }
 
+  /** Switches every effect off, leaving the geometry (crop, scale, corner radius) as it is. */
+  fun clearEffects() {
+    vignetteIntensity = 0f
+    grainOpacity = 0f
+    lutIntensity = 0f
+    resolution = 0f
+    colorShift = 0f
+    mist = 0f
+    prism = 0f
+    cheapFisheye = 0f
+    bloom = 0f
+    diffusion = 0f
+    overlayEnabled = 0f
+  }
+
   /**
    * Clamps a `[0.0, 1.0]`-documented effect value into that range, treating a non-finite input as
    * off.

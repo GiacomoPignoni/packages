@@ -181,6 +181,9 @@ class FakeController extends ValueNotifier<CameraValue> implements CameraControl
 
   @override
   Future<void> setCaptureCornerRadius(double radius) async {}
+
+  @override
+  Future<void> setPreviewEffectsEnabled(bool enabled) async {}
 }
 
 void main() {

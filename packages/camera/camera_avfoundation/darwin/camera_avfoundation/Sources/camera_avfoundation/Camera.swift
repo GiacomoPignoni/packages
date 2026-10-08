@@ -95,6 +95,10 @@ protocol Camera: FlutterTexture, AVCaptureVideoDataOutputSampleBufferDelegate,
   /// No-op when no shader pipeline is active.
   func setCaptureCornerRadius(_ radius: Double)
 
+  /// Shows or hides the effects in the preview. Saved photos and videos always
+  /// get them. No-op when no shader pipeline is active.
+  func setPreviewEffectsEnabled(_ enabled: Bool)
+
   func setExposureMode(_ mode: PlatformExposureMode)
   func setExposureOffset(_ offset: Double)
 

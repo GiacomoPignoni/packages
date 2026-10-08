@@ -180,6 +180,7 @@ final class DefaultCamera: NSObject, Camera {
   /// Corner radius of the captureScale preview rectangle, in the same
   /// [-1,1] d-space as the scaled rect. 0 = square corners.
   private var captureCornerRadius: Float = 0.0
+  private var previewEffectsEnabled = true
   /// `setCaptureScale` calls received while recording. The AVAssetWriter is
   /// locked to the renderer's dimensions for the duration of the take, so we
   /// stash the latest value and apply it once recording stops. Nil when no
@@ -2169,6 +2170,11 @@ final class DefaultCamera: NSObject, Camera {
     videoFrameRenderer?.invalidateRecordingPool()
   }
 
+  func setPreviewEffectsEnabled(_ enabled: Bool) {
+    assertOnCaptureSessionQueue()
+    previewEffectsEnabled = enabled
+  }
+
   func setCaptureCornerRadius(_ radius: Double) {
     assertOnCaptureSessionQueue()
     // Clamp to [0, 1] — 0 = square corners, 1 = maximal rounding.
@@ -2301,14 +2307,15 @@ final class DefaultCamera: NSObject, Camera {
     if renderer.canBypassPreview(
       sourcePixelFormat: CVPixelBufferGetPixelFormatType(newBuffer),
       sourceWidth: CVPixelBufferGetWidth(newBuffer),
-      sourceHeight: CVPixelBufferGetHeight(newBuffer))
+      sourceHeight: CVPixelBufferGetHeight(newBuffer),
+      withEffects: previewEffectsEnabled)
     {
       return newBuffer
     }
     // Only skip frames that would cost a real GPU pass — thinning the bypass
     // path would make preview choppier and save nothing.
     guard shouldRenderPreviewFrame() else { return nil }
-    return renderer.render(newBuffer, blocking: false)
+    return renderer.render(newBuffer, blocking: false, withEffects: previewEffectsEnabled)
   }
 
   /// Returns a recording-pool buffer for this sample if the renderer is

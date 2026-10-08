@@ -28,7 +28,7 @@ final class CameraSetDeviceOrientationTests: XCTestCase {
     return (camera, mockPhotoCaptureConnection, mockVideoCaptureConnection)
   }
 
-  func testSetDeviceOrientation_setsOrientationsOfCaptureConnections() {
+  func testSetDeviceOrientation_setsOrientationOfPhotoConnectionOnly() {
     let (camera, mockPhotoCaptureConnection, mockVideoCaptureConnection) = createCamera()
     var photoSetVideoOrientationCalled = false
     mockPhotoCaptureConnection.setVideoOrientationStub = { orientation in
@@ -37,23 +37,15 @@ final class CameraSetDeviceOrientationTests: XCTestCase {
       XCTAssertEqual(orientation, .landscapeRight)
       photoSetVideoOrientationCalled = true
     }
-
-    var videoSetVideoOrientationCalled = false
-    mockVideoCaptureConnection.setVideoOrientationStub = { orientation in
-      // Device orientation is flipped compared to video orientation. When UIDeviceOrientation
-      // is landscape left the video orientation should be landscape right.
-      XCTAssertEqual(orientation, .landscapeRight)
-      videoSetVideoOrientationCalled = true
-    }
+    mockVideoCaptureConnection.setVideoOrientationStub = { _ in XCTFail() }
 
     camera.deviceOrientation = .landscapeLeft
 
     XCTAssertTrue(photoSetVideoOrientationCalled)
-    XCTAssertTrue(videoSetVideoOrientationCalled)
   }
 
   func
-    testSetDeviceOrientation_setsLockedOrientationsOfCaptureConnection_ifCaptureOrientationIsLocked()
+    testSetDeviceOrientation_setsLockedOrientationOfPhotoConnection_ifCaptureOrientationIsLocked()
   {
     let (camera, mockPhotoCaptureConnection, mockVideoCaptureConnection) = createCamera()
     var photoSetVideoOrientationCalled = false
@@ -61,19 +53,13 @@ final class CameraSetDeviceOrientationTests: XCTestCase {
       XCTAssertEqual(orientation, .portraitUpsideDown)
       photoSetVideoOrientationCalled = true
     }
-
-    var videoSetVideoOrientationCalled = false
-    mockVideoCaptureConnection.setVideoOrientationStub = { orientation in
-      XCTAssertEqual(orientation, .portraitUpsideDown)
-      videoSetVideoOrientationCalled = true
-    }
+    mockVideoCaptureConnection.setVideoOrientationStub = { _ in XCTFail() }
 
     camera.lockCaptureOrientation(PlatformDeviceOrientation.portraitDown)
 
     camera.deviceOrientation = .landscapeLeft
 
     XCTAssertTrue(photoSetVideoOrientationCalled)
-    XCTAssertTrue(videoSetVideoOrientationCalled)
   }
 
   func testSetDeviceOrientation_doesNotSetOrientations_ifRecordingIsInProgress() {
@@ -94,15 +80,11 @@ final class CameraSetDeviceOrientationTests: XCTestCase {
       photoSetVideoOrientationCallCount += 1
     }
 
-    var videoSetVideoOrientationCallCount = 0
-    mockVideoCaptureConnection.setVideoOrientationStub = { _ in
-      videoSetVideoOrientationCallCount += 1
-    }
+    mockVideoCaptureConnection.setVideoOrientationStub = { _ in XCTFail() }
 
     camera.deviceOrientation = .landscapeRight
     camera.deviceOrientation = .landscapeRight
 
     XCTAssertEqual(photoSetVideoOrientationCallCount, 1)
-    XCTAssertEqual(videoSetVideoOrientationCallCount, 1)
   }
 }

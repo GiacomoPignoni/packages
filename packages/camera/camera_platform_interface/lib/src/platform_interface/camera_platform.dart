@@ -421,4 +421,10 @@ abstract class CameraPlatform extends PlatformInterface {
   ///
   /// On platforms that do not support shader-based cropping this is a no-op.
   Future<void> setCaptureCornerRadius(int cameraId, double radius) async {}
+
+  /// Shows or hides the effects in the preview. Saved photos and videos always
+  /// get the effects.
+  ///
+  /// On platforms that do not support shader-based effects this is a no-op.
+  Future<void> setPreviewEffectsEnabled(int cameraId, bool enabled) async {}
 }

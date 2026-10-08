@@ -1250,6 +1250,9 @@ protocol CameraApi {
   /// and positive values round the corners of the darkened border.
   /// Only affects the preview; saved photos and videos are unaffected.
   func setCaptureCornerRadius(radius: Double, completion: @escaping (Result<Void, Error>) -> Void)
+  /// Shows or hides the effects in the preview. Saved photos and videos are
+  /// unaffected.
+  func setPreviewEffectsEnabled(enabled: Bool, completion: @escaping (Result<Void, Error>) -> Void)
 }
 
 /// Generated setup class from Pigeon to handle messages through the `binaryMessenger`.
@@ -2086,6 +2089,28 @@ class CameraApiSetup {
       }
     } else {
       setCaptureCornerRadiusChannel.setMessageHandler(nil)
+    }
+    /// Shows or hides the effects in the preview. Saved photos and videos are
+    /// unaffected.
+    let setPreviewEffectsEnabledChannel = FlutterBasicMessageChannel(
+      name:
+        "dev.flutter.pigeon.camera_avfoundation.CameraApi.setPreviewEffectsEnabled\(channelSuffix)",
+      binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      setPreviewEffectsEnabledChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let enabledArg = args[0] as! Bool
+        api.setPreviewEffectsEnabled(enabled: enabledArg) { result in
+          switch result {
+          case .success:
+            reply(wrapResult(nil))
+          case .failure(let error):
+            reply(wrapError(error))
+          }
+        }
+      }
+    } else {
+      setPreviewEffectsEnabledChannel.setMessageHandler(nil)
     }
   }
 }

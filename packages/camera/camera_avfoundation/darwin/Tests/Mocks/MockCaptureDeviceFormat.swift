@@ -27,6 +27,8 @@ final class MockCaptureDeviceFormat: NSObject, CaptureDeviceFormat {
 
   var flutterSupportedMaxPhotoDimensions: [CMVideoDimensions] = []
 
+  var flutterVideoFieldOfView: Float = 60
+
   override init() {
     super.init()
 

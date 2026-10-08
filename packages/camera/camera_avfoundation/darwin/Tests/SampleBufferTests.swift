@@ -235,7 +235,14 @@ final class CameraSampleBufferTests: XCTestCase {
   }
 
   func testDidOutputSampleBufferMustNotAppendSampleWhenReadyForMoreMediaDataIsFalse() {
-    let (camera, _, adaptorMock, inputMock) = createCamera()
+    let (camera, writerMock, adaptorMock, inputMock) = createCamera()
+
+    var status = AVAssetWriter.Status.unknown
+    writerMock.startWritingStub = {
+      status = .writing
+      return true
+    }
+    writerMock.statusStub = { status }
 
     let videoSample = CameraTestUtils.createTestSampleBuffer()
     let testVideoConnection = CameraTestUtils.createTestConnection(
@@ -308,8 +315,8 @@ final class CameraSampleBufferTests: XCTestCase {
     writerMock.startWritingStub = {
       startWritingCalled = true
       return true
-
     }
+    writerMock.statusStub = { startWritingCalled ? .writing : .unknown }
 
     var videoAppended = false
     adaptorMock.appendStub = { buffer, time in

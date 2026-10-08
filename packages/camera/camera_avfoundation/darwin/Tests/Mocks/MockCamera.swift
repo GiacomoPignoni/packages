@@ -38,6 +38,7 @@ final class MockCamera: NSObject, Camera {
   var setAspectRatioStub: ((Double?) -> Void)?
   var setCaptureScaleStub: ((Double) -> Void)?
   var setCaptureCornerRadiusStub: ((Double) -> Void)?
+  var setPreviewEffectsEnabledStub: ((Bool) -> Void)?
   var setExposureModeStub: ((PlatformExposureMode) -> Void)?
   var setExposureOffsetStub: ((Double) -> Void)?
   var setExposurePointStub: ((PlatformPoint?, @escaping (Result<Void, any Error>) -> Void) -> Void)?
@@ -189,6 +190,10 @@ final class MockCamera: NSObject, Camera {
 
   func setCaptureCornerRadius(_ radius: Double) {
     setCaptureCornerRadiusStub?(radius)
+  }
+
+  func setPreviewEffectsEnabled(_ enabled: Bool) {
+    setPreviewEffectsEnabledStub?(enabled)
   }
 
   func setExposureMode(_ mode: PlatformExposureMode) {

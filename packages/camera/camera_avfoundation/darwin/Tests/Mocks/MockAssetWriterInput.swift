@@ -11,9 +11,8 @@ import AVFoundation
 final class MockAssetWriterInput: NSObject, AssetWriterInput {
   var appendStub: ((CMSampleBuffer) -> Bool)?
 
-  var avInput: AVAssetWriterInput {
-    preconditionFailure("Attempted to access unimplemented property: avInput")
-  }
+  /// An unattached input, enough for code that only stamps properties such as the track transform.
+  let avInput = AVAssetWriterInput(mediaType: .video, outputSettings: nil)
 
   var expectsMediaDataInRealTime = false
 

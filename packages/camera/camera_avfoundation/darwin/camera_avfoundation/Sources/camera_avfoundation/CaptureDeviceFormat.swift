@@ -27,6 +27,9 @@ protocol CaptureDeviceFormat: NSObjectProtocol {
 
   /// Corresponds to `supportedMaxPhotoDimensions`. Empty before iOS 16.
   var flutterSupportedMaxPhotoDimensions: [CMVideoDimensions] { get }
+
+  /// Corresponds to `videoFieldOfView`, the diagonal angle of view in degrees.
+  var flutterVideoFieldOfView: Float { get }
 }
 
 extension AVFrameRateRange: FrameRateRange {}
@@ -35,6 +38,8 @@ extension AVCaptureDevice.Format: CaptureDeviceFormat {
   var avFormat: AVCaptureDevice.Format { self }
 
   var flutterVideoSupportedFrameRateRanges: [FrameRateRange] { videoSupportedFrameRateRanges }
+
+  var flutterVideoFieldOfView: Float { videoFieldOfView }
 
   var flutterSupportedMaxPhotoDimensions: [CMVideoDimensions] {
     if #available(iOS 16.0, *) {

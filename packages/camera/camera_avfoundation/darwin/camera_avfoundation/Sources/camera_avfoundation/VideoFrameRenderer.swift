@@ -36,6 +36,21 @@ extension CameraUniforms {
     return uniforms
   }
 
+  /// Zeroes every effect scalar. The overlay is not here: its on/off lives in the
+  /// bound texture, so callers drop the texture instead.
+  mutating func clearEffects() {
+    vignetteIntensity = 0
+    grainOpacity = 0
+    lutIntensity = 0
+    resolution = 0
+    colorShift = 0
+    mist = 0
+    prism = 0
+    bloom = 0
+    diffusion = 0
+    cheapFisheye = 0
+  }
+
   /// The one mapping point from the pigeon effects message onto shader
   /// uniforms. Every caller that pushes `PlatformEffectsValues` into a
   /// renderer goes through here, so a new effect can't reach one path (live
@@ -888,13 +903,15 @@ final class VideoFrameRenderer {
   func canBypassPreview(
     sourcePixelFormat: OSType,
     sourceWidth: Int,
-    sourceHeight: Int
+    sourceHeight: Int,
+    withEffects: Bool = true
   ) -> Bool {
     guard sourcePixelFormat == kCVPixelFormatType_32BGRA else { return false }
     // Bypass means publishing the source buffer directly to Flutter; that's
     // only valid when the source already matches the *preview* output size.
     guard sourceWidth == previewWidth, sourceHeight == previewHeight else { return false }
-    let snapshot = snapshotUniforms()
+    var snapshot = snapshotUniforms()
+    if !withEffects { snapshot.clearEffects() }
     return snapshot.vignetteIntensity == 0
       && snapshot.captureScale >= 1.0
       && snapshot.uvScale.x >= 1.0 && snapshot.uvScale.y >= 1.0
@@ -906,7 +923,8 @@ final class VideoFrameRenderer {
       && snapshot.prism == 0
       && snapshot.bloom == 0
       && snapshot.diffusion == 0
-      && !hasOverlayTexture
+      && snapshot.cheapFisheye == 0
+      && (!withEffects || !hasOverlayTexture)
   }
 
   /// Whether an overlay texture is currently bound. Read by
@@ -1078,7 +1096,7 @@ final class VideoFrameRenderer {
   ///
   /// Do **not** call `CVPixelBufferLockBaseAddress` on the returned buffer
   /// for CPU access — use `renderImage(_:)` instead, which waits for the GPU.
-  func render(_ source: CVPixelBuffer, blocking: Bool) -> CVPixelBuffer? {
+  func render(_ source: CVPixelBuffer, blocking: Bool, withEffects: Bool) -> CVPixelBuffer? {
     if blocking {
       previewInFlightSemaphore.wait()
     } else {
@@ -1104,7 +1122,7 @@ final class VideoFrameRenderer {
         destWidth: previewWidth, destHeight: previewHeight,
         commandQueue: previewCommandQueue,
         overrides: UniformOverrides(
-          darkenOutside: VideoFrameRenderer.previewDarkenOutside))
+          darkenOutside: VideoFrameRenderer.previewDarkenOutside, stripEffects: !withEffects))
     else {
       previewInFlightSemaphore.signal()
       return nil
@@ -1492,6 +1510,8 @@ final class VideoFrameRenderer {
     /// already render that way and leave this at 0, while the photo pass
     /// renders in sensor orientation and sets it.
     var overlayQuarterTurns: Float = 0
+    /// Renders this pass without any effect, leaving the stored values alone.
+    var stripEffects: Bool = false
   }
 
   /// Bundle of textures bound for a single render pass. Inline-storage
@@ -1582,6 +1602,10 @@ final class VideoFrameRenderer {
     if let v = overrides.captureScale { snapshot.uniforms.captureScale = v }
     if let v = overrides.darkenOutside { snapshot.uniforms.darkenOutside = v }
     snapshot.uniforms.overlayQuarterTurns = overrides.overlayQuarterTurns
+    if overrides.stripEffects {
+      snapshot.uniforms.clearEffects()
+      snapshot.overlayTexture = nil
+    }
 
     // Aspect of the actual destination buffer. Preview and recording write
     // portrait-oriented buffers; the photo path writes a sensor-orientation

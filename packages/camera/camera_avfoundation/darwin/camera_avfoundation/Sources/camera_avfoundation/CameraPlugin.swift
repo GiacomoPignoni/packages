@@ -167,7 +167,7 @@ extension CameraPlugin: CameraApi {
   /// angle of view, so the 35mm-equivalent calculation must use the matching
   /// diagonal of a 35mm frame (sqrt(36² + 24²) ≈ 43.2666 mm), not its width.
   private func equivalentFocalLengthFromDiagonalFOV(for device: CaptureDevice) -> Double {
-    let diagonalFOV = device.avDevice.activeFormat.videoFieldOfView
+    let diagonalFOV = device.flutterActiveFormat.flutterVideoFieldOfView
     let radians = Double(diagonalFOV) * .pi / 180.0
     return 43.2666 / (2.0 * tan(radians / 2.0))
   }
@@ -662,6 +662,15 @@ extension CameraPlugin: CameraApi {
   ) {
     captureSessionQueue.async { [weak self] in
       self?.camera?.setCaptureCornerRadius(radius)
+      completion(.success(()))
+    }
+  }
+
+  func setPreviewEffectsEnabled(
+    enabled: Bool, completion: @escaping (Result<Void, any Error>) -> Void
+  ) {
+    captureSessionQueue.async { [weak self] in
+      self?.camera?.setPreviewEffectsEnabled(enabled)
       completion(.success(()))
     }
   }

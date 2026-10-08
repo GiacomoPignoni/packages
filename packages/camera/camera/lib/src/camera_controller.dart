@@ -367,6 +367,10 @@ class CameraController extends ValueNotifier<CameraValue> {
   // so it can be re-applied after a [setDescription] camera switch.
   double? _captureCornerRadius;
 
+  // Latest value of [setPreviewEffectsEnabled]. Cached so it can be re-applied
+  // after a [setDescription] camera switch.
+  bool _previewEffectsEnabled = true;
+
   // Latest white balance values applied via [setWhiteBalance]. Cached so they
   // can be re-applied after a [setDescription] camera switch. `_whiteBalanceSet`
   // distinguishes "never called" (let the new camera start in its default
@@ -537,6 +541,10 @@ class CameraController extends ValueNotifier<CameraValue> {
 
       if (_captureCornerRadius != null) {
         await CameraPlatform.instance.setCaptureCornerRadius(_cameraId, _captureCornerRadius!);
+      }
+
+      if (!_previewEffectsEnabled) {
+        await CameraPlatform.instance.setPreviewEffectsEnabled(_cameraId, false);
       }
 
       await CameraPlatform.instance.initializeCamera(
@@ -1329,6 +1337,18 @@ class CameraController extends ValueNotifier<CameraValue> {
     await CameraPlatform.instance.setCaptureCornerRadius(_cameraId, clamped);
     _captureCornerRadius = clamped;
     value = value.copyWith(captureCornerRadius: clamped);
+  }
+
+  /// Shows or hides the effects set with [setEffectsValues] in the preview.
+  ///
+  /// Saved photos and recorded videos always get the effects. On Android the
+  /// preview shows them again while a video is recording.
+  ///
+  /// The value is cached and re-applied automatically after a
+  /// [setDescription] camera switch.
+  Future<void> setPreviewEffectsEnabled(bool enabled) async {
+    await CameraPlatform.instance.setPreviewEffectsEnabled(_cameraId, enabled);
+    _previewEffectsEnabled = enabled;
   }
 
   /// Check whether the camera platform supports image streaming.

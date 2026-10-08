@@ -1881,6 +1881,11 @@ class AndroidCameraCameraX extends CameraPlatform {
     await effectsManager?.setCaptureCornerRadius(radius);
   }
 
+  @override
+  Future<void> setPreviewEffectsEnabled(int cameraId, bool enabled) async {
+    await effectsManager?.setPreviewEffectsEnabled(enabled);
+  }
+
   /// Gets the [FlashMode]s supported by the camera with ID [cameraId].
   ///
   /// CameraX exposes no per-mode capability query, only whether the camera has

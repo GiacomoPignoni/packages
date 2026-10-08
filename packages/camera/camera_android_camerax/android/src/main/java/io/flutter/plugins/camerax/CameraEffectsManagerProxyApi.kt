@@ -39,6 +39,10 @@ class CameraEffectsManagerProxyApi(override val pigeonRegistrar: ProxyApiRegistr
     pigeon_instance.setCaptureCornerRadius(radius)
   }
 
+  override fun setPreviewEffectsEnabled(pigeon_instance: CameraEffectsManager, enabled: Boolean) {
+    pigeon_instance.setPreviewEffectsEnabled(enabled)
+  }
+
   override fun notifyPreviewSize(pigeon_instance: CameraEffectsManager) {
     pigeon_instance.notifyPreviewSize()
   }

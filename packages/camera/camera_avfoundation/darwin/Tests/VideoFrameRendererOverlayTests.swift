@@ -138,6 +138,35 @@ final class VideoFrameRendererOverlayTests: XCTestCase {
       "a renderer with every effect off should bypass the GPU pass")
   }
 
+  func testCanBypassPreview_ignoresEffectsWhenTheyAreDisabledButKeepsGeometry() throws {
+    let renderer = try makeRenderer(width: 64, height: 48)
+    renderer.updateUniforms {
+      $0.vignetteIntensity = 1
+      $0.bloom = 1
+    }
+    func canBypass(withEffects: Bool) -> Bool {
+      renderer.canBypassPreview(
+        sourcePixelFormat: kCVPixelFormatType_32BGRA, sourceWidth: 64, sourceHeight: 48,
+        withEffects: withEffects)
+    }
+
+    XCTAssertFalse(canBypass(withEffects: true))
+    XCTAssertTrue(canBypass(withEffects: false))
+    XCTAssertEqual(renderer.snapshotUniforms().vignetteIntensity, 1, "stored effects must survive")
+
+    renderer.updateUniforms { $0.captureScale = 0.5 }
+    XCTAssertFalse(canBypass(withEffects: false), "the crop is geometry, not an effect")
+  }
+
+  func testCanBypassPreview_isFalseWithOnlyFisheyeOn() throws {
+    let renderer = try makeRenderer(width: 64, height: 48)
+    renderer.updateUniforms { $0.cheapFisheye = 1 }
+
+    XCTAssertFalse(
+      renderer.canBypassPreview(
+        sourcePixelFormat: kCVPixelFormatType_32BGRA, sourceWidth: 64, sourceHeight: 48))
+  }
+
   func testCanBypassPreview_isFalseWhileAnOverlayIsLoaded() throws {
     // The regression this guards: the overlay is the only effect not
     // represented by a non-zero uniform, so a bypass check that looked only at

@@ -506,6 +506,11 @@ class AVFoundationCamera extends CameraPlatform {
   }
 
   @override
+  Future<void> setPreviewEffectsEnabled(int cameraId, bool enabled) async {
+    await _hostApi.setPreviewEffectsEnabled(enabled);
+  }
+
+  @override
   Widget buildPreview(int cameraId) {
     return Texture(textureId: cameraId);
   }

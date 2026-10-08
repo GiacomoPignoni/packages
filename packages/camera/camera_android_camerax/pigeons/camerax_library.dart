@@ -1502,6 +1502,10 @@ abstract class CameraEffectsManager {
   /// the preview.
   void setCaptureCornerRadius(double radius);
 
+  /// Shows or hides the effects in the preview. Photos and videos always get
+  /// them.
+  void setPreviewEffectsEnabled(bool enabled);
+
   /// Detaches the preview and encoder outputs, keeping the pipeline itself.
   ///
   /// What a camera's `dispose` calls. One manager is deliberately shared by
