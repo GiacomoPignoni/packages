@@ -175,6 +175,8 @@ class AndroidCameraCameraX extends CameraPlatform {
   /// slider drag makes a stream of them — apart from a genuine failure.
   int _exposureOffsetRequests = 0;
 
+  int _focusMeteringRequests = 0;
+
   /// The exposure compensation index [setExposureOffset] last asked for, re-sent
   /// every time the camera device opens or the use cases are re-bound.
   ///
@@ -2886,6 +2888,7 @@ class AndroidCameraCameraX extends CameraPlatform {
       if (newMeteringPointInfos.isEmpty) {
         // If no other metering points were specified, cancel any previously
         // started focus and metering actions.
+        _focusMeteringRequests++;
         await cameraControl.cancelFocusAndMetering();
         currentFocusMeteringAction = null;
         return true;
@@ -2943,6 +2946,7 @@ class AndroidCameraCameraX extends CameraPlatform {
       currentFocusMeteringAction = await actionBuilder.build();
     }
 
+    final int request = ++_focusMeteringRequests;
     try {
       final FocusMeteringResult? result = await cameraControl.startFocusAndMetering(
         currentFocusMeteringAction!,
@@ -2956,6 +2960,9 @@ class AndroidCameraCameraX extends CameraPlatform {
 
       return result?.isFocusSuccessful ?? false;
     } on PlatformException catch (e) {
+      if (request != _focusMeteringRequests) {
+        return false;
+      }
       cameraErrorStreamController.add(e.message ?? 'Starting focus and metering failed.');
       // Surfacing error to differentiate an operation cancellation from an
       // illegal argument exception at a plugin layer.

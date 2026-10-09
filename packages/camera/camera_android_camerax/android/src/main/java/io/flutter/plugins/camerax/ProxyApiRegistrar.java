@@ -191,6 +191,7 @@ public class ProxyApiRegistrar extends CameraXLibraryPigeonProxyApiRegistrar {
   void releaseExecutors() {
     captureExecutor.shutdown();
     if (previewProxyApi != null) {
+      previewProxyApi.releaseAllSurfaceProducers();
       previewProxyApi.releaseSurfaceReleaseExecutor();
     }
   }

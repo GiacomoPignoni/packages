@@ -123,6 +123,14 @@ class PreviewProxyApi extends PigeonApiPreview {
     }
   }
 
+  void releaseAllSurfaceProducers() {
+    surfaceProducers.values().forEach(producer -> {
+      producer.setCallback(null);
+      producer.release();
+    });
+    surfaceProducers.clear();
+  }
+
   /**
    * Stops {@link #surfaceReleaseExecutor}'s thread.
    *
