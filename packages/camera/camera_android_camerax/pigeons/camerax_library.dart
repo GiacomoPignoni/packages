@@ -431,8 +431,6 @@ abstract class DeviceOrientationManager {
   void stopListeningForDeviceOrientationChange();
 
   int getDefaultDisplayRotation();
-
-  String getUiOrientation();
 }
 
 /// A use case that provides a camera preview stream for displaying on-screen.
@@ -618,11 +616,16 @@ abstract class ImageCapture extends UseCase {
   /// so the frame never crosses the platform channel. When `includeOriginal`
   /// is true the un-effected frame is saved as well, from the same shutter
   /// event.
+  ///
+  /// `rotationDegrees` is the clockwise turn a viewer applies to bring the
+  /// photo upright for the way the device was held, written to the EXIF
+  /// orientation tag. The pixels stay composed like the preview.
   @async
   CapturedPicturePaths takePictureWithEffects(
     SystemServicesManager systemServicesManager,
     CameraEffectsManager effectsManager,
     bool includeOriginal,
+    int rotationDegrees,
   );
 
   /// Sets the desired rotation of the output image.

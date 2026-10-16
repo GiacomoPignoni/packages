@@ -8,14 +8,6 @@ import XCTest
 
 @testable import camera_avfoundation
 
-private final class MockUIDevice: UIDevice {
-  var mockOrientation: UIDeviceOrientation = .unknown
-
-  override var orientation: UIDeviceOrientation {
-    return mockOrientation
-  }
-}
-
 final class CameraOrientationTests: XCTestCase {
   private func createCameraPlugin() -> (
     cameraPlugin: CameraPlugin,
@@ -59,14 +51,8 @@ final class CameraOrientationTests: XCTestCase {
     to cameraPlugin: CameraPlugin,
     captureSessionQueue: DispatchQueue
   ) {
-    cameraPlugin.orientationChanged(createMockNotification(for: orientation))
+    cameraPlugin.orientationChanged(orientation)
     waitForQueueRoundTrip(with: captureSessionQueue)
-  }
-
-  private func createMockNotification(for deviceOrientation: UIDeviceOrientation) -> Notification {
-    let mockDevice = MockUIDevice()
-    mockDevice.mockOrientation = deviceOrientation
-    return Notification(name: Notification.Name("orientation_test"), object: mockDevice)
   }
 
   func testOrientationNotifications() {
@@ -82,16 +68,17 @@ final class CameraOrientationTests: XCTestCase {
     XCTAssertEqual(mockEventAPI.lastOrientation, .landscapeRight)
   }
 
-  func testOrientationNotificationsNotCalledForFaceUp() {
-    let (cameraPlugin, _, mockEventAPI, _, _, captureSessionQueue) = createCameraPlugin()
-    sendOrientation(.faceUp, to: cameraPlugin, captureSessionQueue: captureSessionQueue)
-    XCTAssertFalse(mockEventAPI.deviceOrientationChangedCalled)
+  func testGravityOrientation_snapsToTheNearestQuarterTurn() {
+    XCTAssertEqual(GravityOrientationObserver.orientation(x: 0, y: -1), .portrait)
+    XCTAssertEqual(GravityOrientationObserver.orientation(x: -1, y: 0), .landscapeLeft)
+    XCTAssertEqual(GravityOrientationObserver.orientation(x: 1, y: 0), .landscapeRight)
+    XCTAssertEqual(GravityOrientationObserver.orientation(x: 0, y: 1), .portraitUpsideDown)
+    XCTAssertEqual(GravityOrientationObserver.orientation(x: 0.4, y: -0.9), .portrait)
   }
 
-  func testOrientationNotificationsNotCalledForFaceDown() {
-    let (cameraPlugin, _, mockEventAPI, _, _, captureSessionQueue) = createCameraPlugin()
-    sendOrientation(.faceDown, to: cameraPlugin, captureSessionQueue: captureSessionQueue)
-    XCTAssertFalse(mockEventAPI.deviceOrientationChangedCalled)
+  func testGravityOrientation_isNilWhenFlatOrNearADiagonal() {
+    XCTAssertNil(GravityOrientationObserver.orientation(x: 0.1, y: -0.1))
+    XCTAssertNil(GravityOrientationObserver.orientation(x: 0.7, y: -0.7))
   }
 
   func testOrientationUpdateMustBeOnCaptureSessionQueue() {
@@ -109,7 +96,7 @@ final class CameraOrientationTests: XCTestCase {
       }
     }
 
-    cameraPlugin.orientationChanged(createMockNotification(for: .landscapeLeft))
+    cameraPlugin.orientationChanged(.landscapeLeft)
     waitForExpectations(timeout: 30, handler: nil)
   }
 
@@ -134,7 +121,7 @@ final class CameraOrientationTests: XCTestCase {
       weakPlugin = cameraPlugin
       cameraPlugin.camera = mockCamera
 
-      cameraPlugin.orientationChanged(createMockNotification(for: .landscapeLeft))
+      cameraPlugin.orientationChanged(.landscapeLeft)
     }
 
     // Sanity check.

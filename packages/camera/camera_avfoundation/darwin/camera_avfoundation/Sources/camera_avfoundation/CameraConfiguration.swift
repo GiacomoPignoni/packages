@@ -34,7 +34,6 @@ class CameraConfiguration {
   var assetWriterFactory: AssetWriterFactory
   var inputPixelBufferAdaptorFactory: InputPixelBufferAdaptorFactory
   var videoDimensionsConverter: VideoDimensionsConverter
-  var deviceOrientationProvider: DeviceOrientationProvider
   let initialCameraName: String
   var orientation: UIDeviceOrientation
   let aspectRatio: Double?
@@ -59,8 +58,7 @@ class CameraConfiguration {
     self.audioCaptureSession = captureSessionFactory()
     self.captureDeviceInputFactory = captureDeviceInputFactory
     self.initialCameraName = initialCameraName
-    self.orientation = UIDevice.current.orientation
-    self.deviceOrientationProvider = DefaultDeviceOrientationProvider()
+    self.orientation = .portrait
     self.aspectRatio = aspectRatio
 
     self.videoDimensionsConverter = { format in

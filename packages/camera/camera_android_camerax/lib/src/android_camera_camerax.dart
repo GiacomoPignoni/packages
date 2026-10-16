@@ -229,6 +229,7 @@ class AndroidCameraCameraX extends CameraPlatform {
   late final DeviceOrientationManager deviceOrientationManager = DeviceOrientationManager(
     onDeviceOrientationChanged: (_, String orientation) {
       final DeviceOrientation deviceOrientation = _deserializeDeviceOrientation(orientation);
+      _deviceOrientation = deviceOrientation;
       deviceOrientationChangedStreamController.add(
         DeviceOrientationChangedEvent(deviceOrientation),
       );
@@ -276,6 +277,9 @@ class AndroidCameraCameraX extends CameraPlatform {
   /// The [ImageCapture] instance that can be configured to capture a still image.
   @visibleForTesting
   ImageCapture? imageCapture;
+
+  /// The quality set by [setJpegImageQuality] for the current camera, if any.
+  int? _jpegQuality;
 
   /// The flash mode currently configured for [imageCapture].
   CameraXFlashMode? _currentFlashMode;
@@ -342,24 +346,24 @@ class AndroidCameraCameraX extends CameraPlatform {
 
   /// Whether or not the capture orientation is locked.
   ///
-  /// Indicates a new target rotation should not be set as it has been locked by
-  /// [lockCaptureOrientation].
+  /// Only [imageAnalysis] has its target rotation changed by a lock, and keeps
+  /// it until unlocked. Stills and recordings take the locked orientation as
+  /// metadata instead; see [_captureRotation].
   @visibleForTesting
   bool captureOrientationLocked = false;
 
   /// The target rotation set by [lockCaptureOrientation], if any.
-  ///
   int? _lockedCaptureOrientation;
 
-  /// Whether or not the default rotation for [UseCase]s needs to be set
+  /// Whether or not the default rotation for [imageAnalysis] needs to be set
   /// manually because the capture orientation was previously locked.
   ///
-  /// Currently, CameraX provides no way to unset target rotations for
-  /// [UseCase]s, so once they are set and unset, this plugin must start setting
-  /// the default orientation manually.
+  /// Currently, CameraX provides no way to unset a target rotation, so once
+  /// [lockCaptureOrientation] has set one on [imageAnalysis] and it is
+  /// unlocked, this plugin must set the default rotation manually.
   ///
   /// See https://developer.android.com/reference/androidx/camera/core/ImageCapture#setTargetRotation(int)
-  /// for an example on how setting target rotations for [UseCase]s works.
+  /// for an example on how setting target rotations works.
   bool shouldSetDefaultRotation = false;
 
   /// Error code indicating that an exposure offset value failed to be set.
@@ -394,22 +398,17 @@ class AndroidCameraCameraX extends CameraPlatform {
 
   /// Whether or not the created camera is front facing.
   @visibleForTesting
-  late bool cameraIsFrontFacing;
+  bool cameraIsFrontFacing = false;
 
-  /// The camera sensor orientation.
-  ///
-  /// This can change if the camera being used changes. Also, it is independent
-  /// of the device orientation or user interface orientation.
-  @visibleForTesting
-  late double sensorOrientationDegrees;
+  /// How the device is held relative to the UI, as last reported by
+  /// [deviceOrientationManager].
+  DeviceOrientation _deviceOrientation = DeviceOrientation.portraitUp;
 
-  /// The initial orientation of the device when the camera is created.
-  late DeviceOrientation _initialDeviceOrientation;
-
-  /// The initial rotation of the Android default display when the camera is created.
+  /// The rotation of the Android default display when the camera is created.
   ///
   /// This is expressed in terms of one of the [Surface] rotation constant.
-  late int _initialDefaultDisplayRotation;
+  @visibleForTesting
+  int initialDefaultDisplayRotation = Surface.rotation0;
 
   /// Whether or not audio should be enabled for recording video if permission is
   /// granted.
@@ -831,7 +830,8 @@ class AndroidCameraCameraX extends CameraPlatform {
     // Configure ImageCapture instance. Built before the preview because
     // `_resolveTargetFpsRange` needs the whole group to ask about, and this one
     // carries no frame rate of its own.
-    imageCapture = await _createImageCapture();
+    _jpegQuality = null;
+    imageCapture = _createImageCapture();
 
     // A frame rate reaches the camera as a raw `CONTROL_AE_TARGET_FPS_RANGE`
     // capture-request option, which CameraX never sees and therefore never
@@ -855,14 +855,9 @@ class AndroidCameraCameraX extends CameraPlatform {
       targetVideoEncodingBitRate: mediaSettings?.videoBitrate,
     );
     videoCapture = VideoCapture.withOutput(videoOutput: recorder!, targetFpsRange: _targetFpsRange);
-    // Same reason as the preview's, and it has to happen here for the same
-    // reason: the effect's output orientation is fixed when CameraX builds the
-    // pipeline, so a target rotation set after the first bind never reaches the
-    // pixels - only the file's rotation metadata, which is worse than not
-    // setting it at all.
-    await videoCapture!.setTargetRotation(_videoCaptureTargetRotation);
 
-    // Retrieve info required for correcting the rotation of the camera preview.
+    // Retrieve info required for correcting the rotation of the camera preview
+    // and for turning captures upright; see [_getRotationConstantFromDeviceOrientation].
     //
     // `Preview.surfaceProducerHandlesCropAndRotation` is deliberately not
     // consulted. It reports whether Flutter's surface producer would apply a
@@ -870,16 +865,12 @@ class AndroidCameraCameraX extends CameraPlatform {
     // surface directly. The shader writes real pixels into it instead, leaving
     // nothing for either kind of producer to transform, so both now display the
     // same frame and the preview needs the same correction either way.
-    sensorOrientationDegrees = cameraDescription.sensorOrientation.toDouble();
-    _initialDeviceOrientation = _deserializeDeviceOrientation(
-      await deviceOrientationManager.getUiOrientation(),
-    );
-    _initialDefaultDisplayRotation = await deviceOrientationManager.getDefaultDisplayRotation();
+    initialDefaultDisplayRotation = await deviceOrientationManager.getDefaultDisplayRotation();
 
     // Must precede the first `bindToLifecycle`: the effect's output orientation
     // is fixed when CameraX builds the preview pipeline, and a later change to
     // the target rotation does not rebuild it.
-    await preview!.setTargetRotation(_previewTargetRotation);
+    await preview!.setTargetRotation(_pinnedTargetRotation);
 
     return _flutterSurfaceTextureId;
   }
@@ -1053,9 +1044,6 @@ class AndroidCameraCameraX extends CameraPlatform {
   /// Locks the capture orientation of camera with ID [cameraId].
   @override
   Future<void> lockCaptureOrientation(int cameraId, DeviceOrientation orientation) async {
-    // Flag that (1) default rotation for UseCases will need to be set manually
-    // if orientation is ever unlocked and (2) the capture orientation is locked
-    // and should not be changed until unlocked.
     shouldSetDefaultRotation = true;
     captureOrientationLocked = true;
 
@@ -1063,19 +1051,15 @@ class AndroidCameraCameraX extends CameraPlatform {
     final int targetLockedRotation = _getRotationConstantFromDeviceOrientation(orientation);
     _lockedCaptureOrientation = targetLockedRotation;
 
-    // Update UseCases to use target device orientation. `videoCapture` is
-    // deliberately absent: its frames are composed by the effect pipeline in
-    // [_videoCaptureTargetRotation], effects and overlay baked into the pixels,
-    // so tagging the file with a different rotation would turn the picture
-    // without turning what was drawn on it.
-    await imageCapture!.setTargetRotation(targetLockedRotation);
+    // Stills and recordings stay composed in the preview's frame and take the
+    // locked orientation as metadata when they are captured; see
+    // [_captureRotation].
     await imageAnalysis!.setTargetRotation(targetLockedRotation);
   }
 
   /// Unlocks the capture orientation of camera with ID [cameraId].
   @override
   Future<void> unlockCaptureOrientation(int cameraId) async {
-    // Flag that default rotation should be set for UseCases as needed.
     captureOrientationLocked = false;
     _lockedCaptureOrientation = null;
   }
@@ -1585,12 +1569,6 @@ class AndroidCameraCameraX extends CameraPlatform {
     cameraIsFrontFacing = cameraSelectorLensDirection == LensFacing.front;
     cameraSelector = CameraSelector(cameraInfoForFilter: chosenCameraInfo);
 
-    // Retrieve info required for correcting the rotation of the camera preview.
-    // Both of these feed the target rotation below, so they have to be updated
-    // before the rebind that rebuilds the preview's effect pipeline.
-    sensorOrientationDegrees = description.sensorOrientation.toDouble();
-    await preview!.setTargetRotation(_previewTargetRotation);
-
     // Unbind all use cases and rebind to new CameraSelector
     final useCases = <UseCase>[videoCapture!];
     if (!_previewIsPaused) {
@@ -1632,17 +1610,9 @@ class AndroidCameraCameraX extends CameraPlatform {
       );
     }
 
-    final Stream<DeviceOrientation> deviceOrientationStream = onDeviceOrientationChanged().map(
-      (DeviceOrientationChangedEvent e) => e.orientation,
-    );
-    final Widget preview = Texture(textureId: cameraId);
-
     return SurfaceTextureRotatedPreview(
-      _initialDeviceOrientation,
-      _initialDefaultDisplayRotation,
-      deviceOrientationStream,
-      deviceOrientationManager,
-      child: preview,
+      initialDefaultDisplayRotation,
+      child: Texture(textureId: cameraId),
     );
   }
 
@@ -1672,18 +1642,11 @@ class AndroidCameraCameraX extends CameraPlatform {
       await imageCapture!.setFlashMode(CameraXFlashMode.off);
     }
 
-    // Set target rotation to the current default CameraX rotation if
-    // the capture orientation is not locked.
-    if (!captureOrientationLocked) {
-      await imageCapture!.setTargetRotation(
-        await deviceOrientationManager.getDefaultDisplayRotation(),
-      );
-    }
-
     return imageCapture!.takePictureWithEffects(
       systemServicesManager,
       effectsManager!,
       includeOriginal,
+      _exifRotationDegrees,
     );
   }
 
@@ -1953,15 +1916,8 @@ class AndroidCameraCameraX extends CameraPlatform {
       await _unbindUseCaseFromLifecycle(imageCapture!);
     }
 
-    // Recreate ImageCapture with the requested JPEG quality.
-    // Preserve locked orientation if set, otherwise use default display rotation.
-    final int targetRotation =
-        _lockedCaptureOrientation ?? await deviceOrientationManager.getDefaultDisplayRotation();
-    imageCapture = ImageCapture(
-      resolutionSelector: _presetResolutionSelector,
-      targetRotation: targetRotation,
-      jpegQuality: quality,
-    );
+    _jpegQuality = quality;
+    imageCapture = _createImageCapture();
   }
 
   /// Prepare the capture session for video recording.
@@ -2007,14 +1963,13 @@ class AndroidCameraCameraX extends CameraPlatform {
       await _unbindUseCaseFromLifecycle(imageAnalysis!);
     }
 
+    // Bound at the pinned rotation so the effect composes the recording in the
+    // preview's frame, then turned to the way the device is held. After the
+    // bind that reaches only the file's rotation metadata, so the whole frame,
+    // overlay included, plays back upright, as iOS's track transform does.
+    await videoCapture!.setTargetRotation(_pinnedTargetRotation);
     await _bindUseCaseToLifecycle(videoCapture!, options.cameraId);
-
-    // Restore the pinned rotation rather than the display's. An unlock left the
-    // use case pointing at whatever orientation was locked, and the recording
-    // has to go back to the one the effect pipeline composes in.
-    if (!captureOrientationLocked && shouldSetDefaultRotation) {
-      await videoCapture!.setTargetRotation(_videoCaptureTargetRotation);
-    }
+    await videoCapture!.setTargetRotation(_captureRotation);
 
     videoOutputPath = await systemServicesManager.getTempFilePath(videoPrefix, '.mp4');
     pendingRecording = await recorder!.prepareRecording(videoOutputPath!);
@@ -2180,10 +2135,10 @@ class AndroidCameraCameraX extends CameraPlatform {
   /// Its buffer format is not decided here: the native side picks an
   /// uncompressed one where the device claims to offer it, so a rebuilt
   /// instance is the way to pick that decision up again after it changes.
-  Future<ImageCapture> _createImageCapture() async => ImageCapture(
+  ImageCapture _createImageCapture() => ImageCapture(
     resolutionSelector: _presetResolutionSelector,
-    /* use CameraX default target rotation */ targetRotation: await deviceOrientationManager
-        .getDefaultDisplayRotation(),
+    targetRotation: _pinnedTargetRotation,
+    jpegQuality: _jpegQuality,
   );
 
   /// Binds [useCases] with the current effects and view port, rebuilding
@@ -2223,7 +2178,7 @@ class AndroidCameraCameraX extends CameraPlatform {
       // replacement would then be a stream on top of it rather than instead of
       // it, and the retry would fail for the same reason as the attempt.
       await processCameraProvider!.unbind(<UseCase>[refused]);
-      final ImageCapture replacement = await _createImageCapture();
+      final ImageCapture replacement = _createImageCapture();
       imageCapture = replacement;
       return processCameraProvider!.bindToLifecycle(
         cameraSelector!,
@@ -2510,24 +2465,26 @@ class AndroidCameraCameraX extends CameraPlatform {
     }
   }
 
-  /// Returns [Surface] constant for counter-clockwise degrees of rotation from
-  /// [DeviceOrientation.portraitUp] required to reach the specified
-  /// [DeviceOrientation].
+  /// Returns the [Surface] constant, measured from the display's natural
+  /// orientation, for a device held in [orientation].
+  ///
+  /// [orientation] is relative to the UI, as [deviceOrientationManager]
+  /// reports it, so the display rotation is added back: where the natural
+  /// orientation is landscape, the portrait UI already sits a quarter turn from
+  /// it. [Surface] constants count counter-clockwise quarter turns.
   int _getRotationConstantFromDeviceOrientation(DeviceOrientation orientation) {
-    switch (orientation) {
-      case DeviceOrientation.portraitUp:
-        return Surface.rotation0;
-      case DeviceOrientation.landscapeLeft:
-        return Surface.rotation90;
-      case DeviceOrientation.portraitDown:
-        return Surface.rotation180;
-      case DeviceOrientation.landscapeRight:
-        return Surface.rotation270;
-    }
+    final int uiRotation = switch (orientation) {
+      DeviceOrientation.portraitUp => Surface.rotation0,
+      DeviceOrientation.landscapeLeft => Surface.rotation90,
+      DeviceOrientation.portraitDown => Surface.rotation180,
+      DeviceOrientation.landscapeRight => Surface.rotation270,
+    };
+    return (uiRotation + initialDefaultDisplayRotation) % 4;
   }
 
-  /// The [Surface] rotation constant to give [preview] so that the effect
-  /// pipeline hands Flutter an upright buffer.
+  /// The [Surface] rotation [preview], [imageCapture] and [videoCapture] are
+  /// configured with, so that the effect pipeline hands Flutter an upright
+  /// buffer and every capture is composed exactly as the preview was framed.
   ///
   /// [Surface.rotation0] — the display's natural orientation — and never
   /// anything else, which is what makes the render path the single owner of
@@ -2555,19 +2512,34 @@ class AndroidCameraCameraX extends CameraPlatform {
   /// supplies the mirroring: the widget then has to undo a rotation *through* a
   /// mirror, which reverses its sense, and the correction stops being
   /// expressible as a quarter-turn count that is right for both cameras.
-  int get _previewTargetRotation => Surface.rotation0;
-
-  /// The target rotation the recording is configured with.
   ///
-  /// The same one the preview uses, and it must stay that way. Both outputs are
-  /// drawn by one pass of the shader pipeline — while a recording is running
-  /// CameraX may even hand out a single surface serving both — and the overlay
-  /// and every other effect are composited in that surface's own raster space.
-  /// Give the two use cases different target rotations and CameraX builds the
+  /// A recording must share it with the preview. Both outputs are drawn by one
+  /// pass of the shader pipeline — while a recording is running CameraX may
+  /// even hand out a single surface serving both — and the overlay and every
+  /// other effect are composited in that surface's own raster space. Give the
+  /// two use cases different target rotations and CameraX builds the
   /// recording's output a quarter turn from the preview's, so the camera image
   /// still lands upright (its transform is computed per output) while the
   /// overlay drawn on top of it does not.
-  int get _videoCaptureTargetRotation => _previewTargetRotation;
+  ///
+  /// How the device is held reaches the captured files as metadata instead;
+  /// see [_captureRotation].
+  static const int _pinnedTargetRotation = Surface.rotation0;
+
+  /// The [Surface] rotation for the way the device is held, or the locked one.
+  int get _captureRotation =>
+      _lockedCaptureOrientation ?? _getRotationConstantFromDeviceOrientation(_deviceOrientation);
+
+  /// The clockwise turn that brings a still composed at
+  /// [_pinnedTargetRotation] upright for [_captureRotation].
+  ///
+  /// CameraX's relative rotation is `sensor - target` for a back camera and
+  /// `sensor + target` for a front one, so the turn between the two targets
+  /// runs the other way for a front camera.
+  int get _exifRotationDegrees {
+    final int degrees = 90 * _captureRotation;
+    return cameraIsFrontFacing ? degrees : (360 - degrees) % 360;
+  }
 
   /// The frame rate range to build this camera's [UseCase]s with, given the
   /// application asked for [requestedFps], or null to leave the rate to CameraX.

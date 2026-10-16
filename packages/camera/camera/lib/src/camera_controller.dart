@@ -309,7 +309,9 @@ class CameraController extends ValueNotifier<CameraValue> {
        ),
        _aspectRatio = aspectRatio,
        _aspectRatioSet = aspectRatio != null,
-       super(CameraValue.uninitialized(description));
+       super(
+         CameraValue.uninitialized(description).copyWith(deviceOrientation: _lastDeviceOrientation),
+       );
 
   /// The properties of the camera device controlled by this controller.
   CameraDescription get description => value.description;
@@ -409,6 +411,10 @@ class CameraController extends ValueNotifier<CameraValue> {
   Future<void>? _initializeFuture;
   StreamSubscription<DeviceOrientationChangedEvent>? _deviceOrientationSubscription;
 
+  // Seeds every new controller, so one recreated while the device is turned starts out turned
+  // rather than in portrait until the platform reports again.
+  static DeviceOrientation _lastDeviceOrientation = DeviceOrientation.portraitUp;
+
   /// Checks whether [CameraController.dispose] has completed successfully.
   ///
   /// This is a no-op when asserts are disabled.
@@ -455,6 +461,7 @@ class CameraController extends ValueNotifier<CameraValue> {
       _deviceOrientationSubscription ??= CameraPlatform.instance
           .onDeviceOrientationChanged()
           .listen((DeviceOrientationChangedEvent event) {
+            _lastDeviceOrientation = event.orientation;
             if (!_isDisposed) {
               value = value.copyWith(deviceOrientation: event.orientation);
             }

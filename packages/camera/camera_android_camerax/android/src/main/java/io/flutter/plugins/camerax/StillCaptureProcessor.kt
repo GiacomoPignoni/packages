@@ -45,6 +45,7 @@ object StillCaptureProcessor {
    * Renders `image` through the effects pipeline and writes the result to the cache directory.
    *
    * When `includeOriginal` is true the un-effected frame is written alongside it.
+   * `exifRotationDegrees` goes to the Exif orientation tag of both files.
    */
   @JvmStatic
   fun process(
@@ -53,13 +54,15 @@ object StillCaptureProcessor {
       includeOriginal: Boolean,
       cacheDir: File,
       captureResult: CaptureResult?,
+      exifRotationDegrees: Int,
   ): CapturedPicturePaths =
       if (image.format == ImageFormat.YUV_420_888) {
-        processYuv(image, effectsManager, includeOriginal, cacheDir, captureResult)
+        processYuv(
+            image, effectsManager, includeOriginal, cacheDir, captureResult, exifRotationDegrees)
       } else {
         // A device that would not configure an uncompressed still stream, or a capture taken
         // before the buffer format was applied. Slower by a full JPEG decode, but correct.
-        processJpeg(image, effectsManager, includeOriginal, cacheDir)
+        processJpeg(image, effectsManager, includeOriginal, cacheDir, exifRotationDegrees)
       }
 
   /**
@@ -75,6 +78,7 @@ object StillCaptureProcessor {
       includeOriginal: Boolean,
       cacheDir: File,
       captureResult: CaptureResult?,
+      exifRotationDegrees: Int,
   ): CapturedPicturePaths {
     val takenAt = Date()
     val yuv = CameraYuvImage.from(image)
@@ -94,7 +98,15 @@ object StillCaptureProcessor {
                   YUV_FULL_RANGE,
               )
           try {
-            write(original, cacheDir, ORIGINAL_TEMPORARY_FILE_NAME, null, captureResult, takenAt)
+            write(
+                original,
+                cacheDir,
+                ORIGINAL_TEMPORARY_FILE_NAME,
+                null,
+                captureResult,
+                takenAt,
+                exifRotationDegrees,
+            )
           } finally {
             original.recycle()
           }
@@ -106,7 +118,15 @@ object StillCaptureProcessor {
         try {
           val processed = effectsManager.renderStill(yuv, plan, rotation, YUV_FULL_RANGE)
           try {
-            write(processed, cacheDir, TEMPORARY_FILE_NAME, null, captureResult, takenAt)
+            write(
+                processed,
+                cacheDir,
+                TEMPORARY_FILE_NAME,
+                null,
+                captureResult,
+                takenAt,
+                exifRotationDegrees,
+            )
           } finally {
             processed.recycle()
           }
@@ -124,6 +144,7 @@ object StillCaptureProcessor {
       effectsManager: CameraEffectsManager,
       includeOriginal: Boolean,
       cacheDir: File,
+      exifRotationDegrees: Int,
   ): CapturedPicturePaths {
     val bytes = readBytes(image)
     val sourceExif = readExif(bytes)
@@ -147,7 +168,15 @@ object StillCaptureProcessor {
           if (includeOriginal) {
             val original = CameraStillCaptureRenderer.cropOriginal(decoded, plan, rotation)
             try {
-              write(original, cacheDir, ORIGINAL_TEMPORARY_FILE_NAME, sourceExif, null, null)
+              write(
+                  original,
+                  cacheDir,
+                  ORIGINAL_TEMPORARY_FILE_NAME,
+                  sourceExif,
+                  null,
+                  null,
+                  exifRotationDegrees,
+              )
             } finally {
               if (original !== decoded) original.recycle()
             }
@@ -159,7 +188,15 @@ object StillCaptureProcessor {
           try {
             val processed = effectsManager.renderStill(decoded, plan, rotation)
             try {
-              write(processed, cacheDir, TEMPORARY_FILE_NAME, sourceExif, null, null)
+              write(
+                  processed,
+                  cacheDir,
+                  TEMPORARY_FILE_NAME,
+                  sourceExif,
+                  null,
+                  null,
+                  exifRotationDegrees,
+              )
             } finally {
               if (processed !== decoded) processed.recycle()
             }
@@ -198,6 +235,14 @@ object StillCaptureProcessor {
     return normalized
   }
 
+  private fun exifOrientation(rotationDegrees: Int): Int =
+      when (rotationDegrees) {
+        90 -> ExifInterface.ORIENTATION_ROTATE_90
+        180 -> ExifInterface.ORIENTATION_ROTATE_180
+        270 -> ExifInterface.ORIENTATION_ROTATE_270
+        else -> ExifInterface.ORIENTATION_NORMAL
+      }
+
   /** The capture's Exif metadata, or null when it cannot be read. */
   private fun readExif(bytes: ByteArray): ExifInterface? =
       try {
@@ -221,11 +266,19 @@ object StillCaptureProcessor {
       sourceExif: ExifInterface?,
       captureResult: CaptureResult?,
       takenAt: Date?,
+      exifRotationDegrees: Int,
   ): String {
     val file = File.createTempFile(prefix, JPG_FILE_TYPE, cacheDir)
     try {
       FileOutputStream(file).use { bitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, it) }
-      writeExif(sourceExif, captureResult, takenAt, file, bitmap.width, bitmap.height)
+      writeExif(
+          sourceExif,
+          captureResult,
+          takenAt,
+          file,
+          bitmap.width,
+          bitmap.height,
+          exifRotationDegrees)
     } catch (e: Throwable) {
       // Nothing downstream will ever look at a file whose own write failed; without this it is
       // orphaned in the cache directory instead.
@@ -256,10 +309,8 @@ object StillCaptureProcessor {
       file: File,
       width: Int,
       height: Int,
+      exifRotationDegrees: Int,
   ) {
-    if (source == null && takenAt == null) {
-      return
-    }
     try {
       val destination = ExifInterface(file)
       if (source != null) {
@@ -271,12 +322,11 @@ object StillCaptureProcessor {
         // result instead.
         CaptureMetadata.populate(destination, captureResult, takenAt)
       }
-      // The rotation is baked into the pixels of both outputs, so the tag has to say so. Carrying
-      // the sensor's value over would have every viewer turn an already-upright photo a second
-      // time.
+      // The sensor rotation is baked into the pixels, which are upright in the preview's frame.
+      // What is left is the way the device was held, the same turn iOS leaves to the viewer.
       destination.setAttribute(
           ExifInterface.TAG_ORIENTATION,
-          ExifInterface.ORIENTATION_NORMAL.toString(),
+          exifOrientation(exifRotationDegrees).toString(),
       )
       // Both outputs are cropped and possibly scaled, so the sensor's dimensions no longer
       // describe them.

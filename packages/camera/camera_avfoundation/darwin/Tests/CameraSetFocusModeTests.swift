@@ -8,20 +8,18 @@ import XCTest
 @testable import camera_avfoundation
 
 final class CameraSetFocusModeTests: XCTestCase {
-  private func createCamera() -> (Camera, MockCaptureDevice, MockDeviceOrientationProvider) {
+  private func createCamera() -> (Camera, MockCaptureDevice) {
     let mockDevice = MockCaptureDevice()
-    let mockDeviceOrientationProvider = MockDeviceOrientationProvider()
 
     let configuration = CameraTestUtils.createTestCameraConfiguration()
     configuration.videoCaptureDeviceFactory = { _ in mockDevice }
-    configuration.deviceOrientationProvider = mockDeviceOrientationProvider
     let camera = CameraTestUtils.createTestCamera(configuration)
 
-    return (camera, mockDevice, mockDeviceOrientationProvider)
+    return (camera, mockDevice)
   }
 
   func testAutoFocusWithContinuousModeSupported_ShouldSetContinuousAutoFocus() {
-    let (camera, mockDevice, _) = createCamera()
+    let (camera, mockDevice) = createCamera()
     // AVCaptureFocusModeContinuousAutoFocus and AVCaptureFocusModeAutoFocus are supported.
     mockDevice.isFocusModeSupportedStub = { mode in
       mode == .continuousAutoFocus || mode == .autoFocus
@@ -44,7 +42,7 @@ final class CameraSetFocusModeTests: XCTestCase {
   }
 
   func testAutoFocusWithContinuousModeNotSupported_ShouldSetAutoFocus() {
-    let (camera, mockDevice, _) = createCamera()
+    let (camera, mockDevice) = createCamera()
     // AVCaptureFocusModeContinuousAutoFocus is not supported.
     // AVCaptureFocusModeAutoFocus is supported.
     mockDevice.isFocusModeSupportedStub = { mode in
@@ -68,7 +66,7 @@ final class CameraSetFocusModeTests: XCTestCase {
   }
 
   func testAutoFocusWithNoModeSupported_ShouldSetNothing() {
-    let (camera, mockDevice, _) = createCamera()
+    let (camera, mockDevice) = createCamera()
     // No modes are supported.
     mockDevice.isFocusModeSupportedStub = { _ in
       false
@@ -83,7 +81,7 @@ final class CameraSetFocusModeTests: XCTestCase {
   }
 
   func testLockedFocusWithModeSupported_ShouldSetModeAutoFocus() {
-    let (camera, mockDevice, _) = createCamera()
+    let (camera, mockDevice) = createCamera()
     // AVCaptureFocusModeContinuousAutoFocus and AVCaptureFocusModeAutoFocus are supported.
     mockDevice.isFocusModeSupportedStub = { mode in
       mode == .continuousAutoFocus || mode == .autoFocus
@@ -106,7 +104,7 @@ final class CameraSetFocusModeTests: XCTestCase {
   }
 
   func testLockedFocusWithModeNotSupported_ShouldSetNothing() {
-    let (camera, mockDevice, _) = createCamera()
+    let (camera, mockDevice) = createCamera()
     mockDevice.isFocusModeSupportedStub = { mode in
       mode == .continuousAutoFocus
     }
@@ -120,7 +118,7 @@ final class CameraSetFocusModeTests: XCTestCase {
   }
 
   func testSetFocusPointWithResult_SetsFocusPointOfInterest() {
-    let (camera, mockDevice, _) = createCamera()
+    let (camera, mockDevice) = createCamera()
     // Focus point of interest is supported.
     mockDevice.isFocusPointOfInterestSupported = true
 
@@ -142,9 +140,7 @@ final class CameraSetFocusModeTests: XCTestCase {
   }
 
   func testSetFocusPoint_WhenNotSupported_ReturnsError() {
-    let (camera, mockDevice, mockDeviceOrientationProvider) = createCamera()
-    // UI is currently in landscape left orientation.
-    mockDeviceOrientationProvider.orientationStub = { .landscapeLeft }
+    let (camera, mockDevice) = createCamera()
     // Focus point of interest is not supported.
     mockDevice.isFocusPointOfInterestSupported = false
 

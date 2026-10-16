@@ -1104,19 +1104,6 @@ class MockDeviceOrientationManager extends _i1.Mock implements _i2.DeviceOrienta
           as _i5.Future<int>);
 
   @override
-  _i5.Future<String> getUiOrientation() =>
-      (super.noSuchMethod(
-            Invocation.method(#getUiOrientation, []),
-            returnValue: _i5.Future<String>.value(
-              _i6.dummyValue<String>(this, Invocation.method(#getUiOrientation, [])),
-            ),
-            returnValueForMissingStub: _i5.Future<String>.value(
-              _i6.dummyValue<String>(this, Invocation.method(#getUiOrientation, [])),
-            ),
-          )
-          as _i5.Future<String>);
-
-  @override
   _i2.DeviceOrientationManager pigeon_copy() =>
       (super.noSuchMethod(
             Invocation.method(#pigeon_copy, []),
@@ -1509,12 +1496,14 @@ class MockImageCapture extends _i1.Mock implements _i2.ImageCapture {
     _i2.SystemServicesManager? systemServicesManager,
     _i2.CameraEffectsManager? effectsManager,
     bool? includeOriginal,
+    int? rotationDegrees,
   ) =>
       (super.noSuchMethod(
             Invocation.method(#takePictureWithEffects, [
               systemServicesManager,
               effectsManager,
               includeOriginal,
+              rotationDegrees,
             ]),
             returnValue: _i5.Future<_i2.CapturedPicturePaths>.value(
               _FakeCapturedPicturePaths_27(
@@ -1523,6 +1512,7 @@ class MockImageCapture extends _i1.Mock implements _i2.ImageCapture {
                   systemServicesManager,
                   effectsManager,
                   includeOriginal,
+                  rotationDegrees,
                 ]),
               ),
             ),
@@ -1533,6 +1523,7 @@ class MockImageCapture extends _i1.Mock implements _i2.ImageCapture {
                   systemServicesManager,
                   effectsManager,
                   includeOriginal,
+                  rotationDegrees,
                 ]),
               ),
             ),

@@ -2,8 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'package:flutter/services.dart';
-
 import 'camerax_library.dart' show Surface;
 
 /// Returns the number of counter-clockwise quarter turns represented by
@@ -18,17 +16,5 @@ int getQuarterTurnsFromSurfaceRotationConstant(int surfaceRotationConstant) {
     int() => throw ArgumentError(
       '$surfaceRotationConstant is an unknown Surface rotation constant, so counter-clockwise quarter turns cannot be determined.',
     ),
-  };
-}
-
-/// Returns the clockwise quarter turns applied by the CameraPreview widget
-/// based on [orientation], the current device orientation (see
-/// camera/camera/lib/src/camera_preview.dart).
-int getPreAppliedQuarterTurnsRotationFromDeviceOrientation(DeviceOrientation orientation) {
-  return switch (orientation) {
-    DeviceOrientation.portraitUp => 0,
-    DeviceOrientation.landscapeRight => 1,
-    DeviceOrientation.portraitDown => 2,
-    DeviceOrientation.landscapeLeft => 3,
   };
 }

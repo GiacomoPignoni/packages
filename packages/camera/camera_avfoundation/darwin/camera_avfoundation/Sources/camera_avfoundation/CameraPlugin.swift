@@ -21,6 +21,11 @@ public final class CameraPlugin: NSObject, FlutterPlugin {
   /// An internal camera object that manages camera's state and performs camera operations.
   var camera: Camera?
 
+  private let orientationObserver = GravityOrientationObserver()
+  /// The last orientation `orientationObserver` reported, kept while no camera is open so the next
+  /// one starts from it. Owned by `captureSessionQueue`.
+  private var deviceOrientation = UIDeviceOrientation.portrait
+
   public static func register(with registrar: FlutterPluginRegistrar) {
     let instance = CameraPlugin(
       registry: registrar.textures(),
@@ -72,19 +77,10 @@ public final class CameraPlugin: NSObject, FlutterPlugin {
     // `captureSessionQueue` on the first sample buffer, blocking the first
     // preview frame behind whatever the main thread is doing at launch.
     DefaultCamera.primeScreenShorterSidePixels()
-
-    UIDevice.current.beginGeneratingDeviceOrientationNotifications()
-    NotificationCenter.default.addObserver(
-      forName: UIDevice.orientationDidChangeNotification,
-      object: UIDevice.current,
-      queue: .main
-    ) { [weak self] notification in
-      self?.orientationChanged(notification)
-    }
   }
 
   public func detachFromEngine(for registrar: FlutterPluginRegistrar) {
-    UIDevice.current.endGeneratingDeviceOrientationNotifications()
+    orientationObserver.stop()
   }
 
   private static func pigeonErrorFromNSError(_ error: NSError) -> PigeonError {
@@ -94,17 +90,10 @@ public final class CameraPlugin: NSObject, FlutterPlugin {
       details: error.domain)
   }
 
-  func orientationChanged(_ notification: Notification) {
-    guard let device = notification.object as? UIDevice else { return }
-    let orientation = device.orientation
-
-    if orientation == .faceUp || orientation == .faceDown {
-      // Do not change when oriented flat.
-      return
-    }
-
+  func orientationChanged(_ orientation: UIDeviceOrientation) {
     self.captureSessionQueue.async { [weak self] in
       guard let strongSelf = self else { return }
+      strongSelf.deviceOrientation = orientation
       // `Camera.deviceOrientation` must be set on capture session queue.
       strongSelf.camera?.deviceOrientation = orientation
       // `CameraPlugin.sendDeviceOrientation` can be called on any queue.
@@ -274,6 +263,7 @@ extension CameraPlugin: CameraApi {
       initialCameraName: name,
       aspectRatio: settings.aspectRatio
     )
+    camConfiguration.orientation = deviceOrientation
 
     do {
       let newCamera = try DefaultCamera(configuration: camConfiguration)
@@ -283,6 +273,8 @@ extension CameraPlugin: CameraApi {
 
       ensureToRunOnMainQueue { [weak self] in
         guard let strongSelf = self else { return }
+        // Gravity is only read while a camera is open; `dispose` stops it.
+        strongSelf.orientationObserver.start { [weak self] in self?.orientationChanged($0) }
         completion(.success(strongSelf.registry.register(newCamera)))
       }
     } catch let error as NSError {
@@ -328,7 +320,7 @@ extension CameraPlugin: CameraApi {
     )
 
     camera.reportInitializationState()
-    sendDeviceOrientation(UIDevice.current.orientation)
+    sendDeviceOrientation(deviceOrientation)
     camera.start()
     completion(.success(()))
   }
@@ -359,6 +351,7 @@ extension CameraPlugin: CameraApi {
 
   func dispose(cameraId: Int64, completion: @escaping (Result<Void, any Error>) -> Void) {
     registry.unregisterTexture(Int64(cameraId))
+    orientationObserver.stop()
     captureSessionQueue.async { [weak self] in
       if let strongSelf = self {
         strongSelf.camera?.close()

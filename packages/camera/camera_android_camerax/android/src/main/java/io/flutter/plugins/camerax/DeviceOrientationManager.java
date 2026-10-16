@@ -4,12 +4,7 @@
 
 package io.flutter.plugins.camerax;
 
-import android.annotation.SuppressLint;
-import android.content.BroadcastReceiver;
 import android.content.Context;
-import android.content.Intent;
-import android.content.IntentFilter;
-import android.content.res.Configuration;
 import android.util.Log;
 import android.view.Display;
 import android.view.OrientationEventListener;
@@ -25,12 +20,9 @@ import java.util.Objects;
  * Support class to help to determine the media orientation based on the orientation of the device.
  */
 public class DeviceOrientationManager {
-  private static final IntentFilter orientationIntentFilter =
-      new IntentFilter(Intent.ACTION_CONFIGURATION_CHANGED);
-
   private final DeviceOrientationManagerProxyApi api;
   private PlatformChannel.DeviceOrientation lastOrientation;
-  private BroadcastReceiver broadcastReceiver;
+  private int displayRotation = Surface.ROTATION_0;
 
   @VisibleForTesting @Nullable protected OrientationEventListener orientationEventListener;
 
@@ -49,10 +41,12 @@ public class DeviceOrientationManager {
    * <p>When orientation information is updated, the callback method of the {@link
    * DeviceOrientationManagerProxyApi} is called with the new orientation.
    */
-  @SuppressLint("UnprotectedReceiver")
-  // orientationIntentFilter only listens to protected broadcast
   public void start() {
     stop();
+
+    // Read once, as the Dart side does when the camera is created: the UI is pinned, so the display
+    // does not turn while the camera is open.
+    displayRotation = getDefaultRotation();
 
     // Listen for changes in device orientation at the default rate that is suitable for monitoring
     // typical screen orientation changes.
@@ -63,16 +57,15 @@ public class DeviceOrientationManager {
   @VisibleForTesting
   @NonNull
   /**
-   * Creates an {@link OrientationEventListener} that will call the callback method of the {@link
-   * DeviceOrientationManagerProxyApi} whenever it is notified of a new device orientation and this
-   * {@code DeviceOrientationManager} instance determines that the orientation of the device {@link
-   * Configuration} has changed.
+   * Creates an {@link OrientationEventListener} that passes every sensor reading to {@link
+   * #handleSensorOrientationChange}, which reports the device orientation whenever it snaps to a
+   * new quarter turn.
    */
   protected OrientationEventListener createOrientationEventListener() {
     return new OrientationEventListener(getContext()) {
       @Override
-      public void onOrientationChanged(int orientation) {
-        handleUiOrientationChange();
+      public void onOrientationChanged(int degrees) {
+        handleSensorOrientationChange(degrees);
       }
     };
   }
@@ -89,16 +82,50 @@ public class DeviceOrientationManager {
   }
 
   /**
-   * Handles orientation changes based on change events triggered by the OrientationIntentFilter.
-   *
-   * <p>This method is visible for testing purposes only and should never be used outside this
-   * class.
+   * Reports how the device is held relative to the UI, read from the sensor rather than the UI so
+   * it keeps working under the system rotation lock and with the activity pinned to portrait.
    */
   @VisibleForTesting
-  void handleUiOrientationChange() {
-    PlatformChannel.DeviceOrientation orientation = getUiOrientation();
+  void handleSensorOrientationChange(int degrees) {
+    PlatformChannel.DeviceOrientation orientation =
+        orientationFromDegrees(degrees, displayRotation);
+    if (orientation == null) {
+      return;
+    }
     handleOrientationChange(this, orientation, lastOrientation, api);
     lastOrientation = orientation;
+  }
+
+  /**
+   * Snaps an {@link OrientationEventListener} angle to a quarter turn relative to the UI. The angle
+   * is measured from the device's natural orientation, so {@code displayRotation} is added: where
+   * that is landscape, the portrait UI already sits a quarter turn from it.
+   *
+   * <p>Null while the device lies flat or sits within 15 degrees of a diagonal, so the orientation
+   * only flips once the device is turned past 60 degrees.
+   */
+  @VisibleForTesting
+  @Nullable
+  static PlatformChannel.DeviceOrientation orientationFromDegrees(
+      int degrees, int displayRotation) {
+    if (degrees == OrientationEventListener.ORIENTATION_UNKNOWN) {
+      return null;
+    }
+    int uiDegrees = (degrees + 90 * displayRotation) % 360;
+    int quarterTurns = Math.round(uiDegrees / 90f);
+    if (Math.abs(uiDegrees - quarterTurns * 90) > 30) {
+      return null;
+    }
+    switch (quarterTurns % 4) {
+      case 1:
+        return PlatformChannel.DeviceOrientation.LANDSCAPE_RIGHT;
+      case 2:
+        return PlatformChannel.DeviceOrientation.PORTRAIT_DOWN;
+      case 3:
+        return PlatformChannel.DeviceOrientation.LANDSCAPE_LEFT;
+      default:
+        return PlatformChannel.DeviceOrientation.PORTRAIT_UP;
+    }
   }
 
   /**
@@ -133,41 +160,6 @@ public class DeviceOrientationManager {
                           }));
                 }
               });
-    }
-  }
-
-  /**
-   * Gets the current user interface orientation.
-   *
-   * <p>This method is visible for testing purposes only and should never be used outside this
-   * class.
-   *
-   * @return The current user interface orientation.
-   */
-  // Configuration.ORIENTATION_SQUARE is deprecated.
-  @SuppressWarnings("deprecation")
-  @NonNull
-  PlatformChannel.DeviceOrientation getUiOrientation() {
-    final int rotation = getDefaultRotation();
-    final int orientation = getContext().getResources().getConfiguration().orientation;
-
-    switch (orientation) {
-      case Configuration.ORIENTATION_PORTRAIT:
-        if (rotation == Surface.ROTATION_0 || rotation == Surface.ROTATION_90) {
-          return PlatformChannel.DeviceOrientation.PORTRAIT_UP;
-        } else {
-          return PlatformChannel.DeviceOrientation.PORTRAIT_DOWN;
-        }
-      case Configuration.ORIENTATION_LANDSCAPE:
-        if (rotation == Surface.ROTATION_0 || rotation == Surface.ROTATION_90) {
-          return PlatformChannel.DeviceOrientation.LANDSCAPE_LEFT;
-        } else {
-          return PlatformChannel.DeviceOrientation.LANDSCAPE_RIGHT;
-        }
-      case Configuration.ORIENTATION_SQUARE:
-      case Configuration.ORIENTATION_UNDEFINED:
-      default:
-        return PlatformChannel.DeviceOrientation.PORTRAIT_UP;
     }
   }
 

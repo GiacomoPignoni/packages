@@ -3210,28 +3210,6 @@ class DeviceOrientationManager extends PigeonInternalProxyApiBaseClass {
     return pigeonVar_replyValue! as int;
   }
 
-  Future<String> getUiOrientation() async {
-    final _PigeonInternalProxyApiBaseCodec pigeonChannelCodec =
-        _pigeonVar_codecDeviceOrientationManager;
-    final BinaryMessenger? pigeonVar_binaryMessenger = pigeon_binaryMessenger;
-    const pigeonVar_channelName =
-        'dev.flutter.pigeon.camera_android_camerax.DeviceOrientationManager.getUiOrientation';
-    final pigeonVar_channel = BasicMessageChannel<Object?>(
-      pigeonVar_channelName,
-      pigeonChannelCodec,
-      binaryMessenger: pigeonVar_binaryMessenger,
-    );
-    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(<Object?>[this]);
-    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
-
-    final Object? pigeonVar_replyValue = _extractReplyValueOrThrow(
-      pigeonVar_replyList,
-      pigeonVar_channelName,
-      isNullValid: false,
-    );
-    return pigeonVar_replyValue! as String;
-  }
-
   @override
   DeviceOrientationManager pigeon_copy() {
     return DeviceOrientationManager.pigeon_detached(
@@ -4509,10 +4487,15 @@ class ImageCapture extends UseCase {
   /// so the frame never crosses the platform channel. When `includeOriginal`
   /// is true the un-effected frame is saved as well, from the same shutter
   /// event.
+  ///
+  /// `rotationDegrees` is the clockwise turn a viewer applies to bring the
+  /// photo upright for the way the device was held, written to the EXIF
+  /// orientation tag. The pixels stay composed like the preview.
   Future<CapturedPicturePaths> takePictureWithEffects(
     SystemServicesManager systemServicesManager,
     CameraEffectsManager effectsManager,
     bool includeOriginal,
+    int rotationDegrees,
   ) async {
     final _PigeonInternalProxyApiBaseCodec pigeonChannelCodec = _pigeonVar_codecImageCapture;
     final BinaryMessenger? pigeonVar_binaryMessenger = pigeon_binaryMessenger;
@@ -4528,6 +4511,7 @@ class ImageCapture extends UseCase {
       systemServicesManager,
       effectsManager,
       includeOriginal,
+      rotationDegrees,
     ]);
     final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
 

@@ -3860,6 +3860,36 @@ void main() {
       expect(cameraController.value.errorDescription, isNull);
     });
   });
+
+  test('a new controller starts with the last reported device orientation', () async {
+    const description = CameraDescription(
+      name: 'cam',
+      lensDirection: CameraLensDirection.back,
+      sensorOrientation: 90,
+    );
+    // The last orientation is shared by every controller, so put portrait back.
+    addTearDown(() async {
+      CameraPlatform.instance = MockCameraPlatform();
+      await CameraController(description, ResolutionPreset.max).initialize();
+      await pumpEventQueue();
+    });
+    CameraPlatform.instance = MockLandscapeCameraPlatform();
+    await CameraController(description, ResolutionPreset.max).initialize();
+    await pumpEventQueue();
+
+    expect(
+      CameraController(description, ResolutionPreset.max).value.deviceOrientation,
+      DeviceOrientation.landscapeLeft,
+    );
+  });
+}
+
+class MockLandscapeCameraPlatform extends MockCameraPlatform {
+  @override
+  Stream<DeviceOrientationChangedEvent> onDeviceOrientationChanged() =>
+      Stream<DeviceOrientationChangedEvent>.value(
+        const DeviceOrientationChangedEvent(DeviceOrientation.landscapeLeft),
+      );
 }
 
 class MockCameraPlatform extends Mock with MockPlatformInterfaceMixin implements CameraPlatform {

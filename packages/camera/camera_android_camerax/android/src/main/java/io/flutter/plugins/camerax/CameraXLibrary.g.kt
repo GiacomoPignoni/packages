@@ -3335,8 +3335,6 @@ abstract class PigeonApiDeviceOrientationManager(
 
   abstract fun getDefaultDisplayRotation(pigeon_instance: DeviceOrientationManager): Long
 
-  abstract fun getUiOrientation(pigeon_instance: DeviceOrientationManager): String
-
   companion object {
     @Suppress("LocalVariableName")
     fun setUpMessageHandlers(
@@ -3427,28 +3425,6 @@ abstract class PigeonApiDeviceOrientationManager(
             val wrapped: List<Any?> =
                 try {
                   listOf(api.getDefaultDisplayRotation(pigeon_instanceArg))
-                } catch (exception: Throwable) {
-                  CameraXLibraryPigeonUtils.wrapError(exception)
-                }
-            reply.reply(wrapped)
-          }
-        } else {
-          channel.setMessageHandler(null)
-        }
-      }
-      run {
-        val channel =
-            BasicMessageChannel<Any?>(
-                binaryMessenger,
-                "dev.flutter.pigeon.camera_android_camerax.DeviceOrientationManager.getUiOrientation",
-                codec)
-        if (api != null) {
-          channel.setMessageHandler { message, reply ->
-            val args = message as List<Any?>
-            val pigeon_instanceArg = args[0] as DeviceOrientationManager
-            val wrapped: List<Any?> =
-                try {
-                  listOf(api.getUiOrientation(pigeon_instanceArg))
                 } catch (exception: Throwable) {
                   CameraXLibraryPigeonUtils.wrapError(exception)
                 }
@@ -4594,12 +4570,17 @@ abstract class PigeonApiImageCapture(
    * The capture is taken in memory and handed straight to `effectsManager`, so the frame never
    * crosses the platform channel. When `includeOriginal` is true the un-effected frame is saved as
    * well, from the same shutter event.
+   *
+   * `rotationDegrees` is the clockwise turn a viewer applies to bring the photo upright for the way
+   * the device was held, written to the EXIF orientation tag. The pixels stay composed like the
+   * preview.
    */
   abstract fun takePictureWithEffects(
       pigeon_instance: androidx.camera.core.ImageCapture,
       systemServicesManager: SystemServicesManager,
       effectsManager: CameraEffectsManager,
       includeOriginal: Boolean,
+      rotationDegrees: Long,
       callback: (Result<CapturedPicturePaths>) -> Unit
   )
 
@@ -4704,11 +4685,13 @@ abstract class PigeonApiImageCapture(
             val systemServicesManagerArg = args[1] as SystemServicesManager
             val effectsManagerArg = args[2] as CameraEffectsManager
             val includeOriginalArg = args[3] as Boolean
+            val rotationDegreesArg = args[4] as Long
             api.takePictureWithEffects(
                 pigeon_instanceArg,
                 systemServicesManagerArg,
                 effectsManagerArg,
-                includeOriginalArg) { result: Result<CapturedPicturePaths> ->
+                includeOriginalArg,
+                rotationDegreesArg) { result: Result<CapturedPicturePaths> ->
                   val error = result.exceptionOrNull()
                   if (error != null) {
                     reply.reply(CameraXLibraryPigeonUtils.wrapError(error))

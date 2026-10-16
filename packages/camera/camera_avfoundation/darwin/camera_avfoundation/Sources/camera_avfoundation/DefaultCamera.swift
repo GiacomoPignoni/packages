@@ -137,8 +137,6 @@ final class DefaultCamera: NSObject, Camera {
   /// Allows for alternate implementations in tests.
   private let videoDimensionsConverter: VideoDimensionsConverter
 
-  private let deviceOrientationProvider: DeviceOrientationProvider
-
   private(set) var captureDevice: CaptureDevice
   // Setter exposed for tests.
   var captureVideoOutput: CaptureVideoDataOutput
@@ -453,7 +451,6 @@ final class DefaultCamera: NSObject, Camera {
     assetWriterFactory = configuration.assetWriterFactory
     inputPixelBufferAdaptorFactory = configuration.inputPixelBufferAdaptorFactory
     videoDimensionsConverter = configuration.videoDimensionsConverter
-    deviceOrientationProvider = configuration.deviceOrientationProvider
     aspectRatio = configuration.aspectRatio
 
     // Compile the Metal pipelines ahead of the first frame so the

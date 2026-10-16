@@ -7,20 +7,18 @@ import XCTest
 @testable import camera_avfoundation
 
 final class CameraExposureTests: XCTestCase {
-  private func createCamera() -> (Camera, MockCaptureDevice, MockDeviceOrientationProvider) {
+  private func createCamera() -> (Camera, MockCaptureDevice) {
     let mockDevice = MockCaptureDevice()
-    let mockDeviceOrientationProvider = MockDeviceOrientationProvider()
 
     let configuration = CameraTestUtils.createTestCameraConfiguration()
     configuration.videoCaptureDeviceFactory = { _ in mockDevice }
-    configuration.deviceOrientationProvider = mockDeviceOrientationProvider
     let camera = CameraTestUtils.createTestCamera(configuration)
 
-    return (camera, mockDevice, mockDeviceOrientationProvider)
+    return (camera, mockDevice)
   }
 
   func testSetExposureModeLocked_setsAuthExposeMode() {
-    let (camera, mockDevice, _) = createCamera()
+    let (camera, mockDevice) = createCamera()
 
     mockDevice.setExposureModeStub = { mode in
       // AVCaptureExposureModeAutoExpose automatically adjusts the exposure one time, and then
@@ -32,7 +30,7 @@ final class CameraExposureTests: XCTestCase {
   }
 
   func testSetExposureModeAuto_setsContinousAutoExposureMode_ifSupported() {
-    let (camera, mockDevice, _) = createCamera()
+    let (camera, mockDevice) = createCamera()
 
     // All exposure modes are supported
     mockDevice.isExposureModeSupportedStub = { _ in true }
@@ -45,7 +43,7 @@ final class CameraExposureTests: XCTestCase {
   }
 
   func testSetExposureModeAuto_setsAutoExposeMode_ifContinousAutoIsNotSupported() {
-    let (camera, mockDevice, _) = createCamera()
+    let (camera, mockDevice) = createCamera()
 
     // Continous auto exposure is not supported
     mockDevice.isExposureModeSupportedStub = { mode in
@@ -60,7 +58,7 @@ final class CameraExposureTests: XCTestCase {
   }
 
   func testSetExposurePoint_setsExposurePointOfInterest() {
-    let (camera, mockDevice, _) = createCamera()
+    let (camera, mockDevice) = createCamera()
     // Exposure point of interest is supported.
     mockDevice.isExposurePointOfInterestSupported = true
 
@@ -85,9 +83,7 @@ final class CameraExposureTests: XCTestCase {
   }
 
   func testSetExposurePoint_returnsError_ifNotSupported() {
-    let (camera, mockDevice, mockDeviceOrientationProvider) = createCamera()
-    // UI is currently in landscape left orientation.
-    mockDeviceOrientationProvider.orientationStub = { .landscapeLeft }
+    let (camera, mockDevice) = createCamera()
     // Exposure point of interest is not supported.
     mockDevice.isExposurePointOfInterestSupported = false
 
@@ -108,7 +104,7 @@ final class CameraExposureTests: XCTestCase {
   }
 
   func testSetExposureOffset_setsExposureTargetBias() {
-    let (camera, mockDevice, _) = createCamera()
+    let (camera, mockDevice) = createCamera()
 
     let targetOffset = CGFloat(1.0)
 
@@ -124,7 +120,7 @@ final class CameraExposureTests: XCTestCase {
   }
 
   func testMaximumExposureOffset_returnsDeviceMaxExposureTargetBias() {
-    let (camera, mockDevice, _) = createCamera()
+    let (camera, mockDevice) = createCamera()
 
     let targetOffset = CGFloat(1.0)
 
@@ -134,7 +130,7 @@ final class CameraExposureTests: XCTestCase {
   }
 
   func testMinimumExposureOffset_returnsDeviceMinExposureTargetBias() {
-    let (camera, mockDevice, _) = createCamera()
+    let (camera, mockDevice) = createCamera()
 
     let targetOffset = CGFloat(1.0)
 

@@ -310,13 +310,8 @@ void main() {
           return MockSystemServicesManager();
         };
     PigeonOverrides.deviceOrientationManager_new =
-        ({required void Function(DeviceOrientationManager, String) onDeviceOrientationChanged}) {
-          final manager = MockDeviceOrientationManager();
-          when(manager.getUiOrientation()).thenAnswer((_) async {
-            return 'PORTRAIT_UP';
-          });
-          return manager;
-        };
+        ({required void Function(DeviceOrientationManager, String) onDeviceOrientationChanged}) =>
+            MockDeviceOrientationManager();
     PigeonOverrides.aspectRatioStrategy_new =
         ({
           required AspectRatio preferredAspectRatio,
@@ -662,9 +657,6 @@ void main() {
             final manager = MockDeviceOrientationManager();
             when(manager.startListeningForDeviceOrientationChange()).thenAnswer((_) async {
               startedListeningForDeviceOrientationChanges = true;
-            });
-            when(manager.getUiOrientation()).thenAnswer((_) async {
-              return 'PORTRAIT_UP';
             });
             return manager;
           };
@@ -1248,13 +1240,8 @@ void main() {
             return MockSystemServicesManager();
           };
       PigeonOverrides.deviceOrientationManager_new =
-          ({required void Function(DeviceOrientationManager, String) onDeviceOrientationChanged}) {
-            final manager = MockDeviceOrientationManager();
-            when(manager.getUiOrientation()).thenAnswer((_) async {
-              return 'PORTRAIT_UP';
-            });
-            return manager;
-          };
+          ({required void Function(DeviceOrientationManager, String) onDeviceOrientationChanged}) =>
+              MockDeviceOrientationManager();
       PigeonOverrides.aspectRatioStrategy_new =
           ({
             required AspectRatio preferredAspectRatio,
@@ -1412,7 +1399,7 @@ void main() {
     expect(await camera.recorder!.getQualitySelector(), isNot(equals(mockQualitySelector)));
   });
 
-  test('createCamera sets sensorOrientationDegrees and enableRecordingAudio as expected', () async {
+  test('createCamera sets enableRecordingAudio as expected', () async {
     final camera = AndroidCameraCameraX();
     const CameraLensDirection testLensDirection = CameraLensDirection.back;
     const testSensorOrientation = 90;
@@ -1464,7 +1451,6 @@ void main() {
       enableAudio: enableAudio,
     );
 
-    expect(camera.sensorOrientationDegrees, testSensorOrientation);
     expect(camera.enableRecordingAudio, isTrue);
   });
 
@@ -1873,13 +1859,8 @@ void main() {
       return Observer<T>.detached(onChanged: onChanged);
     };
     PigeonOverrides.deviceOrientationManager_new =
-        ({required void Function(DeviceOrientationManager, String) onDeviceOrientationChanged}) {
-          final manager = MockDeviceOrientationManager();
-          when(manager.getUiOrientation()).thenAnswer((_) async {
-            return 'PORTRAIT_UP';
-          });
-          return manager;
-        };
+        ({required void Function(DeviceOrientationManager, String) onDeviceOrientationChanged}) =>
+            MockDeviceOrientationManager();
     PigeonOverrides.aspectRatioStrategy_new =
         ({
           required AspectRatio preferredAspectRatio,
@@ -2224,13 +2205,8 @@ void main() {
         ({required void Function(SystemServicesManager, String) onCameraError}) =>
             MockSystemServicesManager();
     PigeonOverrides.deviceOrientationManager_new =
-        ({required void Function(DeviceOrientationManager, String) onDeviceOrientationChanged}) {
-          final manager = MockDeviceOrientationManager();
-          when(manager.getUiOrientation()).thenAnswer((_) async {
-            return 'PORTRAIT_UP';
-          });
-          return manager;
-        };
+        ({required void Function(DeviceOrientationManager, String) onDeviceOrientationChanged}) =>
+            MockDeviceOrientationManager();
     PigeonOverrides.aspectRatioStrategy_new =
         ({
           required AspectRatio preferredAspectRatio,
@@ -2940,7 +2916,7 @@ void main() {
     });
 
     test(
-      'startVideoCapturing restores the pinned VideoCapture target rotation if orientation unlocked',
+      'startVideoCapturing binds VideoCapture at the pinned rotation, then turns it to the device orientation',
       () async {
         // Set up mocks and constants.
         final camera = AndroidCameraCameraX();
@@ -2949,7 +2925,7 @@ void main() {
         final mockVideoCapture = MockVideoCapture();
         final initialCameraInfo = MockCameraInfo();
         final mockCamera2CameraInfo = MockCamera2CameraInfo();
-        const int defaultTargetRotation = Surface.rotation270;
+        late void Function(DeviceOrientationManager, String) reportDeviceOrientation;
 
         // Set directly for test versus calling createCamera.
         camera.processCameraProvider = MockProcessCameraProvider();
@@ -2983,11 +2959,8 @@ void main() {
             ({
               required void Function(DeviceOrientationManager, String) onDeviceOrientationChanged,
             }) {
-              final mockDeviceOrientationManager = MockDeviceOrientationManager();
-              when(
-                mockDeviceOrientationManager.getDefaultDisplayRotation(),
-              ).thenAnswer((_) async => defaultTargetRotation);
-              return mockDeviceOrientationManager;
+              reportDeviceOrientation = onDeviceOrientationChanged;
+              return MockDeviceOrientationManager();
             };
         PigeonOverrides.videoRecordEventListener_new =
             ({required void Function(VideoRecordEventListener, VideoRecordEvent) onEvent}) {
@@ -3024,53 +2997,29 @@ void main() {
           VideoRecordEventStart.pigeon_detached(),
         );
 
-        // Orientation is unlocked and plugin does not need to set default target
-        // rotation manually.
+        reportDeviceOrientation(camera.deviceOrientationManager, 'LANDSCAPE_LEFT');
         camera.recording = null;
         await camera.startVideoCapturing(const VideoCaptureOptions(cameraId));
-        verifyNever(mockVideoCapture.setTargetRotation(any));
+        verifyInOrder(<Future<void>>[
+          mockVideoCapture.setTargetRotation(Surface.rotation0),
+          camera.processCameraProvider!.isBound(mockVideoCapture),
+          mockVideoCapture.setTargetRotation(Surface.rotation90),
+        ]);
 
         // Simulate video recording being started so startVideoRecording completes.
         AndroidCameraCameraX.videoRecordingEventStreamController.add(
           VideoRecordEventStart.pigeon_detached(),
         );
 
-        // Orientation is locked and plugin does not need to set default target
-        // rotation manually.
+        // A locked orientation takes the place of the device's.
+        clearInteractions(mockVideoCapture);
+        await camera.lockCaptureOrientation(cameraId, DeviceOrientation.landscapeRight);
         camera.recording = null;
-        camera.captureOrientationLocked = true;
         await camera.startVideoCapturing(const VideoCaptureOptions(cameraId));
-        verifyNever(mockVideoCapture.setTargetRotation(any));
-
-        // Simulate video recording being started so startVideoRecording completes.
-        AndroidCameraCameraX.videoRecordingEventStreamController.add(
-          VideoRecordEventStart.pigeon_detached(),
-        );
-
-        // Orientation is locked and plugin does need to set default target
-        // rotation manually.
-        camera.recording = null;
-        camera.captureOrientationLocked = true;
-        camera.shouldSetDefaultRotation = true;
-        await camera.startVideoCapturing(const VideoCaptureOptions(cameraId));
-        verifyNever(mockVideoCapture.setTargetRotation(any));
-
-        // Simulate video recording being started so startVideoRecording completes.
-        AndroidCameraCameraX.videoRecordingEventStreamController.add(
-          VideoRecordEventStart.pigeon_detached(),
-        );
-
-        // Orientation is unlocked and plugin does need to set default target
-        // rotation manually. It restores the rotation the effect pipeline
-        // composes in rather than the display's: the recording's frames are
-        // drawn by the same shader pass as the preview, with the overlay and
-        // every other effect baked into the pixels, so the two must agree.
-        camera.recording = null;
-        camera.captureOrientationLocked = false;
-        camera.shouldSetDefaultRotation = true;
-        await camera.startVideoCapturing(const VideoCaptureOptions(cameraId));
-        verify(mockVideoCapture.setTargetRotation(Surface.rotation0));
-        verifyNever(mockVideoCapture.setTargetRotation(defaultTargetRotation));
+        verifyInOrder(<Future<void>>[
+          mockVideoCapture.setTargetRotation(Surface.rotation0),
+          mockVideoCapture.setTargetRotation(Surface.rotation270),
+        ]);
       },
     );
 
@@ -3380,13 +3329,8 @@ void main() {
             return mockBackCameraSelector;
           };
       PigeonOverrides.deviceOrientationManager_new =
-          ({required void Function(DeviceOrientationManager, String) onDeviceOrientationChanged}) {
-            final manager = MockDeviceOrientationManager();
-            when(manager.getUiOrientation()).thenAnswer((_) async {
-              return 'PORTRAIT_UP';
-            });
-            return manager;
-          };
+          ({required void Function(DeviceOrientationManager, String) onDeviceOrientationChanged}) =>
+              MockDeviceOrientationManager();
       PigeonOverrides.camera2CameraInfo_from = ({required dynamic cameraInfo}) {
         final camera2cameraInfo = MockCamera2CameraInfo();
         var cameraId = '';
@@ -3601,13 +3545,8 @@ void main() {
             return mockBackCameraSelector;
           };
       PigeonOverrides.deviceOrientationManager_new =
-          ({required void Function(DeviceOrientationManager, String) onDeviceOrientationChanged}) {
-            final manager = MockDeviceOrientationManager();
-            when(manager.getUiOrientation()).thenAnswer((_) async {
-              return 'PORTRAIT_UP';
-            });
-            return manager;
-          };
+          ({required void Function(DeviceOrientationManager, String) onDeviceOrientationChanged}) =>
+              MockDeviceOrientationManager();
       PigeonOverrides.camera2CameraInfo_from = ({required dynamic cameraInfo}) {
         final camera2cameraInfo = MockCamera2CameraInfo();
         var cameraId = '';
@@ -3746,6 +3685,7 @@ void main() {
         argThat(isA<SystemServicesManager>()),
         mockEffectsManager,
         false,
+        any,
       ),
     ).thenAnswer((_) async => CapturedPicturePaths.pigeon_detached(processedPath: testPicturePath));
 
@@ -3755,29 +3695,26 @@ void main() {
   });
 
   test(
-    'takePicture sets ImageCapture target rotation as expected when orientation locked or unlocked',
+    'takePicture keeps ImageCapture in the preview frame and passes the device turn for the Exif tag',
     () async {
       final camera = AndroidCameraCameraX();
       final mockImageCapture = MockImageCapture();
       final mockProcessCameraProvider = MockProcessCameraProvider();
+      late void Function(DeviceOrientationManager, String) reportDeviceOrientation;
 
       const cameraId = 3;
-      const int defaultTargetRotation = Surface.rotation180;
 
       // Set directly for test versus calling createCamera.
       camera.imageCapture = mockImageCapture;
+      camera.imageAnalysis = MockImageAnalysis();
       camera.processCameraProvider = mockProcessCameraProvider;
       camera.effectsManager = mockEffectsManager;
       camera.cameraEffect = mockCameraEffect;
 
-      // Tell plugin to mock call to get current photo orientation and systemServicesManager.
       PigeonOverrides.deviceOrientationManager_new =
           ({required void Function(DeviceOrientationManager, String) onDeviceOrientationChanged}) {
-            final mockDeviceOrientationManager = MockDeviceOrientationManager();
-            when(
-              mockDeviceOrientationManager.getDefaultDisplayRotation(),
-            ).thenAnswer((_) async => defaultTargetRotation);
-            return mockDeviceOrientationManager;
+            reportDeviceOrientation = onDeviceOrientationChanged;
+            return MockDeviceOrientationManager();
           };
       PigeonOverrides.systemServicesManager_new =
           ({required void Function(SystemServicesManager, String) onCameraError}) {
@@ -3785,41 +3722,39 @@ void main() {
           };
 
       when(mockProcessCameraProvider.isBound(camera.imageCapture)).thenAnswer((_) async => true);
-      when(
-        mockImageCapture.takePictureWithEffects(
-          argThat(isA<SystemServicesManager>()),
-          mockEffectsManager,
-          false,
-        ),
-      ).thenAnswer(
+      when(mockImageCapture.takePictureWithEffects(any, any, any, any)).thenAnswer(
         (_) async =>
             CapturedPicturePaths.pigeon_detached(processedPath: 'test/absolute/path/to/picture'),
       );
 
-      // Orientation is unlocked and plugin does not need to set default target
-      // rotation manually.
-      await camera.takePicture(cameraId);
-      verify(mockImageCapture.setTargetRotation(defaultTargetRotation));
+      Future<int> exifRotationOfNextPicture() async {
+        await camera.takePicture(cameraId);
+        return verify(
+              mockImageCapture.takePictureWithEffects(any, mockEffectsManager, false, captureAny),
+            ).captured.single
+            as int;
+      }
 
-      // Orientation is locked and plugin does not need to set default target
-      // rotation manually.
-      camera.captureOrientationLocked = true;
-      await camera.takePicture(cameraId);
+      expect(await exifRotationOfNextPicture(), 0);
+
+      reportDeviceOrientation(camera.deviceOrientationManager, 'LANDSCAPE_LEFT');
+      expect(await exifRotationOfNextPicture(), 270);
+
+      camera.cameraIsFrontFacing = true;
+      expect(await exifRotationOfNextPicture(), 90);
+
+      camera.cameraIsFrontFacing = false;
+      await camera.lockCaptureOrientation(cameraId, DeviceOrientation.landscapeRight);
+      expect(await exifRotationOfNextPicture(), 90);
+
+      // On a landscape-natural device the portrait UI is drawn at ROTATION_90, so a device held
+      // upright for it is a quarter turn counter-clockwise from natural.
+      await camera.unlockCaptureOrientation(cameraId);
+      camera.initialDefaultDisplayRotation = Surface.rotation90;
+      reportDeviceOrientation(camera.deviceOrientationManager, 'PORTRAIT_UP');
+      expect(await exifRotationOfNextPicture(), 270);
+
       verifyNever(mockImageCapture.setTargetRotation(any));
-
-      // Orientation is locked and plugin does need to set default target
-      // rotation manually.
-      camera.captureOrientationLocked = true;
-      camera.shouldSetDefaultRotation = true;
-      await camera.takePicture(cameraId);
-      verifyNever(mockImageCapture.setTargetRotation(any));
-
-      // Orientation is unlocked and plugin does need to set default target
-      // rotation manually.
-      camera.captureOrientationLocked = false;
-      camera.shouldSetDefaultRotation = true;
-      await camera.takePicture(cameraId);
-      verify(mockImageCapture.setTargetRotation(defaultTargetRotation));
     },
   );
 
@@ -3862,14 +3797,14 @@ void main() {
     await camera.setJpegImageQuality(cameraId, jpegQuality);
 
     verify(mockProcessCameraProvider.unbind(<UseCase>[mockImageCapture])).called(1);
-    verify(mockDeviceOrientationManager.getDefaultDisplayRotation()).called(1);
-    expect(actualTargetRotation, defaultTargetRotation);
+    verifyNever(mockDeviceOrientationManager.getDefaultDisplayRotation());
+    expect(actualTargetRotation, Surface.rotation0);
     expect(actualJpegQuality, jpegQuality);
     expect(camera.imageCapture, same(mockNewImageCapture));
   });
 
   test(
-    'setJpegImageQuality preserves locked target rotation when recreating ImageCapture',
+    'setJpegImageQuality keeps ImageCapture in the preview frame when the orientation is locked',
     () async {
       final camera = AndroidCameraCameraX();
       final mockProcessCameraProvider = MockProcessCameraProvider();
@@ -3878,7 +3813,6 @@ void main() {
       final mockImageAnalysis = MockImageAnalysis();
       final mockVideoCapture = MockVideoCapture();
       final mockNewImageCapture = MockImageCapture();
-      const int lockedTargetRotation = Surface.rotation270;
       const jpegQuality = 64;
       const cameraId = 11;
       int? actualTargetRotation;
@@ -3915,7 +3849,7 @@ void main() {
       await camera.setJpegImageQuality(cameraId, jpegQuality);
 
       verifyNever(mockDeviceOrientationManager.getDefaultDisplayRotation());
-      expect(actualTargetRotation, lockedTargetRotation);
+      expect(actualTargetRotation, Surface.rotation0);
       expect(actualJpegQuality, jpegQuality);
       expect(camera.imageCapture, same(mockNewImageCapture));
     },
@@ -3986,6 +3920,7 @@ void main() {
           argThat(isA<SystemServicesManager>()),
           mockEffectsManager,
           false,
+          any,
         ),
       ).thenAnswer(
         (_) async => CapturedPicturePaths.pigeon_detached(processedPath: testPicturePath),
@@ -4036,6 +3971,7 @@ void main() {
         argThat(isA<SystemServicesManager>()),
         mockEffectsManager,
         false,
+        any,
       ),
     ).thenAnswer((_) async => CapturedPicturePaths.pigeon_detached(processedPath: 'ignored'));
 
@@ -4096,6 +4032,7 @@ void main() {
           argThat(isA<SystemServicesManager>()),
           mockEffectsManager,
           false,
+          any,
         ),
       ).thenAnswer((_) async => CapturedPicturePaths.pigeon_detached(processedPath: 'ignored'));
 
@@ -4839,7 +4776,7 @@ void main() {
   );
 
   test(
-    'lockCaptureOrientation sets photo use case target rotations but leaves the recording pinned',
+    'lockCaptureOrientation sets the analysis target rotation and leaves stills and recordings pinned',
     () async {
       final camera = AndroidCameraCameraX();
       const cameraId = 44;
@@ -4869,11 +4806,9 @@ void main() {
         await camera.lockCaptureOrientation(cameraId, orientation);
 
         verify(mockImageAnalysis.setTargetRotation(expectedTargetRotation));
-        verify(mockImageCapture.setTargetRotation(expectedTargetRotation));
-        // `videoCapture` is deliberately left alone: its frames carry the
-        // overlay and the other effects baked in, composed in the orientation
-        // the effect pipeline renders, so re-tagging the file would turn the
-        // picture without turning what was drawn on it.
+        // Stills and recordings take the locked orientation as metadata when
+        // they are captured.
+        verifyNever(mockImageCapture.setTargetRotation(any));
         verifyNever(mockVideoCapture.setTargetRotation(any));
         expect(camera.captureOrientationLocked, isTrue);
         expect(camera.shouldSetDefaultRotation, isTrue);
@@ -6441,6 +6376,7 @@ void main() {
         argThat(isA<SystemServicesManager>()),
         mockEffectsManager,
         true,
+        any,
       ),
     ).thenAnswer(
       (_) async => CapturedPicturePaths.pigeon_detached(
