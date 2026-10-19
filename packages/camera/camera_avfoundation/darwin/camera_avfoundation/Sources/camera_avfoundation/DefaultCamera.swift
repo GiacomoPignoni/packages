@@ -214,6 +214,12 @@ final class DefaultCamera: NSObject, Camera {
       updateOrientation()
     }
   }
+  var interfaceOrientation: UIDeviceOrientation {
+    didSet {
+      guard interfaceOrientation != oldValue else { return }
+      pinVideoConnection()
+    }
+  }
 
   /// Tracks the latest pixel buffer sent from AVFoundation's sample buffer delegate callback.
   /// Used to deliver the latest pixel buffer to the flutter engine via the `copyPixelBuffer` API.
@@ -349,6 +355,11 @@ final class DefaultCamera: NSObject, Camera {
     return CGSize(width: CGFloat(longer), height: CGFloat(shorter))
   }
 
+  private func reportedPreviewSize(width: Int, height: Int) -> CGSize {
+    let size = DefaultCamera.landscapePreviewSize(width: width, height: height)
+    return interfaceOrientation.isLandscape ? CGSize(width: size.height, height: size.width) : size
+  }
+
   /// Device-screen shorter side in *native pixels*. Used to size the
   /// renderer's preview pool: on-screen preview is sampled by Flutter into a
   /// FlutterView that never exceeds the screen, so rendering the shader at a
@@ -478,6 +489,7 @@ final class DefaultCamera: NSObject, Camera {
     audioCaptureSession.automaticallyConfiguresApplicationAudioSession = false
 
     deviceOrientation = configuration.orientation
+    interfaceOrientation = configuration.interfaceOrientation
 
     let connection: AVCaptureConnection
     (captureVideoInput, captureVideoOutput, connection) = try DefaultCamera.createConnection(
@@ -590,19 +602,18 @@ final class DefaultCamera: NSObject, Camera {
       capturePhotoOutput.flutterMaxPhotoDimensions = largest
     }
 
-    // Pinned for the life of the session. This connection feeds both the preview texture and the
-    // recorder; re-orienting it transposes the buffer dimensions mid-stream, which rebuilds the
-    // render pipeline on every turn. Pinned, the preview is a fixed window onto the scene — the
-    // phone and the image turn together, so nothing on screen moves. Device rotation rides on the
-    // photo's EXIF tag (`updateOrientation`) and the video track transform (`setupWriter`) instead.
+    // Pinned to the interface's portrait frame, which only moves when the scene changes display.
+    // This connection feeds both the preview texture and the recorder; re-orienting it transposes
+    // the buffer dimensions mid-stream, which rebuilds the render pipeline. Pinned, the preview is a
+    // fixed window onto the scene — the phone and the image turn together, so nothing on screen
+    // moves. Device rotation rides on the photo's EXIF tag (`updateOrientation`) and the video
+    // track transform (`setupWriter`) instead.
     //
     // Must follow `commitConfiguration`: `isVideoOrientationSupported` is false while the
     // connection is detached and it only attaches on commit, so pinning any earlier silently does
     // nothing. `updateOrientation` below needs the committed session for the same reason — the
     // photo output has no connection to reach until then.
-    if connection.isVideoOrientationSupported {
-      connection.videoOrientation = .portrait
-    }
+    pinVideoConnection()
 
     updateOrientation()
 
@@ -723,11 +734,9 @@ final class DefaultCamera: NSObject, Camera {
         sourceWidth: sourceWidth,
         sourceHeight: sourceHeight,
         targetRatio: effectiveRatio)
-      previewSize = DefaultCamera.landscapePreviewSize(
-        width: crop.width, height: crop.height)
+      previewSize = reportedPreviewSize(width: crop.width, height: crop.height)
     } else {
-      previewSize = DefaultCamera.landscapePreviewSize(
-        width: sourceWidth, height: sourceHeight)
+      previewSize = reportedPreviewSize(width: sourceWidth, height: sourceHeight)
     }
     audioCaptureSession.sessionPreset = videoCaptureSession.sessionPreset
   }
@@ -1325,8 +1334,8 @@ final class DefaultCamera: NSObject, Camera {
     // Encoded frames are always phone-upright, so how the phone was held at the start of the take
     // rides along as a track transform — frozen for the whole recording.
     videoWriterInput.avInput.transform = DefaultCamera.videoTransform(
-      forDeviceOrientation: lockedCaptureOrientation != .unknown
-        ? lockedCaptureOrientation : deviceOrientation)
+      forDeviceOrientation: (lockedCaptureOrientation != .unknown
+        ? lockedCaptureOrientation : deviceOrientation).relative(to: interfaceOrientation))
 
     var sourcePixelBufferAttributes: [String: Any] = [
       kCVPixelBufferPixelFormatTypeKey as String: videoFormat
@@ -1427,6 +1436,7 @@ final class DefaultCamera: NSObject, Camera {
     applyPendingCaptureScaleIfNeeded()
     // The file is closed, so the device's frame rate is free to move again.
     applyPendingFrameRateCeiling()
+    pinVideoConnection()
 
     // When `isRecording` is true `startWriting` was already called so `videoWriter.status`
     // is always either `.writing` or `.failed` and `finishWriting` does not throw exceptions so
@@ -1800,6 +1810,14 @@ final class DefaultCamera: NSObject, Camera {
     return file
   }
 
+  private func pinVideoConnection() {
+    guard !isRecording,
+      let connection = captureVideoOutput.connection(with: .video),
+      connection.isVideoOrientationSupported
+    else { return }
+    connection.videoOrientation = interfaceOrientation.videoOrientation
+  }
+
   private func updateOrientation() {
     guard !isRecording else { return }
 
@@ -1840,29 +1858,14 @@ final class DefaultCamera: NSObject, Camera {
     if let connection = captureOutput.connection(with: .video),
       connection.isVideoOrientationSupported
     {
-      connection.videoOrientation = videoOrientation(forDeviceOrientation: orientation)
-    }
-  }
-
-  private func videoOrientation(forDeviceOrientation deviceOrientation: UIDeviceOrientation)
-    -> AVCaptureVideoOrientation
-  {
-    switch deviceOrientation {
-    case .portrait:
-      return .portrait
-    case .landscapeLeft:
-      return .landscapeRight
-    case .landscapeRight:
-      return .landscapeLeft
-    case .portraitUpsideDown:
-      return .portraitUpsideDown
-    default:
-      return .portrait
+      connection.videoOrientation = orientation.videoOrientation
     }
   }
 
   func lockCaptureOrientation(_ pigeonOrientation: PlatformDeviceOrientation) {
-    let orientation = getUIDeviceOrientation(for: pigeonOrientation)
+    let orientation = UIDeviceOrientation(
+      quarterTurns: getUIDeviceOrientation(for: pigeonOrientation).quarterTurns
+        + interfaceOrientation.quarterTurns)
     if lockedCaptureOrientation != orientation {
       lockedCaptureOrientation = orientation
       updateOrientation()
@@ -2207,8 +2210,7 @@ final class DefaultCamera: NSObject, Camera {
   /// Must be called on `captureSessionQueue` — the same queue all other
   /// `previewSize` reads/writes use, so the assignment is race-free.
   private func updatePreviewSize(width: CGFloat, height: CGFloat) {
-    let newSize = DefaultCamera.landscapePreviewSize(
-      width: Int(width), height: Int(height))
+    let newSize = reportedPreviewSize(width: Int(width), height: Int(height))
     guard newSize != previewSize else { return }
     previewSize = newSize
     // Only broadcast after the camera has been reported as initialized.

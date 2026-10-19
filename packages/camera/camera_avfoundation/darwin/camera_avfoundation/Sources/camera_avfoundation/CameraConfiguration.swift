@@ -36,6 +36,7 @@ class CameraConfiguration {
   var videoDimensionsConverter: VideoDimensionsConverter
   let initialCameraName: String
   var orientation: UIDeviceOrientation
+  var interfaceOrientation: UIDeviceOrientation
   let aspectRatio: Double?
 
   init(
@@ -59,6 +60,7 @@ class CameraConfiguration {
     self.captureDeviceInputFactory = captureDeviceInputFactory
     self.initialCameraName = initialCameraName
     self.orientation = .portrait
+    self.interfaceOrientation = .portrait
     self.aspectRatio = aspectRatio
 
     self.videoDimensionsConverter = { format in

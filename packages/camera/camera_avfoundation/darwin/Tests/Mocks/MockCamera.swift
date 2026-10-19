@@ -93,6 +93,8 @@ final class MockCamera: NSObject, Camera {
     }
   }
 
+  var interfaceOrientation = UIDeviceOrientation.portrait
+
   var minimumExposureOffset: CGFloat {
     return getMinimumExposureOffsetStub?() ?? 0
   }

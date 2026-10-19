@@ -26,6 +26,9 @@ public final class CameraPlugin: NSObject, FlutterPlugin {
   /// one starts from it. Owned by `captureSessionQueue`.
   private var deviceOrientation = UIDeviceOrientation.portrait
 
+  private let interfaceObserver = InterfaceOrientationObserver()
+  private var interfaceOrientation = UIDeviceOrientation.portrait
+
   public static func register(with registrar: FlutterPluginRegistrar) {
     let instance = CameraPlugin(
       registry: registrar.textures(),
@@ -81,6 +84,7 @@ public final class CameraPlugin: NSObject, FlutterPlugin {
 
   public func detachFromEngine(for registrar: FlutterPluginRegistrar) {
     orientationObserver.stop()
+    interfaceObserver.stop()
   }
 
   private static func pigeonErrorFromNSError(_ error: NSError) -> PigeonError {
@@ -97,7 +101,16 @@ public final class CameraPlugin: NSObject, FlutterPlugin {
       // `Camera.deviceOrientation` must be set on capture session queue.
       strongSelf.camera?.deviceOrientation = orientation
       // `CameraPlugin.sendDeviceOrientation` can be called on any queue.
-      strongSelf.sendDeviceOrientation(orientation)
+      strongSelf.sendDeviceOrientation(orientation.relative(to: strongSelf.interfaceOrientation))
+    }
+  }
+
+  func interfaceOrientationChanged(_ orientation: UIDeviceOrientation) {
+    captureSessionQueue.async { [weak self] in
+      guard let self else { return }
+      interfaceOrientation = orientation
+      camera?.interfaceOrientation = orientation
+      sendDeviceOrientation(deviceOrientation.relative(to: orientation))
     }
   }
 
@@ -264,6 +277,7 @@ extension CameraPlugin: CameraApi {
       aspectRatio: settings.aspectRatio
     )
     camConfiguration.orientation = deviceOrientation
+    camConfiguration.interfaceOrientation = interfaceOrientation
 
     do {
       let newCamera = try DefaultCamera(configuration: camConfiguration)
@@ -275,6 +289,9 @@ extension CameraPlugin: CameraApi {
         guard let strongSelf = self else { return }
         // Gravity is only read while a camera is open; `dispose` stops it.
         strongSelf.orientationObserver.start { [weak self] in self?.orientationChanged($0) }
+        strongSelf.interfaceObserver.start(device: AVCaptureDevice(uniqueID: name)) { [weak self] in
+          self?.interfaceOrientationChanged($0)
+        }
         completion(.success(strongSelf.registry.register(newCamera)))
       }
     } catch let error as NSError {
@@ -320,7 +337,7 @@ extension CameraPlugin: CameraApi {
     )
 
     camera.reportInitializationState()
-    sendDeviceOrientation(deviceOrientation)
+    sendDeviceOrientation(deviceOrientation.relative(to: interfaceOrientation))
     camera.start()
     completion(.success(()))
   }
@@ -352,6 +369,7 @@ extension CameraPlugin: CameraApi {
   func dispose(cameraId: Int64, completion: @escaping (Result<Void, any Error>) -> Void) {
     registry.unregisterTexture(Int64(cameraId))
     orientationObserver.stop()
+    interfaceObserver.stop()
     captureSessionQueue.async { [weak self] in
       if let strongSelf = self {
         strongSelf.camera?.close()
