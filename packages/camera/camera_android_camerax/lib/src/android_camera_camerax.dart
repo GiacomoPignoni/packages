@@ -3,7 +3,7 @@
 // found in the LICENSE file.
 
 import 'dart:async';
-import 'dart:math' show Point;
+import 'dart:math' show Point, max;
 import 'dart:ui' show channelBuffers;
 
 import 'package:async/async.dart';
@@ -204,6 +204,14 @@ class AndroidCameraCameraX extends CameraPlatform {
   /// user asked for but the lens itself. Re-sent every time the use cases are
   /// re-bound, which builds a new camera adapter that starts back at 1.0.
   double? _requestedZoomRatio;
+
+  /// The zoom ratio, on the camera actually opened, of the lens the current
+  /// description names: 1.0 unless it was built by [_lensCameraName].
+  ///
+  /// Zoom levels are reported and taken relative to it, with the range starting
+  /// at it, so every description behaves like a lens of its own whose 1.0 is
+  /// that lens — not the camera's main lens, nor its widest one at the minimum.
+  double _lensZoomRatio = 1.0;
 
   /// Counts binds and unbinds of the use cases.
   ///
@@ -739,6 +747,7 @@ class AndroidCameraCameraX extends CameraPlatform {
       cameraDescription.name,
     );
     _requestedZoomRatio = lens?.zoomRatio;
+    _lensZoomRatio = lens?.zoomRatio ?? 1.0;
 
     // Choose CameraInfo to create CameraSelector by name associated with desired camera.
     final CameraInfo? chosenCameraInfo = _savedCameras[lens?.parentName ?? cameraDescription.name];
@@ -1438,7 +1447,7 @@ class AndroidCameraCameraX extends CameraPlatform {
         'No explicit ZoomState has been set on the LiveData instance for the camera in use.',
       );
     }
-    return zoomState.maxZoomRatio;
+    return zoomState.maxZoomRatio / _lensZoomRatio;
   }
 
   /// Gets the minimum supported zoom level for the camera with ID [cameraId].
@@ -1453,7 +1462,7 @@ class AndroidCameraCameraX extends CameraPlatform {
         'No explicit ZoomState has been set on the LiveData instance for the camera in use.',
       );
     }
-    return zoomState.minZoomRatio;
+    return max(zoomState.minZoomRatio, _lensZoomRatio) / _lensZoomRatio;
   }
 
   /// Set the zoom level for the camera with ID [cameraId].
@@ -1465,9 +1474,10 @@ class AndroidCameraCameraX extends CameraPlatform {
   Future<void> setZoomLevel(int cameraId, double zoom) async {
     // Held so a rebind can restore it; a caller that has zoomed away from the
     // lens its camera was created for is not put back on that lens.
-    _requestedZoomRatio = zoom;
+    final double zoomRatio = zoom * _lensZoomRatio;
+    _requestedZoomRatio = zoomRatio;
     try {
-      await cameraControl.setZoomRatio(zoom);
+      await cameraControl.setZoomRatio(zoomRatio);
     } on PlatformException catch (e) {
       cameraErrorStreamController.add(
         e.message ??
@@ -1560,6 +1570,7 @@ class AndroidCameraCameraX extends CameraPlatform {
     }
     final ({String parentName, double zoomRatio})? lens = _parseLensCameraName(description.name);
     _requestedZoomRatio = lens?.zoomRatio;
+    _lensZoomRatio = lens?.zoomRatio ?? 1.0;
     final CameraInfo? chosenCameraInfo = _savedCameras[lens?.parentName ?? description.name];
 
     // Save CameraSelector that matches cameraDescription.

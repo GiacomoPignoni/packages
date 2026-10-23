@@ -4171,10 +4171,10 @@ void main() {
     expect(await camera.getMaxZoomLevel(55), maxZoomRatio);
   });
 
-  test('getMinZoomLevel returns expected exposure offset', () async {
+  test('getMinZoomLevel starts at the lens of the camera rather than at a wider one', () async {
     final camera = AndroidCameraCameraX();
     final mockCameraInfo = MockCameraInfo();
-    const double minZoomRatio = 0;
+    const minZoomRatio = 0.6;
     final LiveData<ZoomState> mockLiveZoomState = MockLiveZoomState();
     final zoomState = ZoomState.pigeon_detached(maxZoomRatio: 1, minZoomRatio: minZoomRatio);
 
@@ -4184,7 +4184,7 @@ void main() {
     when(mockCameraInfo.getZoomState()).thenAnswer((_) async => mockLiveZoomState);
     when(mockLiveZoomState.getValue()).thenAnswer((_) async => zoomState);
 
-    expect(await camera.getMinZoomLevel(55), minZoomRatio);
+    expect(await camera.getMinZoomLevel(55), 1.0);
   });
 
   test('setZoomLevel sets zoom ratio as expected', () async {
@@ -7500,6 +7500,15 @@ void main() {
     expect(selectorBuiltFrom, mockLogicalCameraInfo);
     final zoomRatio = verify(mockCameraControl.setZoomRatio(captureAny)).captured.last as double;
     expect(zoomRatio, closeTo(2.9, 0.01));
+
+    // A caller applying zoom 1.0 after the switch must stay on the lens, not fall back to the
+    // camera's main one.
+    expect(await camera.getMinZoomLevel(testSurfaceTextureId), 1.0);
+    expect(await camera.getMaxZoomLevel(testSurfaceTextureId), closeTo(10.0 / 2.9, 0.01));
+    await camera.setZoomLevel(testSurfaceTextureId, 1.0);
+    final appliedZoomRatio =
+        verify(mockCameraControl.setZoomRatio(captureAny)).captured.last as double;
+    expect(appliedZoomRatio, closeTo(2.9, 0.01));
   });
 
   test('the zoom a caller set is restored when the use cases are re-bound', () async {
