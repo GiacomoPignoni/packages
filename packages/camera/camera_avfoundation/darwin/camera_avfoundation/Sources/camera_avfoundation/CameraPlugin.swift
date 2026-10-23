@@ -151,7 +151,7 @@ extension CameraPlugin: CameraApi {
       for device in devices {
         let lensFacing = strongSelf.platformLensDirection(for: device)
         let lensType = strongSelf.platformLensType(for: device)
-        let focalLength = strongSelf.equivalentFocalLengthFromDiagonalFOV(for: device)
+        let focalLength = strongSelf.equivalentFocalLength(for: device)
         let cameraDescription = PlatformCameraDescription(
           name: device.uniqueID,
           lensDirection: lensFacing,
@@ -165,13 +165,17 @@ extension CameraPlugin: CameraApi {
     }
   }
 
-  /// `AVCaptureDeviceFormat.videoFieldOfView` is documented as the *diagonal*
-  /// angle of view, so the 35mm-equivalent calculation must use the matching
-  /// diagonal of a 35mm frame (sqrt(36² + 24²) ≈ 43.2666 mm), not its width.
-  private func equivalentFocalLengthFromDiagonalFOV(for device: CaptureDevice) -> Double {
-    let diagonalFOV = device.flutterActiveFormat.flutterVideoFieldOfView
-    let radians = Double(diagonalFOV) * .pi / 180.0
-    return 43.2666 / (2.0 * tan(radians / 2.0))
+  /// `AVCaptureDeviceFormat.videoFieldOfView` is the *horizontal* angle of view,
+  /// so it is measured against the width of a 4:3 frame with a 35mm diagonal
+  /// (43.2666 mm × 4/5), the convention behind the focal lengths Apple publishes.
+  /// The widest format spans the whole sensor and, unlike the active one, does
+  /// not change between discoveries.
+  private func equivalentFocalLength(for device: CaptureDevice) -> Double {
+    let horizontalFOV =
+      device.flutterFormats.map(\.flutterVideoFieldOfView).max()
+      ?? device.flutterActiveFormat.flutterVideoFieldOfView
+    let radians = Double(horizontalFOV) * .pi / 180.0
+    return 34.6133 / (2.0 * tan(radians / 2.0))
   }
 
   private func platformLensDirection(for device: CaptureDevice) -> PlatformCameraLensDirection {

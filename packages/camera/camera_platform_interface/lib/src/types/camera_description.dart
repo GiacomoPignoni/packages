@@ -110,11 +110,10 @@ class CameraDescription {
 
   /// The approximate 35mm-equivalent focal length of the lens, in millimetres.
   ///
-  /// Derived from the lens's current active-format diagonal field of view, so
-  /// the value reflects a snapshot of the device at discovery time and may
-  /// differ between formats of the same physical lens. For that reason it is
-  /// **excluded from `==` and `hashCode`** — two descriptions of the same
-  /// camera at different active formats still compare equal.
+  /// Measured over the whole sensor — from the widest format's field of view
+  /// on iOS, from the focal length and sensor size on Android — so it does not
+  /// depend on the active format. Still **excluded from `==` and `hashCode`**:
+  /// it describes a camera rather than identifying one.
   ///
   /// Available on iOS (AVFoundation) and Android (CameraX); `null` where the
   /// platform does not report enough about the lens to derive one.

@@ -28,7 +28,7 @@ protocol CaptureDeviceFormat: NSObjectProtocol {
   /// Corresponds to `supportedMaxPhotoDimensions`. Empty before iOS 16.
   var flutterSupportedMaxPhotoDimensions: [CMVideoDimensions] { get }
 
-  /// Corresponds to `videoFieldOfView`, the diagonal angle of view in degrees.
+  /// Corresponds to `videoFieldOfView`, the horizontal angle of view in degrees.
   var flutterVideoFieldOfView: Float { get }
 }
 

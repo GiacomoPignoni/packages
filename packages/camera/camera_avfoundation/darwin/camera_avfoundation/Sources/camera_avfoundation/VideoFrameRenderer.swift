@@ -1825,13 +1825,7 @@ final class VideoFrameRenderer {
     // MTLTexture does not retain the IOSurface lock. If the wrappers are
     // released while the GPU is still reading from the backing IOSurface
     // the Metal completion queue crashes with EXC_BAD_ACCESS in CF_IS_OBJC.
-    //
-    // `withExtendedLifetime` is the documented way to tell the compiler
-    // "this value must remain alive until this point" — a bare `_ = …`
-    // could be elided by the optimizer.
-    commandBuffer.addCompletedHandler { _ in
-      withExtendedLifetime(sourceSet) {}
-    }
+    retainTextures(sourceSet, untilCompletionOf: commandBuffer)
     return commandBuffer
   }
 
@@ -1919,6 +1913,38 @@ final class VideoFrameRenderer {
     return (cvTexture, mtlTexture)
   }
 
+  /// Holds a pass's `CVMetalTexture` wrappers together with the cache they
+  /// were created from. A wrapper does not keep its cache alive, and one
+  /// released while the cache is being torn down (this renderer deallocating
+  /// on the capture queue mid-frame) crashes the Metal completion queue in
+  /// `CVMetalTextureCache::bufferBackingNotInUse`. `release()` drops the
+  /// wrappers first; the cache reference goes only when the handler holding
+  /// this box is freed.
+  private final class InFlightTextures<Textures> {
+    private let cache: CVMetalTextureCache
+    private var textures: Textures?
+
+    init(_ textures: Textures, cache: CVMetalTextureCache) {
+      self.textures = textures
+      self.cache = cache
+    }
+
+    func release() {
+      textures = nil
+    }
+  }
+
+  /// Keeps `textures` alive until `commandBuffer` completes, then releases
+  /// them while their cache is still retained. Call before committing.
+  private func retainTextures<Textures>(
+    _ textures: Textures, untilCompletionOf commandBuffer: MTLCommandBuffer
+  ) {
+    let inFlight = InFlightTextures(textures, cache: textureCache)
+    commandBuffer.addCompletedHandler { _ in
+      inFlight.release()
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // MARK: - Lanczos upscale
   // ---------------------------------------------------------------------------
@@ -1991,13 +2017,7 @@ final class VideoFrameRenderer {
       kernel.scaleTransform = nil
     }
 
-    // Keep CVMetalTexture wrappers alive until the GPU command completes.
-    // `withExtendedLifetime`, not a bare `_ =` — the optimizer may elide a
-    // bare read (see the equivalent handler in `submitRender`).
-    commandBuffer.addCompletedHandler { _ in
-      withExtendedLifetime(srcCV) {}
-      withExtendedLifetime(dstCV) {}
-    }
+    retainTextures((srcCV, dstCV), untilCompletionOf: commandBuffer)
     return true
   }
 
