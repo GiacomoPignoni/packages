@@ -143,6 +143,7 @@ class ImageCaptureProxyApi extends PigeonApiImageCapture {
       @NonNull CameraEffectsManager effectsManager,
       boolean includeOriginal,
       long rotationDegrees,
+      boolean mirrored,
       @NonNull Function1<? super Result<CapturedPicturePaths>, Unit> callback) {
     // Captured in memory rather than straight to a file: `takePictureWithOriginal` has to produce
     // both an un-effected original and a processed photo from the *same* shutter event, which a
@@ -167,7 +168,8 @@ class ImageCaptureProxyApi extends PigeonApiImageCapture {
                       includeOriginal,
                       getPigeonRegistrar().getContext().getCacheDir(),
                       captureResult,
-                      (int) rotationDegrees);
+                      (int) rotationDegrees,
+                      mirrored);
               replyOnMainThread(() -> ResultCompat.success(paths, callback));
             } catch (Throwable t) {
               // Catches Throwable, not just Exception: decoding/rendering a full-resolution

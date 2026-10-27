@@ -4573,7 +4573,7 @@ abstract class PigeonApiImageCapture(
    *
    * `rotationDegrees` is the clockwise turn a viewer applies to bring the photo upright for the way
    * the device was held, written to the EXIF orientation tag. The pixels stay composed like the
-   * preview.
+   * preview. `mirrored` flips the photo horizontally through the same tag.
    */
   abstract fun takePictureWithEffects(
       pigeon_instance: androidx.camera.core.ImageCapture,
@@ -4581,6 +4581,7 @@ abstract class PigeonApiImageCapture(
       effectsManager: CameraEffectsManager,
       includeOriginal: Boolean,
       rotationDegrees: Long,
+      mirrored: Boolean,
       callback: (Result<CapturedPicturePaths>) -> Unit
   )
 
@@ -4686,12 +4687,14 @@ abstract class PigeonApiImageCapture(
             val effectsManagerArg = args[2] as CameraEffectsManager
             val includeOriginalArg = args[3] as Boolean
             val rotationDegreesArg = args[4] as Long
+            val mirroredArg = args[5] as Boolean
             api.takePictureWithEffects(
                 pigeon_instanceArg,
                 systemServicesManagerArg,
                 effectsManagerArg,
                 includeOriginalArg,
-                rotationDegreesArg) { result: Result<CapturedPicturePaths> ->
+                rotationDegreesArg,
+                mirroredArg) { result: Result<CapturedPicturePaths> ->
                   val error = result.exceptionOrNull()
                   if (error != null) {
                     reply.reply(CameraXLibraryPigeonUtils.wrapError(error))

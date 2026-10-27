@@ -619,13 +619,15 @@ abstract class ImageCapture extends UseCase {
   ///
   /// `rotationDegrees` is the clockwise turn a viewer applies to bring the
   /// photo upright for the way the device was held, written to the EXIF
-  /// orientation tag. The pixels stay composed like the preview.
+  /// orientation tag. The pixels stay composed like the preview. `mirrored`
+  /// flips the photo horizontally through the same tag.
   @async
   CapturedPicturePaths takePictureWithEffects(
     SystemServicesManager systemServicesManager,
     CameraEffectsManager effectsManager,
     bool includeOriginal,
     int rotationDegrees,
+    bool mirrored,
   );
 
   /// Sets the desired rotation of the output image.

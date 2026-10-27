@@ -511,6 +511,11 @@ class AVFoundationCamera extends CameraPlatform {
   }
 
   @override
+  Future<void> setMirrorFrontCamera(int cameraId, bool mirror) async {
+    await _hostApi.setMirrorFrontCamera(mirror);
+  }
+
+  @override
   Widget buildPreview(int cameraId) {
     return Texture(textureId: cameraId);
   }

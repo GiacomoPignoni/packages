@@ -560,6 +560,11 @@ abstract class CameraApi {
   @async
   @ObjCSelector('setPreviewEffectsEnabled:')
   void setPreviewEffectsEnabled(bool enabled);
+
+  /// Sets whether photos taken with a front-facing camera are mirrored.
+  @async
+  @ObjCSelector('setMirrorFrontCamera:')
+  void setMirrorFrontCamera(bool mirror);
 }
 
 @EventChannelApi()

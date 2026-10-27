@@ -689,4 +689,13 @@ extension CameraPlugin: CameraApi {
       completion(.success(()))
     }
   }
+
+  func setMirrorFrontCamera(
+    mirror: Bool, completion: @escaping (Result<Void, any Error>) -> Void
+  ) {
+    captureSessionQueue.async { [weak self] in
+      self?.camera?.setMirrorFrontCamera(mirror)
+      completion(.success(()))
+    }
+  }
 }

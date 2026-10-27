@@ -408,6 +408,8 @@ class AndroidCameraCameraX extends CameraPlatform {
   @visibleForTesting
   bool cameraIsFrontFacing = false;
 
+  bool _mirrorFrontCamera = true;
+
   /// How the device is held relative to the UI, as last reported by
   /// [deviceOrientationManager].
   DeviceOrientation _deviceOrientation = DeviceOrientation.portraitUp;
@@ -1658,6 +1660,7 @@ class AndroidCameraCameraX extends CameraPlatform {
       effectsManager!,
       includeOriginal,
       _exifRotationDegrees,
+      cameraIsFrontFacing && _mirrorFrontCamera,
     );
   }
 
@@ -1860,6 +1863,11 @@ class AndroidCameraCameraX extends CameraPlatform {
   @override
   Future<void> setPreviewEffectsEnabled(int cameraId, bool enabled) async {
     await effectsManager?.setPreviewEffectsEnabled(enabled);
+  }
+
+  @override
+  Future<void> setMirrorFrontCamera(int cameraId, bool mirror) async {
+    _mirrorFrontCamera = mirror;
   }
 
   /// Gets the [FlashMode]s supported by the camera with ID [cameraId].

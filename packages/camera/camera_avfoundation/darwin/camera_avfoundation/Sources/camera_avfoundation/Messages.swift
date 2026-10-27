@@ -1253,6 +1253,8 @@ protocol CameraApi {
   /// Shows or hides the effects in the preview. Saved photos and videos are
   /// unaffected.
   func setPreviewEffectsEnabled(enabled: Bool, completion: @escaping (Result<Void, Error>) -> Void)
+  /// Sets whether photos taken with a front-facing camera are mirrored.
+  func setMirrorFrontCamera(mirror: Bool, completion: @escaping (Result<Void, Error>) -> Void)
 }
 
 /// Generated setup class from Pigeon to handle messages through the `binaryMessenger`.
@@ -2111,6 +2113,26 @@ class CameraApiSetup {
       }
     } else {
       setPreviewEffectsEnabledChannel.setMessageHandler(nil)
+    }
+    /// Sets whether photos taken with a front-facing camera are mirrored.
+    let setMirrorFrontCameraChannel = FlutterBasicMessageChannel(
+      name: "dev.flutter.pigeon.camera_avfoundation.CameraApi.setMirrorFrontCamera\(channelSuffix)",
+      binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      setMirrorFrontCameraChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let mirrorArg = args[0] as! Bool
+        api.setMirrorFrontCamera(mirror: mirrorArg) { result in
+          switch result {
+          case .success:
+            reply(wrapResult(nil))
+          case .failure(let error):
+            reply(wrapError(error))
+          }
+        }
+      }
+    } else {
+      setMirrorFrontCameraChannel.setMessageHandler(nil)
     }
   }
 }

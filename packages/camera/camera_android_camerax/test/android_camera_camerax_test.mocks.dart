@@ -1497,6 +1497,7 @@ class MockImageCapture extends _i1.Mock implements _i2.ImageCapture {
     _i2.CameraEffectsManager? effectsManager,
     bool? includeOriginal,
     int? rotationDegrees,
+    bool? mirrored,
   ) =>
       (super.noSuchMethod(
             Invocation.method(#takePictureWithEffects, [
@@ -1504,6 +1505,7 @@ class MockImageCapture extends _i1.Mock implements _i2.ImageCapture {
               effectsManager,
               includeOriginal,
               rotationDegrees,
+              mirrored,
             ]),
             returnValue: _i5.Future<_i2.CapturedPicturePaths>.value(
               _FakeCapturedPicturePaths_27(
@@ -1513,6 +1515,7 @@ class MockImageCapture extends _i1.Mock implements _i2.ImageCapture {
                   effectsManager,
                   includeOriginal,
                   rotationDegrees,
+                  mirrored,
                 ]),
               ),
             ),
@@ -1524,6 +1527,7 @@ class MockImageCapture extends _i1.Mock implements _i2.ImageCapture {
                   effectsManager,
                   includeOriginal,
                   rotationDegrees,
+                  mirrored,
                 ]),
               ),
             ),

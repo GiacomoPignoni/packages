@@ -179,6 +179,7 @@ final class DefaultCamera: NSObject, Camera {
   /// [-1,1] d-space as the scaled rect. 0 = square corners.
   private var captureCornerRadius: Float = 0.0
   private var previewEffectsEnabled = true
+  private var mirrorFrontCamera = true
   /// `setCaptureScale` calls received while recording. The AVAssetWriter is
   /// locked to the renderer's dimensions for the duration of the take, so we
   /// stash the latest value and apply it once recording stops. Nil when no
@@ -1552,6 +1553,13 @@ final class DefaultCamera: NSObject, Camera {
         sourcePixelFormat: videoFormat)
     }
 
+    if let connection: AVCaptureConnection = capturePhotoOutput.avOutput.connection(with: .video),
+      connection.isVideoMirroringSupported
+    {
+      connection.automaticallyAdjustsVideoMirroring = false
+      connection.isVideoMirrored = captureDevice.position == .front && mirrorFrontCamera
+    }
+
     let renderer = videoFrameRenderer
     let isHEIF = preferredVideoCodec == .hevc
     let settings = makePhotoSettings(useShaderPath: renderer != nil, isHEIF: isHEIF)
@@ -2173,6 +2181,11 @@ final class DefaultCamera: NSObject, Camera {
   func setPreviewEffectsEnabled(_ enabled: Bool) {
     assertOnCaptureSessionQueue()
     previewEffectsEnabled = enabled
+  }
+
+  func setMirrorFrontCamera(_ mirror: Bool) {
+    assertOnCaptureSessionQueue()
+    mirrorFrontCamera = mirror
   }
 
   func setCaptureCornerRadius(_ radius: Double) {

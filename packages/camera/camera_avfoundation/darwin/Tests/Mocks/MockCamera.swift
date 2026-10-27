@@ -198,6 +198,8 @@ final class MockCamera: NSObject, Camera {
     setPreviewEffectsEnabledStub?(enabled)
   }
 
+  func setMirrorFrontCamera(_ mirror: Bool) {}
+
   func setExposureMode(_ mode: PlatformExposureMode) {
     setExposureModeStub?(mode)
   }

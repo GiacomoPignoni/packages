@@ -427,4 +427,10 @@ abstract class CameraPlatform extends PlatformInterface {
   ///
   /// On platforms that do not support shader-based effects this is a no-op.
   Future<void> setPreviewEffectsEnabled(int cameraId, bool enabled) async {}
+
+  /// Sets whether photos taken with a front-facing camera are mirrored like
+  /// the preview.
+  ///
+  /// On platforms that do not support it this is a no-op.
+  Future<void> setMirrorFrontCamera(int cameraId, bool mirror) async {}
 }

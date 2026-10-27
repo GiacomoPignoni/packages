@@ -373,6 +373,8 @@ class CameraController extends ValueNotifier<CameraValue> {
   // after a [setDescription] camera switch.
   bool _previewEffectsEnabled = true;
 
+  bool _mirrorFrontCamera = true;
+
   // Latest white balance values applied via [setWhiteBalance]. Cached so they
   // can be re-applied after a [setDescription] camera switch. `_whiteBalanceSet`
   // distinguishes "never called" (let the new camera start in its default
@@ -552,6 +554,10 @@ class CameraController extends ValueNotifier<CameraValue> {
 
       if (!_previewEffectsEnabled) {
         await CameraPlatform.instance.setPreviewEffectsEnabled(_cameraId, false);
+      }
+
+      if (!_mirrorFrontCamera) {
+        await CameraPlatform.instance.setMirrorFrontCamera(_cameraId, false);
       }
 
       await CameraPlatform.instance.initializeCamera(
@@ -1356,6 +1362,16 @@ class CameraController extends ValueNotifier<CameraValue> {
   Future<void> setPreviewEffectsEnabled(bool enabled) async {
     await CameraPlatform.instance.setPreviewEffectsEnabled(_cameraId, enabled);
     _previewEffectsEnabled = enabled;
+  }
+
+  /// Sets whether photos taken with a front-facing camera are mirrored like
+  /// the preview. Defaults to true.
+  ///
+  /// The value is cached and re-applied automatically after a
+  /// [setDescription] camera switch.
+  Future<void> setMirrorFrontCamera(bool mirror) async {
+    await CameraPlatform.instance.setMirrorFrontCamera(_cameraId, mirror);
+    _mirrorFrontCamera = mirror;
   }
 
   /// Check whether the camera platform supports image streaming.

@@ -183,6 +183,9 @@ class FakeController extends ValueNotifier<CameraValue> implements CameraControl
 
   @override
   Future<void> setPreviewEffectsEnabled(bool enabled) async {}
+
+  @override
+  Future<void> setMirrorFrontCamera(bool mirror) async {}
 }
 
 void main() {

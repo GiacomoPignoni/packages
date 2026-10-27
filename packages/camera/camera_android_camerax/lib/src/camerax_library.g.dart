@@ -4490,12 +4490,14 @@ class ImageCapture extends UseCase {
   ///
   /// `rotationDegrees` is the clockwise turn a viewer applies to bring the
   /// photo upright for the way the device was held, written to the EXIF
-  /// orientation tag. The pixels stay composed like the preview.
+  /// orientation tag. The pixels stay composed like the preview. `mirrored`
+  /// flips the photo horizontally through the same tag.
   Future<CapturedPicturePaths> takePictureWithEffects(
     SystemServicesManager systemServicesManager,
     CameraEffectsManager effectsManager,
     bool includeOriginal,
     int rotationDegrees,
+    bool mirrored,
   ) async {
     final _PigeonInternalProxyApiBaseCodec pigeonChannelCodec = _pigeonVar_codecImageCapture;
     final BinaryMessenger? pigeonVar_binaryMessenger = pigeon_binaryMessenger;
@@ -4512,6 +4514,7 @@ class ImageCapture extends UseCase {
       effectsManager,
       includeOriginal,
       rotationDegrees,
+      mirrored,
     ]);
     final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
 

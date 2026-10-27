@@ -45,7 +45,8 @@ object StillCaptureProcessor {
    * Renders `image` through the effects pipeline and writes the result to the cache directory.
    *
    * When `includeOriginal` is true the un-effected frame is written alongside it.
-   * `exifRotationDegrees` goes to the Exif orientation tag of both files.
+   * `exifRotationDegrees` goes to the Exif orientation tag of both files, flipped horizontally when
+   * `mirrored`.
    */
   @JvmStatic
   fun process(
@@ -55,14 +56,21 @@ object StillCaptureProcessor {
       cacheDir: File,
       captureResult: CaptureResult?,
       exifRotationDegrees: Int,
+      mirrored: Boolean,
   ): CapturedPicturePaths =
       if (image.format == ImageFormat.YUV_420_888) {
         processYuv(
-            image, effectsManager, includeOriginal, cacheDir, captureResult, exifRotationDegrees)
+            image,
+            effectsManager,
+            includeOriginal,
+            cacheDir,
+            captureResult,
+            exifRotationDegrees,
+            mirrored)
       } else {
         // A device that would not configure an uncompressed still stream, or a capture taken
         // before the buffer format was applied. Slower by a full JPEG decode, but correct.
-        processJpeg(image, effectsManager, includeOriginal, cacheDir, exifRotationDegrees)
+        processJpeg(image, effectsManager, includeOriginal, cacheDir, exifRotationDegrees, mirrored)
       }
 
   /**
@@ -79,6 +87,7 @@ object StillCaptureProcessor {
       cacheDir: File,
       captureResult: CaptureResult?,
       exifRotationDegrees: Int,
+      mirrored: Boolean,
   ): CapturedPicturePaths {
     val takenAt = Date()
     val yuv = CameraYuvImage.from(image)
@@ -106,6 +115,7 @@ object StillCaptureProcessor {
                 captureResult,
                 takenAt,
                 exifRotationDegrees,
+                mirrored,
             )
           } finally {
             original.recycle()
@@ -126,6 +136,7 @@ object StillCaptureProcessor {
                 captureResult,
                 takenAt,
                 exifRotationDegrees,
+                mirrored,
             )
           } finally {
             processed.recycle()
@@ -145,6 +156,7 @@ object StillCaptureProcessor {
       includeOriginal: Boolean,
       cacheDir: File,
       exifRotationDegrees: Int,
+      mirrored: Boolean,
   ): CapturedPicturePaths {
     val bytes = readBytes(image)
     val sourceExif = readExif(bytes)
@@ -176,6 +188,7 @@ object StillCaptureProcessor {
                   null,
                   null,
                   exifRotationDegrees,
+                  mirrored,
               )
             } finally {
               if (original !== decoded) original.recycle()
@@ -196,6 +209,7 @@ object StillCaptureProcessor {
                   null,
                   null,
                   exifRotationDegrees,
+                  mirrored,
               )
             } finally {
               if (processed !== decoded) processed.recycle()
@@ -267,6 +281,7 @@ object StillCaptureProcessor {
       captureResult: CaptureResult?,
       takenAt: Date?,
       exifRotationDegrees: Int,
+      mirrored: Boolean,
   ): String {
     val file = File.createTempFile(prefix, JPG_FILE_TYPE, cacheDir)
     try {
@@ -278,7 +293,8 @@ object StillCaptureProcessor {
           file,
           bitmap.width,
           bitmap.height,
-          exifRotationDegrees)
+          exifRotationDegrees,
+          mirrored)
     } catch (e: Throwable) {
       // Nothing downstream will ever look at a file whose own write failed; without this it is
       // orphaned in the cache directory instead.
@@ -310,6 +326,7 @@ object StillCaptureProcessor {
       width: Int,
       height: Int,
       exifRotationDegrees: Int,
+      mirrored: Boolean,
   ) {
     try {
       val destination = ExifInterface(file)
@@ -328,6 +345,7 @@ object StillCaptureProcessor {
           ExifInterface.TAG_ORIENTATION,
           exifOrientation(exifRotationDegrees).toString(),
       )
+      if (mirrored) destination.flipHorizontally()
       // Both outputs are cropped and possibly scaled, so the sensor's dimensions no longer
       // describe them.
       destination.setAttribute(ExifInterface.TAG_IMAGE_WIDTH, width.toString())

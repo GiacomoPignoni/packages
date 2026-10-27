@@ -100,6 +100,8 @@ protocol Camera: FlutterTexture, AVCaptureVideoDataOutputSampleBufferDelegate,
   /// get them. No-op when no shader pipeline is active.
   func setPreviewEffectsEnabled(_ enabled: Bool)
 
+  func setMirrorFrontCamera(_ mirror: Bool)
+
   func setExposureMode(_ mode: PlatformExposureMode)
   func setExposureOffset(_ offset: Double)
 

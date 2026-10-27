@@ -3686,6 +3686,7 @@ void main() {
         mockEffectsManager,
         false,
         any,
+        any,
       ),
     ).thenAnswer((_) async => CapturedPicturePaths.pigeon_detached(processedPath: testPicturePath));
 
@@ -3722,7 +3723,7 @@ void main() {
           };
 
       when(mockProcessCameraProvider.isBound(camera.imageCapture)).thenAnswer((_) async => true);
-      when(mockImageCapture.takePictureWithEffects(any, any, any, any)).thenAnswer(
+      when(mockImageCapture.takePictureWithEffects(any, any, any, any, any)).thenAnswer(
         (_) async =>
             CapturedPicturePaths.pigeon_detached(processedPath: 'test/absolute/path/to/picture'),
       );
@@ -3730,7 +3731,13 @@ void main() {
       Future<int> exifRotationOfNextPicture() async {
         await camera.takePicture(cameraId);
         return verify(
-              mockImageCapture.takePictureWithEffects(any, mockEffectsManager, false, captureAny),
+              mockImageCapture.takePictureWithEffects(
+                any,
+                mockEffectsManager,
+                false,
+                captureAny,
+                any,
+              ),
             ).captured.single
             as int;
       }
@@ -3921,6 +3928,7 @@ void main() {
           mockEffectsManager,
           false,
           any,
+          any,
         ),
       ).thenAnswer(
         (_) async => CapturedPicturePaths.pigeon_detached(processedPath: testPicturePath),
@@ -3971,6 +3979,7 @@ void main() {
         argThat(isA<SystemServicesManager>()),
         mockEffectsManager,
         false,
+        any,
         any,
       ),
     ).thenAnswer((_) async => CapturedPicturePaths.pigeon_detached(processedPath: 'ignored'));
@@ -4032,6 +4041,7 @@ void main() {
           argThat(isA<SystemServicesManager>()),
           mockEffectsManager,
           false,
+          any,
           any,
         ),
       ).thenAnswer((_) async => CapturedPicturePaths.pigeon_detached(processedPath: 'ignored'));
@@ -6376,6 +6386,7 @@ void main() {
         argThat(isA<SystemServicesManager>()),
         mockEffectsManager,
         true,
+        any,
         any,
       ),
     ).thenAnswer(

@@ -298,6 +298,7 @@ public class ImageCaptureTest {
         mock(CameraEffectsManager.class),
         false,
         0,
+        false,
         ResultCompat.asCompatCallback(
             reply -> {
               result[0] = reply.exceptionOrNull();
