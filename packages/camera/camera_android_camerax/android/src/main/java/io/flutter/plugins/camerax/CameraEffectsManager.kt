@@ -4,6 +4,7 @@
 
 package io.flutter.plugins.camerax
 
+import android.annotation.SuppressLint
 import android.graphics.Bitmap
 import android.os.Handler
 import android.os.HandlerThread
@@ -57,12 +58,18 @@ class CameraEffectsManager(
   private val glThread =
       HandlerThread("CameraEffectsGl", Process.THREAD_PRIORITY_DISPLAY).apply { start() }
   /**
-   * The last output identity logged by [uniformsForOutput], so the line there is not per frame.
+   * The last preview output identity logged by [uniformsForOutput], so the line there is not per
+   * frame.
    *
-   * A single packed key rather than a growing set: only the most recent output ever needs
-   * suppressing, since CameraX attaches an output once at bind and again when a recording starts.
+   * One packed key per kind of output rather than a growing set: CameraX attaches an output once at
+   * bind and again when a recording starts, so only the current one of each needs suppressing. Two
+   * rather than one because a recording draws the preview and the encoder alternately, every frame,
+   * and a single key would be overwritten on each draw and log them all.
    */
-  private var lastLoggedOutputKey = -1L
+  private var lastLoggedPreviewOutputKey = -1L
+
+  /** The [lastLoggedPreviewOutputKey] of the output a recording is drawn into. */
+  private var lastLoggedRecordingOutputKey = -1L
 
   private val glHandler = Handler(glThread.looper)
 
@@ -224,26 +231,26 @@ class CameraEffectsManager(
       snapshot: CameraUniforms,
   ) {
     synchronized(uniformsLock) { snapshot.setFrom(uniforms) }
-    // Equality, not a bit test: an output reporting more than PREVIEW is the shared one CameraX
-    // hands out while a recording is in flight, and the preview-only decorations must not be baked
-    // into the file. The preview loses its dimming and rounded border for the length of the
-    // recording, which is the cheaper of the two errors.
+    // [ShaderCameraEffect] asks for one output per target, so a recording arrives as an output of
+    // its own and the preview keeps its dimming and rounded border while it runs. Equality rather
+    // than a bit test all the same: an output that ever reported both targets would reach the file,
+    // and the preview-only decorations must never be baked into that.
     if (targets == CameraEffect.PREVIEW) {
       if (!previewEffectsEnabled) snapshot.clearEffects()
       snapshot.darkenOutside = CameraUniforms.PREVIEW_DARKEN_OUTSIDE
-      snapshot.overlayQuarterTurns = PREVIEW_OVERLAY_QUARTER_TURNS
     } else {
       snapshot.darkenOutside = 0f
       // Only the preview draws the rounded border, so the corner radius must not reach a recording.
       snapshot.captureCornerRadius = 0f
-      snapshot.overlayQuarterTurns = RECORDING_OVERLAY_QUARTER_TURNS
     }
+    snapshot.overlayQuarterTurns = LIVE_OVERLAY_QUARTER_TURNS
     // One line per output, and an output is attached once - at a bind, and again when a recording
-    // starts and CameraX swaps in the shared surface. Enough to see which surfaces exist and what
-    // shape each is, which is what the overlay's orientation turns on.
+    // starts and CameraX rebuilds the graph with the encoder in it. Enough to see which surfaces
+    // exist and what shape each is, which is what the overlay's orientation turns on.
     val key = (targets.toLong() shl 48) or (outputWidth.toLong() shl 24) or outputHeight.toLong()
-    if (key != lastLoggedOutputKey) {
-      lastLoggedOutputKey = key
+    val isPreview = targets == CameraEffect.PREVIEW
+    if (key != (if (isPreview) lastLoggedPreviewOutputKey else lastLoggedRecordingOutputKey)) {
+      if (isPreview) lastLoggedPreviewOutputKey = key else lastLoggedRecordingOutputKey = key
       Log.i(TAG, "output targets=$targets size=${outputWidth}x$outputHeight")
     }
     snapshot.outputAspect = outputWidth.toFloat() / outputHeight.toFloat()
@@ -441,7 +448,7 @@ class CameraEffectsManager(
     applyGrainScale(snapshot, scaledWidth, scaledHeight, swapAxes = true)
     // Same as the preview's: the still is turned upright before the shader sees it, so the overlay
     // is used exactly as authored in both.
-    snapshot.overlayQuarterTurns = PREVIEW_OVERLAY_QUARTER_TURNS
+    snapshot.overlayQuarterTurns = LIVE_OVERLAY_QUARTER_TURNS
     return StillCapturePlan(crop, scaledWidth, scaledHeight, snapshot)
   }
 
@@ -621,56 +628,62 @@ class CameraEffectsManager(
    * Still capture is deliberately not a target: `takePictureWithEffects` has to produce an
    * un-effected original from the same shutter event, which an `IMAGE_CAPTURE` effect cannot do.
    *
-   * The four-argument constructor deliberately: it is the only overload that leaves both the output
-   * option and the transformation at their defaults. The five-argument one takes a
-   * *transformation*, not an output option, and passing `OUTPUT_OPTION_ONE_FOR_EACH_TARGET` to it
-   * silently reads as `TRANSFORMATION_CAMERA_AND_SURFACE_ROTATION`, which makes `StreamSharing`
-   * hand this processor a rotated, uncropped edge the rest of the graph is not expecting.
+   * One output per target, because the preview and the recording must not get the same pixels. A
+   * recording binds `VideoCapture` next to `Preview`, and CameraX then puts both behind
+   * `StreamSharing`. With the default `OUTPUT_OPTION_ONE_FOR_ALL_TARGETS` this processor is handed
+   * a single output serving both, which CameraX copies to the preview and the encoder alike - so
+   * whichever way it is drawn one of them is wrong: either the file carries the preview's dimmed
+   * border, or the preview zooms into the capture-scale rect for the length of the take. With
+   * `OUTPUT_OPTION_ONE_FOR_EACH_TARGET` `StreamSharing` makes this processor its sharing node, and
+   * each child gets an output of its own - a `PREVIEW` one that keeps the full framing with the
+   * outside dimmed, and a `VIDEO_CAPTURE` one that holds only the scaled rect - which is how
+   * `VideoFrameRenderer` drives the two on iOS.
+   *
+   * That takes the six-argument constructor, the only one that sets the output option; it and the
+   * constant are restricted to CameraX's own library group, hence the suppression. The
+   * transformation is left at `TRANSFORMATION_ARBITRARY`, the four-argument overload's default. Not
+   * the five-argument one: it takes a *transformation*, not an output option, and passing
+   * `OUTPUT_OPTION_ONE_FOR_EACH_TARGET` to it silently reads as
+   * `TRANSFORMATION_CAMERA_AND_SURFACE_ROTATION`, which makes `StreamSharing` hand this processor a
+   * rotated, uncropped edge the rest of the graph is not expecting.
    */
-  private class ShaderCameraEffect(
+  @SuppressLint("RestrictedApi")
+  internal class ShaderCameraEffect(
       processor: SurfaceProcessor,
       executor: Executor,
       errorListener: Consumer<Throwable>,
-  ) : CameraEffect(PREVIEW or VIDEO_CAPTURE, executor, processor, errorListener)
+  ) :
+      CameraEffect(
+          PREVIEW or VIDEO_CAPTURE,
+          OUTPUT_OPTION_ONE_FOR_EACH_TARGET,
+          TRANSFORMATION_ARBITRARY,
+          executor,
+          processor,
+          errorListener,
+      )
 
   companion object {
     private const val TAG = "CameraEffectsManager"
 
     /**
-     * Quarter turns applied to the overlay's UV on the preview-only output. None.
+     * Quarter turns applied to the overlay's UV on the live outputs, the preview's and the
+     * encoder's alike. None.
      *
-     * Both paths present the frame to the shader the same way up. The still is turned upright by
+     * Every path presents the frame to the shader the same way up. The still is turned upright by
      * `CameraStillCaptureRenderer.uprightTransform` before it reaches the shader, and the live
-     * outputs are upright already: `AndroidCameraCameraX._previewTargetRotation` asks CameraX for
+     * outputs are upright already: `AndroidCameraCameraX._pinnedTargetRotation` asks CameraX for
      * the display's natural orientation, which makes it fold the whole sensor rotation into the
-     * transform the processor samples through. So the overlay is used exactly as authored in both,
-     * and this exists only to name that rather than leave it to the field's default.
+     * transform the processor samples through. That holds for the encoder's output too. With one
+     * output per target `StreamSharing` gives each child the rotation of its own target, and the
+     * recording is bound at the same pinned rotation as the preview, so the two rasters are the
+     * same way round; how the device is held reaches the file as rotation metadata, overlay and
+     * all. So the overlay is used exactly as authored everywhere, and this exists only to name that
+     * rather than leave it to the field's default.
      *
      * Metal is the one that needs a turn, on its photo path alone - see
      * `VideoFrameRenderer.photoOverlayQuarterTurns`.
      */
-    private const val PREVIEW_OVERLAY_QUARTER_TURNS = 0f
-
-    /**
-     * Quarter turns applied to the overlay's UV on the output a recording is attached to.
-     *
-     * Its own constant rather than [PREVIEW_OVERLAY_QUARTER_TURNS] because the surface is not the
-     * same one, nor even the same way round. Once a recording starts CameraX stops handing out a
-     * preview-only output and swaps in a shared one serving both targets, and that surface is the
-     * encoder's: sensor-landscape (1440x1080 where the preview is 1080x1440), with the turn back to
-     * upright carried as rotation metadata on the file rather than applied to the pixels. So the
-     * overlay is baked into a landscape frame that the player then rotates, overlay and all.
-     *
-     * Three, for the same reason `VideoFrameRenderer.photoOverlayQuarterTurns` is: this is the
-     * identical geometry to an iOS photo, a portrait-authored overlay going onto a sensor-landscape
-     * raster that is turned a quarter clockwise at display time. That maps display point `(x, y)`
-     * to raster point `(y, 1 - x)`, so the fragment at raster UV `(u, v)` is displayed at `(1 - v,
-     * u)` - which is where the overlay must be sampled, and is `rotateUv(uv, 3)`.
-     *
-     * It also explains why the preview turns the moment recording starts: the widget keeps showing
-     * the shared surface, which is the encoder's landscape one.
-     */
-    private const val RECORDING_OVERLAY_QUARTER_TURNS = 3f
+    private const val LIVE_OVERLAY_QUARTER_TURNS = 0f
 
     /** 24 fps, matching the grain animation timer in `VideoFrameRenderer`. */
     private const val GRAIN_ANIMATION_INTERVAL_MILLIS = 1000L / 24L

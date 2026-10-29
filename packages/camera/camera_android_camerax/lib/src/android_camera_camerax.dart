@@ -4,7 +4,7 @@
 
 import 'dart:async';
 import 'dart:math' show Point, max;
-import 'dart:ui' show channelBuffers;
+import 'dart:ui' show Display, PlatformDispatcher, channelBuffers;
 
 import 'package:async/async.dart';
 import 'package:camera_platform_interface/camera_platform_interface.dart';
@@ -437,6 +437,31 @@ class AndroidCameraCameraX extends CameraPlatform {
   /// record-size stream to the session. See [_getResolutionSelectorFromPreset].
   ResolutionSelector? _analysisResolutionSelector;
 
+  /// The resolution selector for [preview].
+  ///
+  /// Capped at the screen, the way `DefaultCamera` caps its preview pass on
+  /// iOS. The preview surface is what the effect pipeline renders the preview
+  /// into, and a recording adds a second, full-size pass for the encoder; the
+  /// widget showing the preview never exceeds the screen, so every preview
+  /// pixel beyond it is shader work that cannot be seen. Photos and videos keep
+  /// the preset's full size, since they have use cases of their own.
+  ResolutionSelector? _previewResolutionSelector;
+
+  /// Returns the shorter side of the screen in physical pixels, which [preview]
+  /// is capped at; see [_previewResolutionSelector].
+  @visibleForTesting
+  int Function() screenShorterSidePixels = _displayShorterSidePixels;
+
+  /// Fallback for a screen that reports no usable size, matching
+  /// `DefaultCamera.fallbackScreenShorterSidePixels` on iOS.
+  static const int _fallbackScreenShorterSidePixels = 1280;
+
+  static int _displayShorterSidePixels() {
+    final Iterable<Display> displays = PlatformDispatcher.instance.displays;
+    final int shorterSide = displays.isEmpty ? 0 : displays.first.size.shortestSide.round();
+    return shorterSide > 0 ? shorterSide : _fallbackScreenShorterSidePixels;
+  }
+
   /// Whether [_recoverLostPreviewOutput] is already re-binding the preview.
   bool _recoveringPreviewOutput = false;
 
@@ -769,6 +794,10 @@ class AndroidCameraCameraX extends CameraPlatform {
       mediaSettings?.resolutionPreset,
       maxBoundSize: _imageAnalysisMaxBoundSize,
     );
+    _previewResolutionSelector = _getResolutionSelectorFromPreset(
+      mediaSettings?.resolutionPreset,
+      maxShorterSide: screenShorterSidePixels(),
+    );
 
     final QualitySelector? presetQualitySelector = _getQualitySelectorFromPreset(
       mediaSettings?.resolutionPreset,
@@ -854,7 +883,7 @@ class AndroidCameraCameraX extends CameraPlatform {
 
     // Configure Preview instance.
     preview = Preview(
-      resolutionSelector: _presetResolutionSelector,
+      resolutionSelector: _previewResolutionSelector,
       targetFpsRange: _targetFpsRange,
       whiteBalanceManager: whiteBalanceManager,
     );
@@ -2532,14 +2561,14 @@ class AndroidCameraCameraX extends CameraPlatform {
   /// mirror, which reverses its sense, and the correction stops being
   /// expressible as a quarter-turn count that is right for both cameras.
   ///
-  /// A recording must share it with the preview. Both outputs are drawn by one
-  /// pass of the shader pipeline — while a recording is running CameraX may
-  /// even hand out a single surface serving both — and the overlay and every
-  /// other effect are composited in that surface's own raster space. Give the
-  /// two use cases different target rotations and CameraX builds the
-  /// recording's output a quarter turn from the preview's, so the camera image
-  /// still lands upright (its transform is computed per output) while the
-  /// overlay drawn on top of it does not.
+  /// A recording must share it with the preview. While a recording is running
+  /// the shader pipeline draws the preview and the encoder as two outputs of
+  /// its own, and the overlay and every other effect are composited in each
+  /// output's raster space. A shared target rotation keeps those two rasters
+  /// the same way round. Give the two use cases different target rotations and
+  /// CameraX builds the recording's output a quarter turn from the preview's,
+  /// so the camera image still lands upright (its transform is computed per
+  /// output) while the overlay drawn on top of it does not.
   ///
   /// How the device is held reaches the captured files as metadata instead;
   /// see [_captureRotation].
@@ -2587,7 +2616,7 @@ class AndroidCameraCameraX extends CameraPlatform {
       supported = await processCameraProvider!.getSupportedFrameRateRanges(
         cameraSelector!,
         <UseCase>[
-          Preview(resolutionSelector: _presetResolutionSelector),
+          Preview(resolutionSelector: _previewResolutionSelector),
           imageCapture!,
           ImageAnalysis(resolutionSelector: _analysisResolutionSelector),
         ],
@@ -2681,9 +2710,12 @@ class AndroidCameraCameraX extends CameraPlatform {
   ///
   /// [maxBoundSize] caps the size the preset asks for, for use cases that should
   /// not follow it all the way up; see [_imageAnalysisMaxBoundSize].
+  /// [maxShorterSide] caps it the same way, at that shorter side and the shape
+  /// the preset asks for; see [_previewResolutionSelector].
   ResolutionSelector? _getResolutionSelectorFromPreset(
     ResolutionPreset? preset, {
     ({int width, int height})? maxBoundSize,
+    int? maxShorterSide,
   }) {
     const ResolutionStrategyFallbackRule fallbackRule =
         ResolutionStrategyFallbackRule.closestLowerThenHigher;
@@ -2711,6 +2743,7 @@ class AndroidCameraCameraX extends CameraPlatform {
         // `ResolutionPreset.photo` is an iOS-specific concept
         // (`AVCaptureSession.Preset.photo`); on Android there is no direct
         // analogue, so we treat it the same as `max` — highest available.
+        maxBoundSize ??= _boundSizeForShorterSide(maxShorterSide, aspectRatio);
         if (maxBoundSize == null) {
           // Automatically set strategy to choose highest available.
           resolutionStrategy = ResolutionStrategy.highestAvailableStrategy;
@@ -2730,6 +2763,7 @@ class AndroidCameraCameraX extends CameraPlatform {
         return null;
     }
 
+    maxBoundSize ??= _boundSizeForShorterSide(maxShorterSide, aspectRatio);
     if (maxBoundSize != null &&
         boundSize.width * boundSize.height > maxBoundSize.width * maxBoundSize.height) {
       boundSize = maxBoundSize;
@@ -2755,6 +2789,25 @@ class AndroidCameraCameraX extends CameraPlatform {
       resolutionStrategy: resolutionStrategy,
       aspectRatioStrategy: aspectRatioStrategy,
     );
+  }
+
+  /// The landscape bound size whose shorter side is [shorterSide], at
+  /// [aspectRatio], or null when there is no [shorterSide].
+  ///
+  /// Shaped like the preset rather than square so the cap stays at the screen's
+  /// size for either ratio; the bound is compared by area, and a 4:3 bound
+  /// would leave a 16:9 preset under it at a lower shorter side. A null
+  /// [aspectRatio] means 4:3, which is what CameraX prefers when a selector
+  /// names none.
+  static ({int width, int height})? _boundSizeForShorterSide(
+    int? shorterSide,
+    AspectRatio? aspectRatio,
+  ) {
+    if (shorterSide == null) {
+      return null;
+    }
+    final double ratio = aspectRatio == AspectRatio.ratio16To9 ? 16 / 9 : 4 / 3;
+    return (width: (shorterSide * ratio / 2).round() * 2, height: shorterSide);
   }
 
   /// Returns the [QualitySelector] that maps to the specified resolution

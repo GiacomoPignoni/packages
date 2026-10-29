@@ -306,7 +306,8 @@ class CameraSurfaceProcessor(
           OutputSurface(surfaceOutput, eglSurface, surfaceOutput.size, surfaceOutput.targets))
 
       // A bit test rather than equality: the effect targets both the preview and the encoder, and
-      // an output can report either one or, with a shared surface, both at once.
+      // although it asks for one output per target, an output reporting both would still be what
+      // the preview shows.
       val isPreview = surfaceOutput.targets and CameraEffect.PREVIEW != 0
       if (isPreview) {
         // The replacement [retireAt] was waiting for.

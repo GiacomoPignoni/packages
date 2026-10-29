@@ -836,6 +836,7 @@ void main() {
       camera.processCameraProvider = mockProcessCameraProvider;
       camera.effectsManager = mockEffectsManager;
       camera.cameraEffect = mockCameraEffect;
+      camera.screenShorterSidePixels = () => 1080;
 
       // Tell plugin to create mock/detached objects for testing createCamera
       // as needed.
@@ -851,6 +852,9 @@ void main() {
         await camera.initializeCamera(flutterSurfaceTextureId);
 
         late final CameraSize? expectedBoundSize;
+        // The preview is capped at the screen, shaped like the preset; see
+        // `_previewResolutionSelector`.
+        CameraSize? expectedPreviewSize;
 
         switch (resolutionPreset) {
           case ResolutionPreset.low:
@@ -863,18 +867,20 @@ void main() {
             expectedBoundSize = CameraSize.pigeon_detached(width: 1920, height: 1080);
           case ResolutionPreset.ultraHigh:
             expectedBoundSize = CameraSize.pigeon_detached(width: 3840, height: 2160);
+            expectedPreviewSize = CameraSize.pigeon_detached(width: 1920, height: 1080);
           case ResolutionPreset.max:
           case ResolutionPreset.photo:
             continue;
         }
+        expectedPreviewSize ??= expectedBoundSize;
 
         final CameraSize? previewSize = await camera
             .preview!
             .resolutionSelector!
             .resolutionStrategy!
             .getBoundSize();
-        expect(previewSize?.width, equals(expectedBoundSize.width));
-        expect(previewSize?.height, equals(expectedBoundSize.height));
+        expect(previewSize?.width, equals(expectedPreviewSize.width));
+        expect(previewSize?.height, equals(expectedPreviewSize.height));
         expect(
           await camera.preview!.resolutionSelector!.resolutionStrategy!.getFallbackRule(),
           ResolutionStrategyFallbackRule.closestLowerThenHigher,
@@ -918,15 +924,12 @@ void main() {
       await camera.createCamera(testCameraDescription, ResolutionPreset.max, enableAudio: true);
 
       expect(
-        camera.preview!.resolutionSelector!.resolutionStrategy,
-        equals(ResolutionStrategy.highestAvailableStrategy),
-      );
-      expect(
         camera.imageCapture!.resolutionSelector!.resolutionStrategy,
         equals(ResolutionStrategy.highestAvailableStrategy),
       );
-      // Image analysis cannot follow "highest available" anywhere, so it is
-      // pinned to its cap instead.
+      // Image analysis and the preview cannot follow "highest available"
+      // anywhere, so they are pinned to their caps instead. The preview's is
+      // 4:3, the shape CameraX prefers when a selector names none.
       final CameraSize? maxAnalysisSize = await camera
           .imageAnalysis!
           .resolutionSelector!
@@ -934,15 +937,18 @@ void main() {
           .getBoundSize();
       expect(maxAnalysisSize?.width, equals(1280));
       expect(maxAnalysisSize?.height, equals(720));
-      expect(
-        camera.preview!.resolutionSelector!.allowedResolutionMode,
-        ResolutionSelectorAllowedResolutionMode.preferHigherResolutionOverCaptureRate,
-      );
+      final CameraSize? maxPreviewSize = await camera
+          .preview!
+          .resolutionSelector!
+          .resolutionStrategy!
+          .getBoundSize();
+      expect(maxPreviewSize?.width, equals(1440));
+      expect(maxPreviewSize?.height, equals(1080));
+      expect(camera.preview!.resolutionSelector!.allowedResolutionMode, isNull);
       expect(
         camera.imageCapture!.resolutionSelector!.allowedResolutionMode,
         ResolutionSelectorAllowedResolutionMode.preferHigherResolutionOverCaptureRate,
       );
-      expect(camera.preview!.resolutionSelector, same(camera.imageCapture!.resolutionSelector));
 
       // Test null case.
       final int flutterSurfaceTextureId = await camera.createCamera(testCameraDescription, null);
@@ -951,6 +957,54 @@ void main() {
       expect(camera.preview!.resolutionSelector, isNull);
       expect(camera.imageCapture!.resolutionSelector, isNull);
       expect(camera.imageAnalysis!.resolutionSelector, isNull);
+    },
+  );
+
+  test(
+    'createCamera caps the preview at the screen in the preset shape, leaving photos at the preset',
+    () async {
+      final camera = AndroidCameraCameraX();
+      const testCameraDescription = CameraDescription(
+        name: 'cameraName',
+        lensDirection: CameraLensDirection.back,
+        sensorOrientation: 90,
+      );
+      final mockCamera = MockCamera();
+      final mockProcessCameraProvider = MockProcessCameraProvider();
+      final mockCameraInfo = MockCameraInfo();
+
+      when(
+        mockProcessCameraProvider.bindToLifecycle(any, any, any, any),
+      ).thenAnswer((_) async => mockCamera);
+      when(mockCamera.getCameraInfo()).thenAnswer((_) async => mockCameraInfo);
+      when(mockCameraInfo.getCameraState()).thenAnswer((_) async => MockLiveCameraState());
+      camera.processCameraProvider = mockProcessCameraProvider;
+      camera.effectsManager = mockEffectsManager;
+      camera.cameraEffect = mockCameraEffect;
+      camera.screenShorterSidePixels = () => 720;
+      setUpOverridesForTestingUseCaseConfiguration(mockProcessCameraProvider);
+
+      Future<(int, int)> boundSize(ResolutionSelector? selector) async {
+        final CameraSize? size = await selector!.resolutionStrategy!.getBoundSize();
+        return (size!.width, size.height);
+      }
+
+      // A 16:9 preset is capped at a 16:9 bound with the screen's shorter side.
+      await camera.createCamera(testCameraDescription, ResolutionPreset.veryHigh);
+      expect(await boundSize(camera.preview!.resolutionSelector), (1280, 720));
+      expect(await boundSize(camera.imageCapture!.resolutionSelector), (1920, 1080));
+
+      // A preset that names no shape is capped at CameraX's default 4:3.
+      await camera.createCamera(testCameraDescription, ResolutionPreset.max);
+      expect(await boundSize(camera.preview!.resolutionSelector), (960, 720));
+      expect(
+        camera.imageCapture!.resolutionSelector!.resolutionStrategy,
+        equals(ResolutionStrategy.highestAvailableStrategy),
+      );
+
+      // Presets already within the screen are left alone.
+      await camera.createCamera(testCameraDescription, ResolutionPreset.medium);
+      expect(await boundSize(camera.preview!.resolutionSelector), (720, 480));
     },
   );
 
